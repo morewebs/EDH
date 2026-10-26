@@ -33,6 +33,31 @@ const {
   EVENTS_ROUTE,
   UPDATE_DEBUG_KEY,
 } = mod.__test
+const {
+  failureText,
+  serverRecord,
+  actionReport,
+  reasonSentence,
+  inputRejection,
+  readMcpView,
+  serverState,
+  stateLabel,
+  stateTone,
+  emptyServerForm,
+  splitLines,
+  environmentMap,
+  isHttpUrl,
+  defaultServerName,
+  validateServer,
+  addServerBody,
+  serverActionBody,
+  withoutKey,
+  MCP_MODULE,
+  MCP_ROUTE,
+  MCP_TAB_SLOT,
+  MCP_ACTIONS,
+  MCP_DEBUG_KEY,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -432,5 +457,285 @@ function fakeRemote(options = {}) {
   }
 }
 
+// 19 — the MCP page addresses one route, one row, one settings tab, and one breadcrumb key.
+{
+  assert.equal(MCP_ROUTE, 'api/edh.mcp', 'document-relative, like the export and update routes')
+  assert.equal(MCP_MODULE, '@moreweb/edh/mcp', 'the row that owns the route')
+  assert.equal(MCP_TAB_SLOT, 'settings.plugins.tab', 'the Plugins settings section hosts pages as tabs')
+  assert.deepEqual(MCP_ACTIONS, ['add', 'remove', 'test', 'start', 'stop'], 'every action the route accepts')
+  assert.equal(MCP_DEBUG_KEY, 'edh:mcp', 'its own breadcrumb, beside edh:export and edh:update')
+  // The page is gated on its own row, as export and update are: the route is
+  // what makes it useful, so the aggregate may never stand in for a missing row.
+  const ready = { status: 'ready', moduleStates: { [MCP_MODULE]: true } }
+  assert.equal(rowEnabled(ready, MCP_MODULE), true)
+  assert.equal(rowEnabled({ status: 'ready', moduleStates: { [EXPORT_MODULE]: true } }, MCP_MODULE), false)
+  assert.equal(rowEnabled({ status: 'loading', moduleStates: { [MCP_MODULE]: true } }, MCP_MODULE), false)
+}
+
+// 20 — one server record becomes one row: a state, its one word, and a tone.
+{
+  assert.deepEqual(
+    serverRecord({
+      id: 'fs',
+      label: 'filesystem',
+      transport: 'stdio',
+      enabled: true,
+      status: 'ready',
+      toolCount: 12,
+      hasToken: false,
+      lastError: '',
+    }),
+    {
+      id: 'fs',
+      label: 'filesystem',
+      transport: 'stdio',
+      enabled: true,
+      status: 'ready',
+      toolCount: 12,
+      hasToken: false,
+      failure: '',
+    },
+  )
+  const states = [
+    ['ready', 'connected', 'mcpStateConnected', 'ok'],
+    ['connecting', 'starting', 'mcpStateStarting', 'busy'],
+    ['error', 'failed', 'mcpStateFailed', 'bad'],
+    ['stopped', 'off', 'mcpStateOff', 'off'],
+  ]
+  for (const [status, state, label, tone] of states) {
+    const record = serverRecord({ id: 'x', status, enabled: true })
+    assert.equal(serverState(record), state, `${status} reads as ${state}`)
+    assert.equal(stateLabel(state), label, `${state} has one word`)
+    assert.equal(stateTone(state), tone, `${state} paints one dot`)
+  }
+  // The switch is the authority: off is off whatever the connection last said.
+  assert.equal(serverState(serverRecord({ id: 'x', status: 'ready', enabled: false })), 'off')
+  // An unknown status is not a claim of health.
+  assert.equal(serverState(serverRecord({ id: 'x', status: 'nonsense', lastError: 'Server exited with code 1' })), 'failed')
+  assert.equal(serverState(serverRecord({ id: 'x', status: '' })), 'starting')
+  assert.equal(serverState(undefined), 'off')
+  for (const absent of [undefined, null, 7, 'server', {}, { label: 'no id' }, { id: '   ' }]) {
+    assert.equal(serverRecord(absent), undefined, `inert for ${JSON.stringify(absent)}`)
+  }
+  assert.deepEqual(serverRecord({ id: 'a' }), {
+    id: 'a',
+    label: 'a',
+    transport: 'stdio',
+    enabled: true,
+    status: '',
+    toolCount: 0,
+    hasToken: false,
+    failure: '',
+  }, 'a bare record is a stopped command server with no tools')
+  assert.equal(serverRecord({ id: 'a', transport: 'http' }).transport, 'http')
+  assert.equal(serverRecord({ id: 'a', transport: 'websocket' }).transport, 'stdio', 'an unknown transport is not a badge')
+  assert.equal(serverRecord({ id: 'a', toolCount: '4' }).toolCount, 4, 'a numeric string still counts')
+  assert.equal(serverRecord({ id: 'a', toolCount: -1 }).toolCount, 0)
+  assert.equal(failureText({ error: { code: 'denied', message: '401 from server' } }), '401 from server')
+  assert.equal(failureText({ detail: '  No response within 10s  ' }), 'No response within 10s')
+  assert.equal(failureText({ reason: 'not-ready' }), '', 'a code is not a sentence')
+  assert.equal(failureText(undefined), '')
+}
+
+// 21 — the add form validates one branch at a time and never asks for both.
+{
+  const command = validateServer({
+    ...emptyServerForm(),
+    command: '  npx  ',
+    args: ' -y \n\n @modelcontextprotocol/server-filesystem \n . \n',
+    env: '',
+  })
+  assert.deepEqual(command, {
+    ok: true,
+    server: {
+      label: 'npx',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
+    },
+  }, 'a blank args line is dropped and the name falls back to the command')
+  assert.equal(command.ok && 'url' in command.server, false, 'a command server carries no URL')
+  assert.equal(command.ok && 'env' in command.server, false, 'no environment means no env key')
+
+  for (const blank of ['', '   ', undefined]) {
+    assert.deepEqual(
+      validateServer({ branch: 'command', command: blank }),
+      { ok: false, field: 'command', message: 'mcpCommandRequired' },
+      `a command server with ${JSON.stringify(blank)} is invalid`,
+    )
+  }
+
+  assert.deepEqual(validateServer({
+    ...emptyServerForm(),
+    branch: 'url',
+    url: ' https://mcp.example.com/mcp ',
+    authorization: 'Bearer abc123',
+  }), {
+    ok: true,
+    server: {
+      label: 'mcp.example.com',
+      transport: 'http',
+      url: 'https://mcp.example.com/mcp',
+      authorization: 'Bearer abc123',
+    },
+  }, 'a URL server takes the host as its name and keeps the credential')
+  const bareUrl = validateServer({ ...emptyServerForm(), branch: 'url', url: 'http://127.0.0.1:8100/mcp' })
+  assert.equal(bareUrl.ok, true)
+  assert.equal('authorization' in bareUrl.server, false, 'an empty Authorization is not sent')
+  assert.equal('command' in bareUrl.server, false, 'a URL server carries no command')
+  for (const bad of ['example.com/mcp', 'ftp://example.com/mcp', 'https://', 'localhost:8100', '']) {
+    assert.deepEqual(
+      validateServer({ ...emptyServerForm(), branch: 'url', url: bad }),
+      { ok: false, field: 'url', message: 'mcpUrlInvalid' },
+      `${JSON.stringify(bad)} is not a URL server`,
+    )
+  }
+
+  // A typed name always wins over the derived one.
+  const named = validateServer({ ...emptyServerForm(), label: '  Files  ', command: 'node', args: 'server.js' })
+  assert.equal(named.server.label, 'Files')
+  assert.deepEqual(named.server.args, ['server.js'])
+
+  const withEnv = validateServer({
+    branch: 'command',
+    command: 'npx',
+    args: '',
+    env: 'GITHUB_TOKEN=ghp_1\n\nEMPTY=\n',
+  })
+  assert.deepEqual(withEnv.server.env, { GITHUB_TOKEN: 'ghp_1', EMPTY: '' })
+  assert.deepEqual(withEnv.server.args, [])
+  assert.deepEqual(
+    validateServer({ branch: 'command', command: 'npx', env: 'JUSTAWORD' }),
+    { ok: false, field: 'env', message: 'mcpEnvInvalid' },
+  )
+  assert.deepEqual(environmentMap('=value'), { ok: false })
+  assert.deepEqual(environmentMap(''), { ok: true, env: {} })
+
+  // The branch decides the fields: an untouched form is the Command branch.
+  assert.equal(emptyServerForm().branch, 'command')
+  assert.deepEqual(validateServer(emptyServerForm()), validateServer({ branch: 'command', command: '' }))
+  assert.deepEqual(splitLines(undefined), [])
+  assert.deepEqual(splitLines('a\r\n\n b '), ['a', 'b'])
+  assert.equal(isHttpUrl('https://example.com'), true)
+  assert.equal(isHttpUrl('not a url'), false)
+  assert.equal(defaultServerName({ transport: 'stdio', command: 'C:\\tools\\npx.CMD' }), 'npx')
+  assert.equal(defaultServerName({ transport: 'http', url: 'https://mcp.example.com/mcp?x=1' }), 'mcp.example.com')
+}
+
+// 22 — a secret in a response never reaches a record, and never reaches a sentence.
+{
+  const secret = 'sk-secret-value'
+  const read = readMcpView({
+    ok: true,
+    servers: [{
+      id: 'remote',
+      label: 'remote',
+      transport: 'http',
+      enabled: true,
+      status: 'ready',
+      toolCount: 3,
+      hasToken: true,
+      token: secret,
+      authorization: `Bearer ${secret}`,
+      headers: { Authorization: `Bearer ${secret}` },
+      env: { GITHUB_TOKEN: 'ghp_secret' },
+      envKeys: ['GITHUB_TOKEN'],
+      lastError: '',
+    }],
+  })
+  assert.equal(read.servers.length, 1)
+  assert.equal(read.servers[0].hasToken, true, 'the page learns a secret is set, not what it is')
+  const shown = JSON.stringify(read.servers[0])
+  assert.equal(shown.includes(secret), false, 'the token is not in the record')
+  assert.equal(shown.includes('ghp_secret'), false, 'an environment value is not in the record')
+  assert.equal(shown.includes('Authorization'), false, 'the header is not in the record')
+
+  // The failure line is the Host's own sentence, and carries no secret either.
+  const failed = readMcpView({
+    ok: false,
+    servers: [{ id: 'remote', status: 'error', token: secret, lastError: `HTTP 401 from server (${secret})` }],
+  })
+  assert.equal(failed.servers[0].failure, `HTTP 401 from server (${secret})`, 'the Host words it; the page shows it verbatim')
+  const withoutSecret = readMcpView({
+    ok: false,
+    servers: [{ id: 'remote', status: 'error', token: secret, lastError: 'HTTP 401 from server' }],
+  })
+  assert.equal(JSON.stringify(withoutSecret.servers[0]).includes(secret), false)
+}
+
+// 23 — the answer is the view: a POST's own list is adopted, its report explains a failure.
+{
+  const read = readMcpView({
+    ok: true,
+    servers: [{ id: 'a', label: 'a', status: 'ready', toolCount: 2 }],
+    report: { ok: true, action: 'add', id: 'a', status: 'ready' },
+  })
+  assert.equal(read.ok, true)
+  assert.equal(read.list, true)
+  assert.deepEqual(read.servers.map(server => server.id), ['a'], 'the answer is the list — no re-read')
+  assert.equal(read.failure, '')
+  assert.deepEqual(read.report, { ok: true, action: 'add', id: 'a', status: 'ready', reason: '', message: '', toolCount: 0 })
+
+  // A rejected input answers a non-200 status with the same body, so the page
+  // reads the report instead of treating the status as a broken route.
+  const rejected = readMcpView({
+    ok: false,
+    servers: [],
+    report: { ok: false, action: 'add', reason: 'bad-url', message: 'URL must start with http:// or https://' },
+  })
+  assert.equal(rejected.ok, true, 'the list is still the answer')
+  assert.equal(rejected.failure, 'URL must start with http:// or https://', 'the Host words the failure')
+  assert.equal(rejected.report.ok, false)
+
+  // A refusal without a message still gets one plain sentence, never a code.
+  const silent = readMcpView({ ok: false, servers: [], report: { ok: false, action: 'start', reason: 'not-ready' } })
+  assert.equal(silent.failure, '')
+  assert.equal(reasonSentence('not-ready'), 'mcpNotReady')
+  assert.equal(reasonSentence('unknown-server'), 'mcpUnknownServer')
+  assert.equal(reasonSentence('tool-error'), 'mcpActionFailed')
+  assert.equal(reasonSentence('anything else'), 'mcpActionFailed')
+
+  // A refused field keeps the panel open to be corrected; a refused server was
+  // stored anyway, so its row carries the reason instead.
+  for (const reason of ['bad-input', 'bad-id', 'bad-transport', 'bad-command', 'bad-url']) {
+    assert.equal(inputRejection(reason), true, `${reason} is a form problem`)
+  }
+  for (const reason of ['store', 'spawn', 'connect', 'not-ready', 'unknown-server', '']) {
+    assert.equal(inputRejection(reason), false, `${reason} is not a form problem`)
+  }
+
+  // A read that returned no list is not a list: the page shows the error and a retry.
+  const broken = readMcpView({ ok: false, reason: 'error', message: 'api/edh.mcp answered 404' })
+  assert.equal(broken.ok, false)
+  assert.equal(broken.list, false)
+  assert.equal(broken.failure, 'api/edh.mcp answered 404')
+  assert.deepEqual(broken.servers, [])
+  for (const absent of [undefined, null, 'nope', {}]) {
+    assert.equal(readMcpView(absent).ok, false, `inert for ${JSON.stringify(absent)}`)
+  }
+
+  assert.deepEqual(
+    addServerBody({ label: 'fs', transport: 'stdio', command: 'npx', args: [] }),
+    { action: 'add', server: { label: 'fs', transport: 'stdio', command: 'npx', args: [] } },
+    'add nests the server, like the route reads it',
+  )
+  for (const action of MCP_ACTIONS.filter(value => value !== 'add')) {
+    assert.deepEqual(serverActionBody(action, 'fs'), { action, id: 'fs' })
+  }
+  assert.deepEqual(withoutKey({ fs: 'test', other: 'add' }, 'fs'), { other: 'add' })
+  assert.deepEqual(actionReport(undefined), undefined)
+  assert.deepEqual(actionReport({ ok: true }), {
+    ok: true,
+    action: '',
+    id: '',
+    status: '',
+    reason: '',
+    message: '',
+    toolCount: 0,
+  })
+  assert.equal(actionReport({ ok: true, toolCount: 12 }).toolCount, 12, 'a test reports what the server answered with')
+}
+
+console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh update: control and reload checks passed')
 console.log('edh switch: all checks passed')

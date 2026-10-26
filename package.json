@@ -1,6 +1,6 @@
 {
   "name": "@moreweb/edh",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Everything DeepSeek Harness",
   "type": "module",
@@ -11,6 +11,7 @@
     "./edit": "./edit.js",
     "./export": "./export.js",
     "./update": "./update.js",
+    "./mcp": "./mcp.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
@@ -21,6 +22,7 @@
     "edit.js",
     "export.js",
     "update.js",
+    "mcp.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

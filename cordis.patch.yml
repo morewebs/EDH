@@ -35,3 +35,10 @@
     - id: edh-update
       name: '@moreweb/edh/update'
       config: {}
+
+    # mcp — the MCP client. EDH keeps its own server list, speaks MCP from this
+    # half and registers the tools it discovers with the Harness, so a person
+    # adds a server in the UI instead of writing a Loader row into the profile.
+    - id: edh-mcp
+      name: '@moreweb/edh/mcp'
+      config: {}

@@ -51,6 +51,53 @@ window.__ModuleLoader__.load({
       offlineHint: 'No network: the published version could not be read.',
       dirtyHint: 'EDH has uncommitted changes, so nothing was changed.',
       errorHint: 'The update could not be applied. Open Plugins to check the EDH rows.',
+      mcpTab: 'MCP servers',
+      mcpLoading: 'Reading servers…',
+      mcpLoadFailed: 'The server list could not be read.',
+      mcpRetry: 'Retry',
+      mcpOff: 'MCP is off. Turn it on with the EDH switch.',
+      mcpEmpty: 'No MCP servers yet. Add one to give the model its tools.',
+      mcpAdd: 'Add server',
+      mcpAdding: 'Adding…',
+      mcpCancel: 'Cancel',
+      mcpTransport: 'Transport',
+      mcpBranchCommand: 'Command',
+      mcpBranchUrl: 'URL',
+      mcpName: 'Name',
+      mcpNamePlaceholder: 'Optional name',
+      mcpCommand: 'Command',
+      mcpCommandPlaceholder: 'npx',
+      mcpArgs: 'Arguments',
+      mcpArgsPlaceholder: '-y\n@modelcontextprotocol/server-filesystem\n.',
+      mcpEnv: 'Environment (optional)',
+      mcpEnvPlaceholder: 'API_TOKEN=…',
+      mcpUrl: 'URL',
+      mcpUrlPlaceholder: 'https://example.com/mcp',
+      mcpAuthorization: 'Authorization (optional)',
+      mcpAuthorizationPlaceholder: 'Bearer …',
+      mcpStateConnected: 'Connected',
+      mcpStateStarting: 'Starting',
+      mcpStateFailed: 'Failed',
+      mcpStateOff: 'Off',
+      mcpToolOne: '1 tool',
+      mcpTools: '{count} tools',
+      mcpTest: 'Test',
+      mcpTesting: 'Testing…',
+      mcpStart: 'Start',
+      mcpStarting: 'Starting…',
+      mcpStop: 'Stop',
+      mcpStopping: 'Stopping…',
+      mcpRemove: 'Remove',
+      mcpRemoving: 'Removing…',
+      mcpFailedGeneric: 'The last connection attempt failed. Test the server to see why.',
+      mcpTestOne: 'Test passed: 1 tool.',
+      mcpTestMany: 'Test passed: {count} tools.',
+      mcpActionFailed: 'That change did not save. Retry, and check the server command or URL.',
+      mcpCommandRequired: 'Enter the command that starts the server.',
+      mcpUrlInvalid: 'Enter the server URL, starting with http:// or https://.',
+      mcpEnvInvalid: 'Write environment lines as NAME=value, one per line.',
+      mcpNotReady: 'The server is not ready. Start it, then try again.',
+      mcpUnknownServer: 'That server is no longer in the list.',
     }
     const zh = {
       label: 'EDH',
@@ -86,6 +133,53 @@ window.__ModuleLoader__.load({
       offlineHint: '无网络：无法读取已发布版本。',
       dirtyHint: 'EDH 有未提交的改动，未做任何修改。',
       errorHint: '更新未能应用，请到「插件」页查看 EDH 对应行。',
+      mcpTab: 'MCP 服务器',
+      mcpLoading: '正在读取服务器…',
+      mcpLoadFailed: '无法读取服务器列表。',
+      mcpRetry: '重试',
+      mcpOff: 'MCP 已关闭，请用 EDH 开关打开。',
+      mcpEmpty: '还没有 MCP 服务器。添加一个，把它的工具交给模型。',
+      mcpAdd: '添加服务器',
+      mcpAdding: '正在添加…',
+      mcpCancel: '取消',
+      mcpTransport: '传输方式',
+      mcpBranchCommand: '命令',
+      mcpBranchUrl: 'URL',
+      mcpName: '名称',
+      mcpNamePlaceholder: '可选的名称',
+      mcpCommand: '命令',
+      mcpCommandPlaceholder: 'npx',
+      mcpArgs: '参数',
+      mcpArgsPlaceholder: '-y\n@modelcontextprotocol/server-filesystem\n.',
+      mcpEnv: '环境变量（可选）',
+      mcpEnvPlaceholder: 'API_TOKEN=…',
+      mcpUrl: 'URL',
+      mcpUrlPlaceholder: 'https://example.com/mcp',
+      mcpAuthorization: 'Authorization（可选）',
+      mcpAuthorizationPlaceholder: 'Bearer …',
+      mcpStateConnected: '已连接',
+      mcpStateStarting: '正在启动',
+      mcpStateFailed: '失败',
+      mcpStateOff: '已关闭',
+      mcpToolOne: '1 个工具',
+      mcpTools: '{count} 个工具',
+      mcpTest: '测试',
+      mcpTesting: '正在测试…',
+      mcpStart: '启动',
+      mcpStarting: '正在启动…',
+      mcpStop: '停止',
+      mcpStopping: '正在停止…',
+      mcpRemove: '移除',
+      mcpRemoving: '正在移除…',
+      mcpFailedGeneric: '上次连接失败。测试服务器可查看原因。',
+      mcpTestOne: '测试通过：1 个工具。',
+      mcpTestMany: '测试通过：{count} 个工具。',
+      mcpActionFailed: '改动未保存。请重试，并检查服务器命令或 URL。',
+      mcpCommandRequired: '请填写启动该服务器的命令。',
+      mcpUrlInvalid: '请填写以 http:// 或 https:// 开头的服务器 URL。',
+      mcpEnvInvalid: '环境变量每行写成 NAME=value。',
+      mcpNotReady: '服务器尚未就绪，请先启动再试。',
+      mcpUnknownServer: '该服务器已不在列表中。',
     }
 
     /**
@@ -121,6 +215,8 @@ window.__ModuleLoader__.load({
     const EXPORT_DEBUG_KEY = 'edh:export'
     /** Separate breadcrumb for the update action. */
     const UPDATE_DEBUG_KEY = 'edh:update'
+    /** Separate breadcrumb for the MCP server page. */
+    const MCP_DEBUG_KEY = 'edh:mcp'
 
     function writeBreadcrumb(key, payload) {
       try {
@@ -144,6 +240,10 @@ window.__ModuleLoader__.load({
 
     function updateWrite(payload) {
       writeBreadcrumb(UPDATE_DEBUG_KEY, payload)
+    }
+
+    function mcpWrite(payload) {
+      writeBreadcrumb(MCP_DEBUG_KEY, payload)
     }
 
     /** One error's text, whatever was thrown. */
@@ -1346,6 +1446,845 @@ window.__ModuleLoader__.load({
       return await response.json()
     }
 
+    // ---------------------------------------------------------------------
+    // MCP servers
+    //
+    // The Host half owns the server list, the MCP connections, and the tools
+    // they expose. The browser's job is the page in Settings where a person
+    // adds a server, sees whether it connected, and stops it — no Loader row,
+    // no profile edit, no Cordis config.
+    // ---------------------------------------------------------------------
+
+    /**
+     * The Host route that reads the server list (`GET`) and changes it (`POST`),
+     * in the document-relative form the browser resolves against its own base.
+     */
+    const MCP_ROUTE = 'api/edh.mcp'
+
+    /** The row that owns the route; the page is useless without it. */
+    const MCP_MODULE = '@moreweb/edh/mcp'
+
+    /**
+     * The Settings seat: a page inside the Plugins section, beside the shipped
+     * inventory tab. The section declares it as a root list slot whose
+     * `{ id, order, label }` entries become ordered tabs.
+     */
+    const MCP_TAB_SLOT = 'settings.plugins.tab'
+
+    /** Every action the route accepts besides reading. */
+    const MCP_ACTIONS = ['add', 'remove', 'test', 'start', 'stop']
+
+    /**
+     * The last failure the Host reported, in its own words.
+     * @param source - a server record or a route answer.
+     * @returns the sentence to show, or an empty string when nothing failed.
+     */
+    function failureText(source) {
+      if (source === null || typeof source !== 'object') return ''
+      for (const field of ['lastError', 'error', 'message', 'detail']) {
+        const value = source[field]
+        if (typeof value === 'string' && value.trim() !== '') return value.trim()
+        if (value !== null && typeof value === 'object' && typeof value.message === 'string' && value.message.trim() !== '') {
+          return value.message.trim()
+        }
+      }
+      return ''
+    }
+
+    /**
+     * One MCP server record, read without trusting the Host's shape.
+     *
+     * Only the fields the page renders are copied. A server record also carries
+     * keys and paths for its secrets — `hasToken` here is a boolean, and nothing
+     * secret survives this projection, so no response can echo a token into the
+     * DOM by accident.
+     * @param raw - one entry from a `servers` list.
+     * @returns the record, or `undefined` when it has no usable id.
+     */
+    function serverRecord(raw) {
+      if (raw === null || typeof raw !== 'object') return undefined
+      const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+      if (id === '') return undefined
+      const label = typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label.trim() : id
+      const count = Number(raw.toolCount)
+      return {
+        id,
+        label,
+        transport: raw.transport === 'http' ? 'http' : 'stdio',
+        enabled: raw.enabled !== false,
+        status: typeof raw.status === 'string' ? raw.status.trim().toLowerCase() : '',
+        toolCount: Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0,
+        hasToken: raw.hasToken === true,
+        failure: failureText(raw),
+      }
+    }
+
+    /**
+     * One action's outcome, read from the route's `report`.
+     *
+     * A rejected input answers a non-200 status with this same body, so the
+     * outcome is read here rather than from the HTTP status.
+     * @param value - the `report` field of a route answer.
+     * @returns the outcome, or `undefined` when the answer carries none.
+     */
+    function actionReport(value) {
+      if (value === null || typeof value !== 'object') return undefined
+      const count = Number(value.toolCount)
+      return {
+        ok: value.ok === true,
+        action: typeof value.action === 'string' ? value.action : '',
+        id: typeof value.id === 'string' ? value.id : '',
+        status: typeof value.status === 'string' ? value.status : '',
+        reason: typeof value.reason === 'string' ? value.reason : '',
+        message: typeof value.message === 'string' ? value.message.trim() : '',
+        toolCount: Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0,
+      }
+    }
+
+    /**
+     * The sentence for one refusal reason the Host names without a message.
+     * @param reason - `not-ready`, `unknown-server`, or any other code.
+     * @returns the dictionary key of the sentence to show.
+     */
+    function reasonSentence(reason) {
+      switch (reason) {
+        case 'not-ready': return 'mcpNotReady'
+        case 'unknown-server': return 'mcpUnknownServer'
+        default: return 'mcpActionFailed'
+      }
+    }
+
+    /**
+     * Whether one refusal was about what the form said rather than what the
+     * server did — the cases where the server was not stored, so the panel has
+     * to stay open for the person to correct it.
+     * @param reason - the report's `reason`.
+     */
+    function inputRejection(reason) {
+      return reason === 'bad-input'
+        || reason === 'bad-id'
+        || reason === 'bad-transport'
+        || reason === 'bad-command'
+        || reason === 'bad-url'
+    }
+
+    /**
+     * The view one route answer describes.
+     *
+     * A `GET` answers the list; a `POST` answers the same list plus a report for
+     * the action it ran, and the list in that answer is the one to adopt — the
+     * page never re-reads to find out what its own write did.
+     * @param payload - the route's parsed answer.
+     * @returns whether the answer carries a list, the servers, the action
+     *   report, and the sentence explaining anything that failed.
+     */
+    function readMcpView(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const list = Array.isArray(answer.servers)
+      const servers = []
+      for (const raw of list ? answer.servers : []) {
+        const record = serverRecord(raw)
+        if (record !== undefined) servers.push(record)
+      }
+      const report = actionReport(answer.report)
+      let failure = ''
+      if (report !== undefined && report.ok !== true && report.message !== '') failure = report.message
+      if (failure === '' && answer.ok === false) failure = failureText(answer)
+      return { ok: list || answer.ok === true, list, servers, report, failure }
+    }
+
+    /**
+     * The connection state one server record is in.
+     *
+     * The page names four states and no more, so the Host's vocabulary is folded
+     * into them; a row whose switch is off reads Off whatever the connection
+     * says, because nothing is meant to be running behind it.
+     * @param server - a `serverRecord` result.
+     * @returns `connected`, `starting`, `failed`, or `off`.
+     */
+    function serverState(server) {
+      if (server === null || typeof server !== 'object') return 'off'
+      if (server.enabled === false) return 'off'
+      switch (server.status) {
+        case 'connected':
+        case 'ready':
+        case 'running':
+        case 'online':
+          return 'connected'
+        case 'failed':
+        case 'error':
+        case 'crashed':
+          return 'failed'
+        case 'off':
+        case 'stopped':
+        case 'disabled':
+        case 'idle':
+          return 'off'
+        case 'starting':
+        case 'connecting':
+        case 'pending':
+        case 'restarting':
+          return 'starting'
+        default:
+          // An unknown status is not a claim of health: a failure line wins,
+          // and otherwise the row says it is still coming up.
+          return typeof server.failure === 'string' && server.failure !== '' ? 'failed' : 'starting'
+      }
+    }
+
+    /**
+     * The dictionary key of one state's one word.
+     * @param state - a `serverState` result.
+     */
+    function stateLabel(state) {
+      switch (state) {
+        case 'connected': return 'mcpStateConnected'
+        case 'starting': return 'mcpStateStarting'
+        case 'failed': return 'mcpStateFailed'
+        default: return 'mcpStateOff'
+      }
+    }
+
+    /**
+     * The colour one state paints its dot: `ok`, `busy`, `bad`, or `off`.
+     * @param state - a `serverState` result.
+     */
+    function stateTone(state) {
+      switch (state) {
+        case 'connected': return 'ok'
+        case 'starting': return 'busy'
+        case 'failed': return 'bad'
+        default: return 'off'
+      }
+    }
+
+    /** A blank add form: the Command branch, which is the common case. */
+    function emptyServerForm() {
+      return { branch: 'command', label: '', command: '', args: '', env: '', url: '', authorization: '' }
+    }
+
+    /**
+     * One text field's lines, with blank ones dropped.
+     * @param text - a textarea's value.
+     */
+    function splitLines(text) {
+      return String(text ?? '').split(/\r?\n/u).map(line => line.trim()).filter(line => line !== '')
+    }
+
+    /**
+     * Environment lines folded into one map.
+     * @param text - one `NAME=value` per line.
+     * @returns the map, or `{ ok: false }` when a line is not a pair.
+     */
+    function environmentMap(text) {
+      const env = {}
+      for (const line of splitLines(text)) {
+        const at = line.indexOf('=')
+        if (at <= 0) return { ok: false }
+        const name = line.slice(0, at).trim()
+        if (name === '') return { ok: false }
+        env[name] = line.slice(at + 1).trim()
+      }
+      return { ok: true, env }
+    }
+
+    /** An absolute http(s) URL, without depending on the URL global. */
+    const HTTP_URL = /^https?:\/\/[^\s/?#]+(?:[/?#][^\s]*)?$/iu
+
+    /**
+     * Whether one string is an absolute http(s) URL.
+     * @param text - the URL field's value.
+     */
+    function isHttpUrl(text) {
+      return typeof text === 'string' && HTTP_URL.test(text.trim())
+    }
+
+    /**
+     * The name a server takes when the person left the field empty: the command
+     * as typed without its script suffix, or the URL's host.
+     * @param draft - the transport plus the field it names.
+     */
+    function defaultServerName(draft) {
+      if (draft.transport === 'http') {
+        const match = /^https?:\/\/([^\s/?#]+)/iu.exec(String(draft.url ?? ''))
+        return match === null ? String(draft.url ?? '') : match[1]
+      }
+      const parts = String(draft.command ?? '').split(/[\\/]+/u)
+      const last = parts[parts.length - 1] ?? ''
+      return last.replace(/\.(?:cmd|exe|bat|ps1)$/iu, '')
+    }
+
+    /**
+     * Turn the add form into the server the Host should create.
+     *
+     * The two branches never share fields: a Command server has no URL, a URL
+     * server has no command, and only the URL branch can carry a credential.
+     * @param form - the add form's current values.
+     * @returns the server to add, or the field and sentence that block it.
+     */
+    function validateServer(form) {
+      const draft = form !== null && typeof form === 'object' ? form : {}
+      const typed = typeof draft.label === 'string' ? draft.label.trim() : ''
+      if (draft.branch === 'url') {
+        const url = typeof draft.url === 'string' ? draft.url.trim() : ''
+        if (!isHttpUrl(url)) return { ok: false, field: 'url', message: 'mcpUrlInvalid' }
+        const authorization = typeof draft.authorization === 'string' ? draft.authorization.trim() : ''
+        return {
+          ok: true,
+          server: {
+            label: typed === '' ? defaultServerName({ transport: 'http', url }) : typed,
+            transport: 'http',
+            url,
+            ...(authorization === '' ? {} : { authorization }),
+          },
+        }
+      }
+      const command = typeof draft.command === 'string' ? draft.command.trim() : ''
+      if (command === '') return { ok: false, field: 'command', message: 'mcpCommandRequired' }
+      const environment = environmentMap(draft.env)
+      if (!environment.ok) return { ok: false, field: 'env', message: 'mcpEnvInvalid' }
+      const env = environment.env
+      return {
+        ok: true,
+        server: {
+          label: typed === '' ? defaultServerName({ transport: 'stdio', command }) : typed,
+          transport: 'stdio',
+          command,
+          args: splitLines(draft.args),
+          ...(Object.keys(env).length === 0 ? {} : { env }),
+        },
+      }
+    }
+
+    /**
+     * The body that adds one server.
+     * @param server - a `validateServer` result's server.
+     */
+    function addServerBody(server) {
+      return { action: 'add', server }
+    }
+
+    /**
+     * The body that names one stored server and what to do with it.
+     * @param action - one of `MCP_ACTIONS` besides `add`.
+     * @param id - the server's id.
+     */
+    function serverActionBody(action, id) {
+      return { action, id }
+    }
+
+    /**
+     * One request on the MCP route.
+     *
+     * The Host answers a rejected input with a non-200 status and the same JSON
+     * body it would answer 200 with, so the body decides — only a reply without
+     * one is a route failure.
+     * @param method - `GET` to read, `POST` to change.
+     * @param body - the request body, if the method takes one.
+     * @returns the parsed answer.
+     */
+    async function requestMcp(method, body) {
+      const response = await fetch(MCP_ROUTE, {
+        method,
+        headers: body === undefined
+          ? { accept: 'application/json' }
+          : { accept: 'application/json', 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+      if (response === null || response === undefined) throw new Error(`${MCP_ROUTE} answered nothing`)
+      let answer
+      try {
+        answer = await response.json()
+      } catch (error) {
+        answer = undefined
+      }
+      if (answer !== null && typeof answer === 'object') return answer
+      throw new Error(`${MCP_ROUTE} answered ${response.status}`)
+    }
+
+    /** The busy map without one entry, so a finished row stops saying "…". */
+    function withoutKey(map, key) {
+      const next = { ...map }
+      delete next[key]
+      return next
+    }
+
+    /**
+     * The server page: one row per server, one inline panel to add another.
+     *
+     * It reads the `mcp` row's own enablement rather than the aggregate, because
+     * the row is what mounts the route behind it — before the restart that
+     * mounts the row there would be a page in front of nothing.
+     * @param t - the dictionary's translate function.
+     * @param controller - the switch controller holding the row states.
+     */
+    function createMcpPage(t, controller) {
+      const useMcpEnabled = createFeatureHook(controller, MCP_MODULE, rowEnabled)
+
+      return function EdhMcpPage() {
+        const enabled = useMcpEnabled()
+        const [view, setView] = React.useState({ status: 'loading', servers: [], failure: '' })
+        const [attempt, setAttempt] = React.useState(0)
+        const [panel, setPanel] = React.useState(false)
+        const [form, setForm] = React.useState(emptyServerForm)
+        const [formError, setFormError] = React.useState({ field: '', message: '' })
+        const errorId = React.useId()
+        const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
+        const [busy, setBusy] = React.useState({})
+        const firstField = React.useRef(null)
+
+        // Read once on mount and once per retry: the page never polls, because
+        // every change answers the new list itself.
+        React.useEffect(() => {
+          if (!enabled) return undefined
+          let current = true
+          setView(previous => ({ status: 'loading', servers: previous.servers, failure: '' }))
+          void (async () => {
+            let answer
+            try {
+              answer = await requestMcp('GET')
+            } catch (error) {
+              if (!current) return
+              mcpWrite({ phase: 'failed', action: 'read', message: messageOf(error) })
+              setView({ status: 'error', servers: [], failure: messageOf(error) })
+              return
+            }
+            if (!current) return
+            const read = readMcpView(answer)
+            if (!read.ok) {
+              mcpWrite({ phase: 'failed', action: 'read', reason: String(answer?.reason ?? 'error') })
+              setView({ status: 'error', servers: read.servers, failure: read.failure })
+              return
+            }
+            mcpWrite({ phase: 'loaded', count: read.servers.length })
+            setView({ status: 'ready', servers: read.servers, failure: '' })
+          })()
+          return () => {
+            current = false
+          }
+        }, [enabled, attempt])
+
+        const closePanel = React.useCallback(() => {
+          setPanel(false)
+          setForm(emptyServerForm())
+          setFormError({ field: '', message: '' })
+        }, [])
+
+        // Escape closes the panel wherever the focus is inside the page.
+        React.useEffect(() => {
+          if (!panel) return undefined
+          const onKey = event => {
+            if (event.key === 'Escape') closePanel()
+          }
+          document.addEventListener('keydown', onKey)
+          return () => document.removeEventListener('keydown', onKey)
+        }, [panel, closePanel])
+
+        // The panel opens with the cursor in the field the branch needs.
+        React.useEffect(() => {
+          if (!panel) return
+          const field = firstField.current
+          if (field !== null) field.focus()
+        }, [panel])
+
+        /**
+         * One change on the route: the answer's list replaces the one on screen,
+         * and a failure keeps the last good list and says what happened.
+         * @returns the adopted view and whether the Host accepted the action, or
+         *   `undefined` when no answer arrived at all.
+         */
+        const submit = React.useCallback(async (action, key, body) => {
+          setBusy(previous => ({ ...previous, [key]: action }))
+          setNotice({ text: '', tone: 'bad' })
+          let answer
+          try {
+            answer = await requestMcp('POST', body)
+          } catch (error) {
+            mcpWrite({ phase: 'failed', action, message: messageOf(error) })
+            setBusy(previous => withoutKey(previous, key))
+            setNotice({ text: messageOf(error), tone: 'bad' })
+            return undefined
+          }
+          setBusy(previous => withoutKey(previous, key))
+          const read = readMcpView(answer)
+          if (read.list) setView({ status: 'ready', servers: read.servers, failure: '' })
+          const rejected = read.report !== undefined && read.report.ok !== true
+          if (read.failure !== '' || rejected) {
+            const sentence = read.failure !== '' ? read.failure : t(reasonSentence(read.report.reason))
+            mcpWrite({ phase: 'failed', action, reason: String(read.report?.reason ?? 'error'), message: sentence })
+            setNotice({ text: sentence, tone: 'bad' })
+            return { read, ok: false }
+          }
+          return { read, ok: true }
+        }, [t])
+
+        const onAdd = React.useCallback(async () => {
+          const checked = validateServer(form)
+          if (!checked.ok) {
+            setFormError({ field: checked.field, message: checked.message })
+            return
+          }
+          setFormError({ field: '', message: '' })
+          const done = await submit('add', 'add', addServerBody(checked.server))
+          if (done === undefined) return
+          if (done.ok) {
+            mcpWrite({ phase: 'added', label: checked.server.label, transport: checked.server.transport })
+            closePanel()
+            return
+          }
+          // A refused field is the panel's to fix. Anything else means the
+          // server was stored and its row now carries the reason, so the panel
+          // gets out of the way.
+          if (!inputRejection(done.read.report?.reason ?? '')) closePanel()
+        }, [form, submit, closePanel])
+
+        const onTest = React.useCallback(async id => {
+          const done = await submit('test', id, serverActionBody('test', id))
+          if (done === undefined) return
+          const server = done.read.servers.find(candidate => candidate.id === id)
+          const tools = done.read.report === undefined
+            ? (server === undefined ? 0 : server.toolCount)
+            : done.read.report.toolCount
+          mcpWrite({
+            phase: 'tested',
+            id,
+            state: server === undefined ? '' : serverState(server),
+            tools,
+            ok: done.ok,
+          })
+          // A failed test already has its sentence on screen; only a pass gets one here.
+          if (done.ok) setNotice({ text: tools === 1 ? t('mcpTestOne') : t('mcpTestMany', { count: tools }), tone: 'ok' })
+        }, [submit, t])
+
+        const onRemove = React.useCallback(async id => {
+          const done = await submit('remove', id, serverActionBody('remove', id))
+          if (done !== undefined && done.ok) mcpWrite({ phase: 'removed', id })
+        }, [submit])
+
+        const onToggle = React.useCallback(async server => {
+          // A failed server offers Start: the way back is another attempt.
+          const state = serverState(server)
+          const action = state === 'off' || state === 'failed' ? 'start' : 'stop'
+          const done = await submit(action, server.id, serverActionBody(action, server.id))
+          if (done !== undefined && done.ok) mcpWrite({ phase: 'loaded', via: action, id: server.id })
+        }, [submit])
+
+        if (!enabled) return h('p', { className: 'edh-mcp-status' }, t('mcpOff'))
+
+        const update = (field, value) => {
+          setForm(previous => ({ ...previous, [field]: value }))
+          setFormError({ field: '', message: '' })
+        }
+
+        /** The attributes that tie one field to the sentence that blocks it. */
+        const blocked = field => (formError.field === field
+          ? { 'aria-invalid': true, 'aria-describedby': errorId }
+          : {})
+
+        const fieldRow = (name, label, control) => h('label', { key: name, className: 'edh-mcp-field' },
+          h('span', { className: 'edh-mcp-fieldLabel' }, label),
+          control,
+        )
+
+        const branchOption = (value, label) => h('button', {
+          key: value,
+          type: 'button',
+          'aria-pressed': form.branch === value,
+          className: 'edh-mcp-segOption',
+          onClick: () => {
+            update('branch', value)
+          },
+        }, label)
+
+        const adding = busy.add === 'add'
+
+        const panelNode = h('form', {
+          className: 'edh-mcp-panel',
+          'aria-label': t('mcpAdd'),
+          onSubmit: event => {
+            event.preventDefault()
+            void onAdd()
+          },
+        },
+          h('div', { className: 'edh-mcp-seg', role: 'group', 'aria-label': t('mcpTransport') },
+            branchOption('command', t('mcpBranchCommand')),
+            branchOption('url', t('mcpBranchUrl')),
+          ),
+          fieldRow('name', t('mcpName'), h('input', {
+            type: 'text',
+            className: 'edh-mcp-input',
+            value: form.label,
+            placeholder: t('mcpNamePlaceholder'),
+            spellCheck: false,
+            onChange: event => {
+              update('label', event.target.value)
+            },
+          })),
+          form.branch === 'url'
+            ? [
+              fieldRow('url', t('mcpUrl'), h('input', {
+                ref: firstField,
+                type: 'url',
+                className: 'edh-mcp-input',
+                value: form.url,
+                placeholder: t('mcpUrlPlaceholder'),
+                spellCheck: false,
+                autoComplete: 'off',
+                ...blocked('url'),
+                onChange: event => {
+                  update('url', event.target.value)
+                },
+              })),
+              fieldRow('authorization', t('mcpAuthorization'), h('input', {
+                type: 'password',
+                className: 'edh-mcp-input',
+                value: form.authorization,
+                placeholder: t('mcpAuthorizationPlaceholder'),
+                spellCheck: false,
+                autoComplete: 'off',
+                onChange: event => {
+                  update('authorization', event.target.value)
+                },
+              })),
+            ]
+            : [
+              fieldRow('command', t('mcpCommand'), h('input', {
+                ref: firstField,
+                type: 'text',
+                className: 'edh-mcp-input',
+                value: form.command,
+                placeholder: t('mcpCommandPlaceholder'),
+                spellCheck: false,
+                autoComplete: 'off',
+                ...blocked('command'),
+                onChange: event => {
+                  update('command', event.target.value)
+                },
+              })),
+              fieldRow('args', t('mcpArgs'), h('textarea', {
+                className: 'edh-mcp-input edh-mcp-textarea',
+                value: form.args,
+                rows: 3,
+                placeholder: t('mcpArgsPlaceholder'),
+                spellCheck: false,
+                onChange: event => {
+                  update('args', event.target.value)
+                },
+              })),
+              fieldRow('env', t('mcpEnv'), h('textarea', {
+                className: 'edh-mcp-input edh-mcp-textarea',
+                value: form.env,
+                rows: 2,
+                placeholder: t('mcpEnvPlaceholder'),
+                spellCheck: false,
+                autoComplete: 'off',
+                ...blocked('env'),
+                onChange: event => {
+                  update('env', event.target.value)
+                },
+              })),
+            ],
+          formError.message === ''
+            ? null
+            : h('p', { className: 'edh-mcp-failure', role: 'alert', id: errorId }, t(formError.message)),
+          h('div', { className: 'edh-mcp-panelActions' },
+            h('button', {
+              type: 'submit',
+              className: 'edh-mcp-button edh-mcp-button-primary',
+              disabled: adding,
+              'aria-busy': adding || undefined,
+            }, adding ? t('mcpAdding') : t('mcpAdd')),
+            h('button', {
+              type: 'button',
+              className: 'edh-mcp-button',
+              disabled: adding,
+              onClick: closePanel,
+            }, t('mcpCancel')),
+          ),
+        )
+
+        const addButton = h('button', {
+          type: 'button',
+          className: 'edh-mcp-button edh-mcp-button-primary',
+          onClick: () => {
+            setPanel(true)
+          },
+        }, t('mcpAdd'))
+
+        const rowFor = server => {
+          const state = serverState(server)
+          const action = busy[server.id]
+          const startable = state === 'off' || state === 'failed'
+          const failure = server.failure !== ''
+            ? server.failure
+            : state === 'failed' ? t('mcpFailedGeneric') : ''
+          return h('li', { key: server.id, className: 'edh-mcp-row', 'data-state': state },
+            h('div', { className: 'edh-mcp-ident' },
+              h('span', { className: 'edh-mcp-name', title: server.id }, server.label),
+              h('span', { className: 'edh-mcp-badge' }, server.transport),
+            ),
+            h('div', { className: 'edh-mcp-state' },
+              h('span', {
+                className: 'edh-mcp-dot',
+                'data-tone': stateTone(state),
+                'aria-hidden': true,
+              }),
+              h('span', null, t(stateLabel(state))),
+            ),
+            h('div', {
+              className: 'edh-mcp-count',
+              title: server.toolCount === 1 ? t('mcpToolOne') : t('mcpTools', { count: server.toolCount }),
+            }, String(server.toolCount)),
+            h('div', { className: 'edh-mcp-actions' },
+              h('button', {
+                type: 'button',
+                className: 'edh-mcp-button edh-mcp-button-sm',
+                disabled: action !== undefined,
+                'aria-busy': action === 'test' || undefined,
+                onClick: () => {
+                  void onTest(server.id)
+                },
+              }, action === 'test' ? t('mcpTesting') : t('mcpTest')),
+              h('button', {
+                type: 'button',
+                className: 'edh-mcp-button edh-mcp-button-sm',
+                disabled: action !== undefined,
+                'aria-busy': action === 'start' || action === 'stop' || undefined,
+                onClick: () => {
+                  void onToggle(server)
+                },
+              }, startable
+                ? (action === 'start' ? t('mcpStarting') : t('mcpStart'))
+                : (action === 'stop' ? t('mcpStopping') : t('mcpStop'))),
+              h('button', {
+                type: 'button',
+                className: 'edh-mcp-button edh-mcp-button-sm',
+                'data-danger': true,
+                disabled: action !== undefined,
+                onClick: () => {
+                  void onRemove(server.id)
+                },
+              }, action === 'remove' ? t('mcpRemoving') : t('mcpRemove')),
+            ),
+            failure === '' ? null : h('p', { className: 'edh-mcp-failure' }, failure),
+          )
+        }
+
+        const servers = view.servers
+
+        return h('div', { className: 'edh-mcp' },
+          notice.text === '' ? null : h('p', {
+            className: 'edh-mcp-notice',
+            'data-tone': notice.tone,
+            role: notice.tone === 'bad' ? 'alert' : 'status',
+          }, notice.text),
+          view.status === 'loading'
+            ? h('p', { className: 'edh-mcp-status', role: 'status' }, t('mcpLoading'))
+            : null,
+          view.status === 'error'
+            ? h('div', { className: 'edh-mcp-error', role: 'alert' },
+              h('p', { className: 'edh-mcp-status' }, t('mcpLoadFailed')),
+              view.failure === '' ? null : h('p', { className: 'edh-mcp-failure' }, view.failure),
+              h('button', {
+                type: 'button',
+                className: 'edh-mcp-button edh-mcp-button-primary',
+                onClick: () => {
+                  setAttempt(value => value + 1)
+                },
+              }, t('mcpRetry')),
+            )
+            : null,
+          view.status === 'ready' && panel ? panelNode : null,
+          view.status === 'ready' && !panel && servers.length === 0
+            ? h('div', { className: 'edh-mcp-empty' },
+              h('p', null, t('mcpEmpty')),
+              addButton,
+            )
+            : null,
+          view.status === 'ready' && !panel && servers.length > 0
+            ? h('div', { className: 'edh-mcp-head' }, addButton)
+            : null,
+          servers.length === 0
+            ? null
+            : h('ul', { className: 'edh-mcp-list' }, servers.map(server => rowFor(server))),
+        )
+      }
+    }
+
+    /**
+     * The page's stylesheet.
+     *
+     * Class names are ours and every rule is built from the shipped Settings and
+     * primitive styles — the same card fill, hairline, focus ring, and small
+     * button as the surfaces it sits between.
+     */
+    const MCP_CSS = [
+      '.edh-mcp{color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;max-width:760px;display:flex}',
+      '.edh-mcp-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
+      '.edh-mcp-error,.edh-mcp-empty{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
+      '.edh-mcp-empty p{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
+      '.edh-mcp-head{justify-content:flex-end;align-items:center;display:flex}',
+      '.edh-mcp-list{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}',
+      '.edh-mcp-row{border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:minmax(0,1fr) max-content 44px max-content;align-items:center;gap:4px 16px;padding:10px 0;display:grid}',
+      '.edh-mcp-ident{align-items:center;gap:8px;min-width:0;display:flex}',
+      '.edh-mcp-name{text-overflow:ellipsis;white-space:nowrap;overflow:hidden;font-size:14px;line-height:22px}',
+      '.edh-mcp-badge{color:var(--dsw-alias-label-tertiary);border:.5px solid var(--dsw-alias-border-l3);border-radius:999px;flex:none;padding:0 6px;font-size:11px;line-height:18px}',
+      '.edh-mcp-state{color:var(--dsw-alias-label-secondary);align-items:center;gap:6px;white-space:nowrap;display:flex;font-size:12px;line-height:18px}',
+      '.edh-mcp-dot{border-radius:50%;flex:none;background:currentColor;width:6px;height:6px;display:inline-block}',
+      '.edh-mcp-dot[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-mcp-dot[data-tone=busy]{color:var(--dsw-alias-state-warn-primary)}',
+      '.edh-mcp-dot[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-mcp-dot[data-tone=off]{color:var(--dsw-alias-state-idle-primary)}',
+      '.edh-mcp-count{color:var(--dsw-alias-label-secondary);text-align:right;font-size:13px;line-height:20px;font-variant-numeric:tabular-nums}',
+      '.edh-mcp-actions{justify-content:flex-end;align-items:center;gap:2px;display:flex}',
+      '.edh-mcp-button{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);justify-content:center;align-items:center;gap:4px;height:28px;padding:0 10px;font:inherit;font-size:12px;line-height:18px;white-space:nowrap;display:inline-flex}',
+      '.edh-mcp-button-sm{height:24px;padding:0 8px}',
+      '.edh-mcp-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-mcp-button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.edh-mcp-button:disabled{cursor:not-allowed;opacity:.4}',
+      '.edh-mcp-button[data-danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}',
+      '.edh-mcp-button-primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}',
+      '.edh-mcp-button-primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.edh-mcp-failure{color:var(--dsw-alias-state-error-primary);grid-column:1/-1;margin:0;font-size:12px;line-height:18px}',
+      '.edh-mcp-notice{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-mcp-notice[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-mcp-panel{box-sizing:border-box;background:var(--dsw-alias-settings-card-fill);border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);flex-direction:column;gap:10px;padding:14px;display:flex}',
+      '.edh-mcp-seg{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-sm);align-self:flex-start;align-items:center;gap:2px;padding:2px;display:inline-flex}',
+      '.edh-mcp-segOption{color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-xs);height:24px;padding:0 10px;font:inherit;font-size:12px;line-height:18px}',
+      '.edh-mcp-segOption[aria-pressed=true]{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1)}',
+      '.edh-mcp-field{flex-direction:column;gap:4px;display:flex}',
+      '.edh-mcp-fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
+      '.edh-mcp-input{box-sizing:border-box;width:100%;min-height:28px;margin:0;padding:3px 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);outline:none;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px}',
+      '.edh-mcp-input::placeholder{color:var(--dsw-alias-label-dimmed)}',
+      '.edh-mcp-textarea{resize:vertical;min-height:56px}',
+      '.edh-mcp-panelActions{gap:8px;display:flex}',
+      '.edh-mcp :is(button,input,textarea):focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+      '@media (prefers-reduced-motion:no-preference){',
+      '.edh-mcp-panel{animation:edh-mcp-enter 120ms ease-out}',
+      '@keyframes edh-mcp-enter{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}',
+      '}',
+    ].join('')
+
+    /** Install the MCP page stylesheet once and take it back out on dispose. */
+    function installMcpStyles() {
+      if (typeof document === 'undefined') return () => {}
+      const selector = 'style[data-edh-css="mcp"]'
+      if (document.querySelector(selector) === null) {
+        const tag = document.createElement('style')
+        tag.dataset.edhCss = 'mcp'
+        tag.dataset.plugin = '@moreweb/edh'
+        tag.textContent = MCP_CSS
+        document.head.appendChild(tag)
+        return () => {
+          if (tag.parentNode !== null) tag.parentNode.removeChild(tag)
+        }
+      }
+      return () => {
+        const existing = document.querySelector(selector)
+        if (existing !== null && existing.parentNode !== null) existing.parentNode.removeChild(existing)
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -1430,6 +2369,28 @@ window.__ModuleLoader__.load({
         }
       })
 
+      // mcp — the server page in the Settings Plugins section, as a tab beside
+      // the shipped inventory. The row gates the page's data surface: with the
+      // row off the tab stays (a tab that vanishes would renumber the section
+      // under the person's cursor) and says one line instead of reading a route
+      // that is no longer mounted.
+      const McpPage = createMcpPage(t, controller)
+      ctx.effect(() => installMcpStyles(), 'edh: mcp styles')
+      ctx.slots.inject(MCP_TAB_SLOT, () => {
+        try {
+          return ctx.slots.register({
+            name: MCP_TAB_SLOT,
+            id: 'mcp',
+            order: 20,
+            locale: NS,
+            label: () => t('mcpTab'),
+          }, McpPage)
+        } catch (error) {
+          mcpWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+          throw error
+        }
+      })
+
       // The reload face is optional: without `modules` the control still checks
       // and applies, it just cannot replace the browser half and says so.
       ctx.inject(['modules'], scope => {
@@ -1502,14 +2463,37 @@ window.__ModuleLoader__.load({
       revisionOfFrame,
       eventFrames,
       moduleRevision,
+      failureText,
+      serverRecord,
+      actionReport,
+      reasonSentence,
+      inputRejection,
+      readMcpView,
+      serverState,
+      stateLabel,
+      stateTone,
+      emptyServerForm,
+      splitLines,
+      environmentMap,
+      isHttpUrl,
+      defaultServerName,
+      validateServer,
+      addServerBody,
+      serverActionBody,
+      withoutKey,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,
       UPDATE_MODULE,
+      MCP_MODULE,
       PACKAGE_NAME,
       UPDATE_ROUTE,
       EVENTS_ROUTE,
+      MCP_ROUTE,
+      MCP_TAB_SLOT,
+      MCP_ACTIONS,
       UPDATE_DEBUG_KEY,
+      MCP_DEBUG_KEY,
     }
 
     return exports

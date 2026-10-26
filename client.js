@@ -98,6 +98,13 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: 'Write environment lines as NAME=value, one per line.',
       mcpNotReady: 'The server is not ready. Start it, then try again.',
       mcpUnknownServer: 'That server is no longer in the list.',
+      mcpReload: 'Reload',
+      mcpReloading: 'Reloading…',
+      mcpReloaded: 'Reloaded',
+      mcpReloadedStale: 'Interface reloaded. Restart to load the new Host half.',
+      mcpReloadNoRevision: 'Reload failed. The Host did not offer a new revision.',
+      mcpReloadFailed: 'Reload failed. The interface could not be reloaded.',
+      mcpReloadTitle: 'Load the newest EDH interface without restarting the app.',
     }
     const zh = {
       label: 'EDH',
@@ -180,6 +187,13 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: '环境变量每行写成 NAME=value。',
       mcpNotReady: '服务器尚未就绪，请先启动再试。',
       mcpUnknownServer: '该服务器已不在列表中。',
+      mcpReload: '重新载入',
+      mcpReloading: '正在重新载入…',
+      mcpReloaded: '已重新载入',
+      mcpReloadedStale: '界面已重新载入。请重启以加载新的宿主部分。',
+      mcpReloadNoRevision: '重新载入失败。宿主没有提供新的版本。',
+      mcpReloadFailed: '重新载入失败。界面无法重新载入。',
+      mcpReloadTitle: '无需重启应用即可加载最新的 EDH 界面。',
     }
 
     /**
@@ -1287,12 +1301,16 @@ window.__ModuleLoader__.load({
      * Replace this bundle's browser half in place.
      *
      * The shipped HMR client makes the same call when it sees a `rebuilt` frame;
-     * this one makes the click deterministic instead of a race with it.
+     * this one makes the click deterministic instead of a race with it. Two
+     * surfaces ask for it — the update control after an applied update, and the
+     * MCP page's own Reload button — so each passes the breadcrumb writer of the
+     * surface the person is looking at.
      * @param modules - the client module system, from its own optional scope.
+     * @param log - which breadcrumb writer records a failed replacement.
      * @returns `replaced`, `absent` (no module system on this page), `stale` (the
      * Host published no new revision) or `failed` (the replacement threw).
      */
-    async function reloadBrowserHalf(modules) {
+    async function reloadBrowserHalf(modules, log = updateWrite) {
       const entries = modules === null || modules === undefined ? undefined : modules.entries
       if (entries === undefined || entries === null || typeof entries.reload !== 'function') return 'absent'
       const rev = await nextRevision(PACKAGE_NAME, moduleRevision(modules, PACKAGE_NAME))
@@ -1301,7 +1319,7 @@ window.__ModuleLoader__.load({
         await entries.reload(PACKAGE_NAME, rev)
         return 'replaced'
       } catch (error) {
-        updateWrite({ phase: 'reload-failed', rev, message: messageOf(error) })
+        log({ phase: 'reload-failed', rev, message: messageOf(error) })
         return 'failed'
       }
     }
@@ -1473,6 +1491,9 @@ window.__ModuleLoader__.load({
 
     /** Every action the route accepts besides reading. */
     const MCP_ACTIONS = ['add', 'remove', 'test', 'start', 'stop']
+
+    /** How long a reload confirmation stays before it clears itself. */
+    const RELOAD_NOTE_MS = 6000
 
     /**
      * The last failure the Host reported, in its own words.
@@ -1810,15 +1831,134 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The server page: one row per server, one inline panel to add another.
+     * Whether the page may offer the Reload button.
+     *
+     * Reload replaces this bundle through the client module system, which is an
+     * optional service here: a page that never got it has nothing to click, and a
+     * page whose MCP row is off is showing a note rather than a working route.
+     * @param enabled - whether the MCP row is loaded and enabled.
+     * @param reload - the reload face, when the page was given one.
+     */
+    function reloadAvailable(enabled, reload) {
+      return enabled === true && typeof reload === 'function'
+    }
+
+    /**
+     * Whether the Host half on disk is newer than the one this process loaded.
+     *
+     * `installed` is the version the Host is running; `onDisk` is what a restart
+     * would read. They differ whenever an update moved a Host module, and only the
+     * update route knows — a browser half cannot tell from its own bundle whether
+     * the code behind it changed. An unreadable or refusing answer is `known:
+     * false`, never a claim that a restart is needed.
+     * @param answer - a `GET api/edh.update` answer.
+     * @returns both versions, whether they were readable, and whether they differ.
+     */
+    function hostStaleness(answer) {
+      const value = answer !== null && typeof answer === 'object' ? answer : {}
+      const installed = typeof value.installed === 'string' ? value.installed.trim() : ''
+      const onDisk = typeof value.onDisk === 'string' ? value.onDisk.trim() : ''
+      const known = value.ok === true && installed !== '' && onDisk !== ''
+      return { known, installed, onDisk, stale: known && installed !== onDisk }
+    }
+
+    /**
+     * The state one reload attempt leaves.
+     *
+     * A replaced browser half is a success even when the Host half behind it is
+     * stale, but it is not an update: when the two versions differ the page says a
+     * restart is still owed instead of claiming the change is complete.
+     * @param outcome - `reloadBrowserHalf`'s answer.
+     * @param staleness - a `hostStaleness` result.
+     */
+    function reloadOutcome(outcome, staleness) {
+      if (outcome === 'replaced') {
+        const stale = staleness !== null && typeof staleness === 'object' && staleness.stale === true
+        return { status: stale ? 'needs-restart' : 'done', reason: '' }
+      }
+      return { status: 'failed', reason: outcome === 'stale' ? 'revision' : 'reload' }
+    }
+
+    /**
+     * The label, note, and tone one reload state shows.
+     *
+     * Kept pure so the Node test can pin the copy the control actually shows
+     * instead of reading it back out of a rendered element.
+     * @param state - the reload control's current state.
+     * @param t - the dictionary's translate function.
+     * @returns the visible label, the note beside it, and the note's tone.
+     */
+    function reloadText(state, t) {
+      const status = state !== null && typeof state === 'object' ? state.status : undefined
+      const reason = state !== null && typeof state === 'object' ? state.reason : undefined
+      switch (status) {
+        case 'reloading':
+          return { label: t('mcpReloading'), note: '', tone: '' }
+        case 'done':
+          return { label: t('mcpReload'), note: t('mcpReloaded'), tone: 'ok' }
+        case 'needs-restart':
+          return { label: t('mcpReload'), note: t('mcpReloadedStale'), tone: 'warn' }
+        case 'failed':
+          return {
+            label: t('mcpReload'),
+            note: t(reason === 'revision' ? 'mcpReloadNoRevision' : 'mcpReloadFailed'),
+            tone: 'bad',
+          }
+        default:
+          return { label: t('mcpReload'), note: '', tone: '' }
+      }
+    }
+
+    /**
+     * One reload attempt: ask what the Host half is, replace the browser half
+     * through the shared reload face, and record what happened.
+     *
+     * It never throws. The page has to stay usable whether the check was refused,
+     * the module system was absent, or the replacement itself blew up, so every
+     * branch returns a state the caller can render and the failure is recorded
+     * rather than raised. A refused check is not recorded separately: the
+     * breadcrumb key holds one payload, so the attempt's own record — with
+     * `known: false` — is the one that explains it.
+     * @param options - the reload face, the version check, and the breadcrumb writer.
+     * @returns the state to show.
+     */
+    async function runReload({ reload, check, log }) {
+      let staleness = hostStaleness(undefined)
+      try {
+        staleness = hostStaleness(await check())
+      } catch (error) {
+        // An older Host half need not answer the update route; the replacement
+        // can still work, it just cannot say anything about the Host half.
+      }
+      let outcome
+      try {
+        outcome = typeof reload === 'function' ? await reload(log) : 'absent'
+      } catch (error) {
+        log({ phase: 'reload-failed', reason: 'error', message: messageOf(error), known: staleness.known })
+        return { status: 'failed', reason: 'reload' }
+      }
+      const next = reloadOutcome(outcome, staleness)
+      if (next.status === 'failed') {
+        log({ phase: 'reload-failed', reason: next.reason, outcome, known: staleness.known })
+      } else {
+        log({ phase: 'reloaded', ok: true, stale: next.status === 'needs-restart', known: staleness.known })
+      }
+      return next
+    }
+
+    /**
+     * The server page: one row per server, one inline panel to add another, and
+     * one Reload control for the interface itself.
      *
      * It reads the `mcp` row's own enablement rather than the aggregate, because
      * the row is what mounts the route behind it — before the restart that
      * mounts the row there would be a page in front of nothing.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
+     * @param reloader - holds the optional `modules` reload face, shared with the
+     *   update control that replaces the same browser half.
      */
-    function createMcpPage(t, controller) {
+    function createMcpPage(t, controller, reloader) {
       const useMcpEnabled = createFeatureHook(controller, MCP_MODULE, rowEnabled)
 
       return function EdhMcpPage() {
@@ -1831,6 +1971,7 @@ window.__ModuleLoader__.load({
         const errorId = React.useId()
         const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
         const [busy, setBusy] = React.useState({})
+        const [reload, setReload] = React.useState({ status: 'idle', reason: '' })
         const firstField = React.useRef(null)
 
         // Read once on mount and once per retry: the page never polls, because
@@ -1863,6 +2004,14 @@ window.__ModuleLoader__.load({
             current = false
           }
         }, [enabled, attempt])
+
+        // A confirmation is not a status: it clears itself, so the page goes quiet
+        // again without being clicked. A failure stays until the next attempt.
+        React.useEffect(() => {
+          if (reload.status !== 'done' && reload.status !== 'needs-restart') return undefined
+          const timer = window.setTimeout(() => setReload({ status: 'idle', reason: '' }), RELOAD_NOTE_MS)
+          return () => window.clearTimeout(timer)
+        }, [reload.status])
 
         const closePanel = React.useCallback(() => {
           setPanel(false)
@@ -1968,6 +2117,17 @@ window.__ModuleLoader__.load({
           const done = await submit(action, server.id, serverActionBody(action, server.id))
           if (done !== undefined && done.ok) mcpWrite({ phase: 'loaded', via: action, id: server.id })
         }, [submit])
+
+        /**
+         * Replace EDH's own browser half, then say honestly what that did to the
+         * Host half. The work is in `runReload`, which never throws; this only
+         * owns the button's own state.
+         */
+        const onReload = React.useCallback(async () => {
+          setReload({ status: 'reloading', reason: '' })
+          const face = reloader === undefined ? undefined : reloader.current
+          setReload(await runReload({ reload: face, check: () => requestUpdate('GET'), log: mcpWrite }))
+        }, [])
 
         if (!enabled) return h('p', { className: 'edh-mcp-status' }, t('mcpOff'))
 
@@ -2171,8 +2331,39 @@ window.__ModuleLoader__.load({
         }
 
         const servers = view.servers
+        const reloadFace = reloader === undefined ? undefined : reloader.current
+        const reloadCopy = reloadText(reload, t)
+        const reloading = reload.status === 'reloading'
+
+        // The interface control sits above the list rather than in it: reloading
+        // EDH is not a change to any server, and it has to stay reachable when the
+        // list itself could not be read.
+        const reloadControl = reloadAvailable(enabled, reloadFace)
+          ? h('div', { className: 'edh-mcp-toolbar' },
+            reloadCopy.note === ''
+              ? null
+              : h('span', {
+                className: 'edh-mcp-reloadNote',
+                'data-tone': reloadCopy.tone,
+                role: reloadCopy.tone === 'bad' ? 'alert' : 'status',
+              }, reloadCopy.note),
+            // The visible word is the accessible name; the tooltip says what it
+            // replaces, which is the part that needs explaining.
+            h('button', {
+              type: 'button',
+              className: 'edh-mcp-button edh-mcp-reload',
+              title: t('mcpReloadTitle'),
+              'aria-busy': reloading || undefined,
+              disabled: reloading,
+              onClick: () => {
+                void onReload()
+              },
+            }, reloadCopy.label),
+          )
+          : null
 
         return h('div', { className: 'edh-mcp' },
+          reloadControl,
           notice.text === '' ? null : h('p', {
             className: 'edh-mcp-notice',
             'data-tone': notice.tone,
@@ -2224,6 +2415,12 @@ window.__ModuleLoader__.load({
       '.edh-mcp-error,.edh-mcp-empty{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
       '.edh-mcp-empty p{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
       '.edh-mcp-head{justify-content:flex-end;align-items:center;display:flex}',
+      '.edh-mcp-toolbar{justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:4px 8px;min-height:24px;display:flex}',
+      '.edh-mcp-reload{flex:none}',
+      '.edh-mcp-reloadNote{color:var(--dsw-alias-label-tertiary);text-align:right;font-size:12px;line-height:18px}',
+      '.edh-mcp-reloadNote[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-mcp-reloadNote[data-tone=warn]{color:var(--dsw-alias-state-warn-primary)}',
+      '.edh-mcp-reloadNote[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
       '.edh-mcp-list{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}',
       '.edh-mcp-row{border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:minmax(0,1fr) max-content 44px max-content;align-items:center;gap:4px 16px;padding:10px 0;display:grid}',
       '.edh-mcp-ident{align-items:center;gap:8px;min-width:0;display:flex}',
@@ -2374,7 +2571,7 @@ window.__ModuleLoader__.load({
       // row off the tab stays (a tab that vanishes would renumber the section
       // under the person's cursor) and says one line instead of reading a route
       // that is no longer mounted.
-      const McpPage = createMcpPage(t, controller)
+      const McpPage = createMcpPage(t, controller, reloader)
       ctx.effect(() => installMcpStyles(), 'edh: mcp styles')
       ctx.slots.inject(MCP_TAB_SLOT, () => {
         try {
@@ -2391,11 +2588,14 @@ window.__ModuleLoader__.load({
         }
       })
 
-      // The reload face is optional: without `modules` the control still checks
-      // and applies, it just cannot replace the browser half and says so.
+      // The reload face is optional: without `modules` the update control still
+      // checks and applies, and the MCP page simply has no Reload button — both
+      // say so rather than pretending. The face is shared because both surfaces
+      // replace the same browser half; the caller supplies the breadcrumb writer
+      // of the surface the person is looking at.
       ctx.inject(['modules'], scope => {
         scope.effect(() => {
-          reloader.current = () => reloadBrowserHalf(scope.modules)
+          reloader.current = log => reloadBrowserHalf(scope.modules, log)
           return () => {
             reloader.current = undefined
           }
@@ -2481,6 +2681,11 @@ window.__ModuleLoader__.load({
       addServerBody,
       serverActionBody,
       withoutKey,
+      reloadAvailable,
+      hostStaleness,
+      reloadOutcome,
+      reloadText,
+      runReload,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,

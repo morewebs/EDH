@@ -52,6 +52,11 @@ const {
   addServerBody,
   serverActionBody,
   withoutKey,
+  reloadAvailable,
+  hostStaleness,
+  reloadOutcome,
+  reloadText,
+  runReload,
   MCP_MODULE,
   MCP_ROUTE,
   MCP_TAB_SLOT,
@@ -736,6 +741,148 @@ function fakeRemote(options = {}) {
   assert.equal(actionReport({ ok: true, toolCount: 12 }).toolCount, 12, 'a test reports what the server answered with')
 }
 
+// 24 — the Reload control: gated, honest about the Host half, and it never throws.
+{
+  const t = (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`)
+
+  // The button exists only for an enabled row on a page that has a module system.
+  assert.equal(reloadAvailable(true, () => 'replaced'), true)
+  assert.equal(reloadAvailable(true, undefined), false, 'no module system, no button to click')
+  assert.equal(reloadAvailable(false, () => 'replaced'), false, 'a row that is off shows one note, not the control')
+  for (const absent of [undefined, null, false, 'true', 1]) {
+    assert.equal(reloadAvailable(absent, () => 'replaced'), false, `no control for ${JSON.stringify(absent)}`)
+  }
+
+  // `installed` vs `onDisk` is the only honest source for "a restart is still owed".
+  assert.deepEqual(hostStaleness({ ok: true, installed: '0.5.0', onDisk: '0.5.0' }), {
+    known: true,
+    installed: '0.5.0',
+    onDisk: '0.5.0',
+    stale: false,
+  })
+  assert.deepEqual(hostStaleness({ ok: true, installed: '0.5.0', onDisk: '0.6.0' }), {
+    known: true,
+    installed: '0.5.0',
+    onDisk: '0.6.0',
+    stale: true,
+  })
+  for (const unknown of [{ ok: true }, { ok: false, reason: 'no-checkout' }, undefined, null, 'nope']) {
+    assert.equal(hostStaleness(unknown).known, false, `an unreadable answer is not known: ${JSON.stringify(unknown)}`)
+    assert.equal(hostStaleness(unknown).stale, false, `and it never claims a restart: ${JSON.stringify(unknown)}`)
+  }
+
+  // A replaced browser half is a success; a stale Host half changes what it says.
+  assert.deepEqual(reloadOutcome('replaced', { known: true, stale: false }), { status: 'done', reason: '' })
+  assert.deepEqual(reloadOutcome('replaced', { known: true, stale: true }), { status: 'needs-restart', reason: '' })
+  assert.deepEqual(reloadOutcome('replaced', { known: false, stale: false }), { status: 'done', reason: '' }, 'unknown is not stale')
+  assert.deepEqual(reloadOutcome('stale', undefined), { status: 'failed', reason: 'revision' }, 'no new revision to load')
+  for (const outcome of ['absent', 'failed', 'nonsense']) {
+    assert.deepEqual(reloadOutcome(outcome, undefined), { status: 'failed', reason: 'reload' }, `${outcome} is a reload failure`)
+  }
+
+  // The copy for every state, including the two sentences a failure can show.
+  assert.deepEqual(reloadText(undefined, t), { label: 'mcpReload', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'idle', reason: '' }, t), { label: 'mcpReload', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'reloading' }, t), { label: 'mcpReloading', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'done' }, t), { label: 'mcpReload', note: 'mcpReloaded', tone: 'ok' })
+  assert.deepEqual(reloadText({ status: 'needs-restart' }, t), { label: 'mcpReload', note: 'mcpReloadedStale', tone: 'warn' })
+  assert.deepEqual(reloadText({ status: 'failed', reason: 'revision' }, t), {
+    label: 'mcpReload',
+    note: 'mcpReloadNoRevision',
+    tone: 'bad',
+  })
+  assert.deepEqual(reloadText({ status: 'failed', reason: 'reload' }, t), {
+    label: 'mcpReload',
+    note: 'mcpReloadFailed',
+    tone: 'bad',
+  })
+
+  // One coherent run, and the breadcrumb it leaves: fresh bundle, then stale Host half.
+  {
+    const writes = []
+    const state = await runReload({
+      reload: async () => 'replaced',
+      check: async () => ({ ok: true, installed: '0.5.0', onDisk: '0.5.0' }),
+      log: payload => writes.push(payload),
+    })
+    assert.deepEqual(state, { status: 'done', reason: '' })
+    assert.deepEqual(writes, [{ phase: 'reloaded', ok: true, stale: false, known: true }])
+  }
+  {
+    const writes = []
+    const state = await runReload({
+      reload: async () => 'replaced',
+      check: async () => ({ ok: true, installed: '0.5.0', onDisk: '0.6.0' }),
+      log: payload => writes.push(payload),
+    })
+    assert.equal(state.status, 'needs-restart', 'only the Host half still owes a restart')
+    assert.deepEqual(writes, [{ phase: 'reloaded', ok: true, stale: true, known: true }], 'the breadcrumb says a restart is owed')
+  }
+
+  // Every failure writes its breadcrumb and still answers a state to render, so
+  // the page and its server list keep working.
+  {
+    const writes = []
+    const state = await runReload({
+      reload: async () => 'stale',
+      check: async () => ({ ok: true, installed: '0.5.0', onDisk: '0.5.0' }),
+      log: payload => writes.push(payload),
+    })
+    assert.deepEqual(state, { status: 'failed', reason: 'revision' })
+    assert.equal(writes.length, 1)
+    assert.deepEqual(
+      { phase: writes[0].phase, reason: writes[0].reason },
+      { phase: 'reload-failed', reason: 'revision' },
+    )
+  }
+  {
+    const writes = []
+    const state = await runReload({ reload: undefined, check: async () => ({ ok: true }), log: payload => writes.push(payload) })
+    assert.deepEqual(state, { status: 'failed', reason: 'reload' }, 'no module system is a failure, not a crash')
+    assert.deepEqual(
+      { phase: writes[0].phase, reason: writes[0].reason },
+      { phase: 'reload-failed', reason: 'reload' },
+    )
+  }
+  {
+    const writes = []
+    const state = await runReload({
+      reload: async () => {
+        throw new Error('reload threw')
+      },
+      check: async () => {
+        throw new Error('api/edh.update answered 404')
+      },
+      log: payload => writes.push(payload),
+    })
+    assert.deepEqual(state, { status: 'failed', reason: 'reload' }, 'a throwing replacement is a state, never a dead page')
+    assert.equal(writes.length, 1, 'one record: the key holds one payload, so the outcome is what it explains')
+    assert.deepEqual(
+      { phase: writes[0].phase, reason: writes[0].reason, message: writes[0].message },
+      { phase: 'reload-failed', reason: 'error', message: 'reload threw' },
+    )
+    assert.equal(writes[0].known, false, 'a refused check leaves the Host half unknown, never freshly claimed')
+  }
+
+  // A refused check does not block the reload it could not describe: the bundle
+  // still gets replaced, and the page simply makes no claim about the Host half.
+  {
+    const writes = []
+    const state = await runReload({
+      reload: async () => 'replaced',
+      check: async () => {
+        throw new Error('api/edh.update answered 404')
+      },
+      log: payload => writes.push(payload),
+    })
+    assert.deepEqual(state, { status: 'done', reason: '' })
+    assert.deepEqual(writes.map(payload => payload.phase), ['reloaded'])
+    assert.equal(writes[0].stale, false, 'an unknown Host half is never reported as owing a restart')
+    assert.equal(writes[0].known, false)
+  }
+}
+
 console.log('edh mcp: page, form, and secret checks passed')
+console.log('edh mcp: reload control checks passed')
 console.log('edh update: control and reload checks passed')
 console.log('edh switch: all checks passed')

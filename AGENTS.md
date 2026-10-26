@@ -82,7 +82,17 @@ to the shell row.
 
 Put optional contracts on their own `ctx.inject([...], scope => …)` — a missing service
 must never unload the control surface. The switch keeps only `slots`, `locale`, `remote`,
-and `remote.pluginManager`.
+and `remote.pluginManager`; the MCP row reaches `tools` and `modules` the same optional way.
+
+```js
+const dispose = ctx.tools.register({ name, description, parameters, output, execute })
+```
+
+`parameters` accepts a raw MCP `inputSchema` (it is projected as lossless JSON, no subset
+assertion), but `output.schema` must pass the constrained subset and `output.render` must be
+a function. **`register` scopes to the service's context, not your fiber** — the registration
+outlives your row, so keep every disposer and run it on stop, on re-sync, and in `ctx.effect`
+disposal, or turning the row off leaves tools pointing at dead servers.
 
 ## Styling
 
@@ -113,9 +123,10 @@ node test/update.mjs
 There is often no browser control in a session, so EDH writes Local Storage breadcrumbs:
 `edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
 `view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`),
-`edh:export` for the download button (`mounted` / `click` / `failed`), and `edh:update` for
+`edh:export` for the download button (`mounted` / `click` / `failed`), `edh:update` for
 the update control (`mounted` / `checked` / `update-started` / `updated` / `reload-failed` /
-`updated-needs-restart` / `failed`).
+`updated-needs-restart` / `failed`), and `edh:mcp` for the MCP page (`loaded` / `added` /
+`removed` / `tested` / `reloaded` / `reload-failed` / `failed`).
 Read them off disk while the app is closed or running:
 
 ```

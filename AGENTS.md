@@ -128,9 +128,9 @@ There is often no browser control in a session, so EDH writes Local Storage brea
 `edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
 `view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`),
 `edh:export` for the download button (`mounted` / `click` / `failed`), `edh:update` for
-the update control (`mounted` / `checked` / `update-started` / `updated` / `reload-failed` /
-`updated-needs-restart` / `failed`), and `edh:mcp` for the MCP page (`loaded` / `added` /
-`removed` / `tested` / `reloaded` / `reload-failed` / `failed`).
+both Plugin Manager controls — update (`mounted` / `checked` / `update-started` / `updated` /
+`updated-needs-restart` / `failed`) and reload (`reloaded` / `reload-failed`) — and `edh:mcp`
+for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`).
 Read them off disk while the app is closed or running:
 
 ```

@@ -52,11 +52,14 @@ const {
   addServerBody,
   serverActionBody,
   withoutKey,
-  reloadAvailable,
+  reloadVisible,
   hostStaleness,
   reloadOutcome,
   reloadText,
   runReload,
+  controlStyle,
+  ICON_UPDATE,
+  ICON_RELOAD,
   MCP_MODULE,
   MCP_ROUTE,
   MCP_SECTION_SLOT,
@@ -751,17 +754,26 @@ function fakeRemote(options = {}) {
   assert.equal(actionReport({ ok: true, toolCount: 12 }).toolCount, 12, 'a test reports what the server answered with')
 }
 
-// 24 — the Reload control: gated, honest about the Host half, and it never throws.
+// 24 — the Reload control: on EDH's own detail page, gated on the module system
+// alone, honest about the Host half, and it never throws.
 {
   const t = (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`)
 
-  // The button exists only for an enabled row on a page that has a module system.
-  assert.equal(reloadAvailable(true, () => 'replaced'), true)
-  assert.equal(reloadAvailable(true, undefined), false, 'no module system, no button to click')
-  assert.equal(reloadAvailable(false, () => 'replaced'), false, 'a row that is off shows one note, not the control')
+  // EDH's own page, with the module system: the one case with a control to show.
+  const edhPage = { kind: 'bundle', pkg: { name: PACKAGE_NAME } }
+  const edhRow = { kind: 'row', pkg: { name: PACKAGE_NAME } }
+  const otherPage = { kind: 'bundle', pkg: { name: '@moreweb/other' } }
+  assert.equal(reloadVisible(updateSubject(edhPage), () => 'replaced'), true)
+  assert.equal(reloadVisible(updateSubject(edhRow), () => 'replaced'), true, 'a row page for EDH is still EDH')
+  assert.equal(reloadVisible(updateSubject(edhPage), undefined), false, 'no module system, no button to click')
+  assert.equal(reloadVisible(updateSubject(otherPage), () => 'replaced'), false, 'nothing else reloads EDH')
+  assert.equal(reloadVisible(updateSubject({ kind: 'item', id: 'catalog-entry' }), () => 'replaced'), false, 'a catalog id is not a package')
   for (const absent of [undefined, null, false, 'true', 1]) {
-    assert.equal(reloadAvailable(absent, () => 'replaced'), false, `no control for ${JSON.stringify(absent)}`)
+    assert.equal(reloadVisible(updateSubject(edhPage), absent), false, `no control for ${JSON.stringify(absent)}`)
   }
+  // The update row is not consulted: reloading what is installed is not the
+  // update feature, so a profile that paused updating keeps the button. The
+  // gate reads the page and the module system, and nothing else.
 
   // `installed` vs `onDisk` is the only honest source for "a restart is still owed".
   assert.deepEqual(hostStaleness({ ok: true, installed: '0.5.0', onDisk: '0.5.0' }), {
@@ -791,21 +803,65 @@ function fakeRemote(options = {}) {
   }
 
   // The copy for every state, including the two sentences a failure can show.
-  assert.deepEqual(reloadText(undefined, t), { label: 'mcpReload', note: '', tone: '' })
-  assert.deepEqual(reloadText({ status: 'idle', reason: '' }, t), { label: 'mcpReload', note: '', tone: '' })
-  assert.deepEqual(reloadText({ status: 'reloading' }, t), { label: 'mcpReloading', note: '', tone: '' })
-  assert.deepEqual(reloadText({ status: 'done' }, t), { label: 'mcpReload', note: 'mcpReloaded', tone: 'ok' })
-  assert.deepEqual(reloadText({ status: 'needs-restart' }, t), { label: 'mcpReload', note: 'mcpReloadedStale', tone: 'warn' })
+  assert.deepEqual(reloadText(undefined, t), { label: 'reload', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'idle', reason: '' }, t), { label: 'reload', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'reloading' }, t), { label: 'reloading', note: '', tone: '' })
+  assert.deepEqual(reloadText({ status: 'done' }, t), { label: 'reload', note: 'reloadDone', tone: 'ok' })
+  assert.deepEqual(reloadText({ status: 'needs-restart' }, t), { label: 'reload', note: 'reloadStale', tone: 'warn' })
   assert.deepEqual(reloadText({ status: 'failed', reason: 'revision' }, t), {
-    label: 'mcpReload',
-    note: 'mcpReloadNoRevision',
+    label: 'reload',
+    note: 'reloadNoRevision',
     tone: 'bad',
   })
   assert.deepEqual(reloadText({ status: 'failed', reason: 'reload' }, t), {
-    label: 'mcpReload',
-    note: 'mcpReloadFailed',
+    label: 'reload',
+    note: 'reloadFailed',
     tone: 'bad',
   })
+
+  // The glyphs are the shipped ones, not lookalikes: the identifying path of
+  // each is pinned verbatim, so an invented path fails here rather than in the
+  // browser. Update is the download mark, Reload the refresh arrow, and they are
+  // different drawings rather than the same icon twice.
+  assert.deepEqual(ICON_UPDATE.slice(0, 2), ['M8 1.95317V10.0469', 'M4.25 6.29688L8 10.0469L11.75 6.29688'], 'IconDownloadOutlineRegular')
+  assert.equal(ICON_UPDATE.length, 3, 'the download glyph is an arrow and a tray')
+  assert.equal(ICON_RELOAD.length, 2, 'the refresh glyph is a ring and its arrowhead')
+  assert.equal(ICON_RELOAD[0].startsWith('M14.5001 8C14.5 9.28552'), true, 'IconRefreshOutlineRegular')
+  assert.equal(ICON_RELOAD[1], 'M14.4999 1.5V5.1H10.8999', 'the refresh arrowhead')
+  for (const glyph of [ICON_UPDATE, ICON_RELOAD]) {
+    for (const d of glyph) assert.equal(d.startsWith('M'), true, 'every path is absolute geometry')
+  }
+  assert.notDeepEqual(ICON_UPDATE[0], ICON_RELOAD[0], 'two ideas, two glyphs')
+
+  // Both controls draw one glyph plus a label, at the metric the row uses. The
+  // module is loaded once more over a React-shaped `createElement`, because the
+  // glyph helper is the one piece here that builds an element.
+  const stub = definition.factory(() => ({
+    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+  })).__test
+  const drawn = stub.icon(ICON_RELOAD)
+  assert.equal(drawn.type, 'svg')
+  assert.equal(drawn.props.viewBox, '0 0 16 16', 'the shipped 16px box')
+  assert.equal(drawn.props.width, 14, 'rendered at the size the row draws icons')
+  assert.equal(drawn.props['aria-hidden'], 'true', 'the label is the accessible name')
+  assert.equal(drawn.props.children.length, 2, 'one path per glyph path')
+  assert.deepEqual(
+    { d: drawn.props.children[0].props.d, stroke: drawn.props.children[0].props.stroke },
+    { d: ICON_RELOAD[0], stroke: 'currentColor' },
+  )
+  assert.equal(stub.icon(ICON_UPDATE, 16).props.width, 16, 'the box can be the shipped 16')
+  const idle = controlStyle(false, false, true)
+  assert.equal(idle.height, '24px', 'the metric the action row uses')
+  assert.equal(idle.gap, '6px', 'a small gap between glyph and label')
+  assert.equal(idle.display, 'inline-flex', 'icon and label on one line')
+  assert.equal(idle.cursor, 'pointer')
+  assert.equal(idle.border, '1px solid transparent', 'an outline only when there is something to do')
+  const offered = controlStyle(true, false, true)
+  assert.equal(offered.border, '1px solid var(--dsw-alias-brand-primary)', 'an offered update is framed')
+  assert.equal(offered.color, 'var(--dsw-alias-brand-primary)')
+  assert.equal(controlStyle(false, true, true).background, 'var(--dsw-alias-bg-layer-1)', 'hover fills')
+  assert.equal(controlStyle(false, true, false).background, 'transparent', 'a dead control does not fill')
+  assert.equal(controlStyle(false, false, false).cursor, 'default')
 
   // One coherent run, and the breadcrumb it leaves: fresh bundle, then stale Host half.
   {
@@ -973,6 +1029,23 @@ function fakeRemote(options = {}) {
     0,
     'nothing is buried under the Plugins page any more',
   )
+
+  // The same apply seats the two detail-page actions: update, then reload right
+  // beside it. Reload is its own entry rather than part of the update control,
+  // which is what lets it show without the update row being on — its gate is the
+  // module system, not a feature row, so nothing here consults `rows` for it.
+  const actions = harness.entries.filter(entry => entry.options.name === 'plugins.detail.actions')
+  assert.deepEqual(actions.map(entry => entry.options.id), ['edh-update', 'edh-reload'], 'two buttons, two entries')
+  assert.deepEqual(actions.map(entry => entry.options.order), [10, 11], 'reload sits immediately right of update')
+  assert.equal(actions[1].options.label(), 'reload', 'one word, read from the dictionary')
+  assert.equal(actions[1].options.locale, 'edh', 'and it speaks the plugin dictionary too')
+
+  // The MCP page owns no interface control any more: the button, its toolbar,
+  // and its note live on the update surface, and none of their styling is left
+  // behind in the page's stylesheet.
+  for (const gone of ['edh-mcp-toolbar', 'edh-mcp-reload', 'reloadAvailable']) {
+    assert.equal(source.includes(gone), false, `${gone} is gone from the client`)
+  }
 
   // The row is the switch: off withdraws the entry, on puts it back, and the nav
   // redraws either way because the slot ledger changed.

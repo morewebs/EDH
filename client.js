@@ -51,6 +51,13 @@ window.__ModuleLoader__.load({
       offlineHint: 'No network: the published version could not be read.',
       dirtyHint: 'EDH has uncommitted changes, so nothing was changed.',
       errorHint: 'The update could not be applied. Open Plugins to check the EDH rows.',
+      reload: 'Reload',
+      reloading: 'Reloading…',
+      reloadDone: 'Reloaded',
+      reloadStale: 'Interface reloaded. Restart to load the new Host half.',
+      reloadNoRevision: 'Reload failed. The Host did not offer a new revision.',
+      reloadFailed: 'Reload failed. The interface could not be reloaded.',
+      reloadTitle: 'Load the newest EDH interface without restarting the app.',
       mcpNav: 'MCP servers',
       mcpTitle: 'MCP servers',
       mcpIntro: 'Connect a server once and every session can use its tools.',
@@ -100,13 +107,6 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: 'Write environment lines as NAME=value, one per line.',
       mcpNotReady: 'The server is not ready. Start it, then try again.',
       mcpUnknownServer: 'That server is no longer in the list.',
-      mcpReload: 'Reload',
-      mcpReloading: 'Reloading…',
-      mcpReloaded: 'Reloaded',
-      mcpReloadedStale: 'Interface reloaded. Restart to load the new Host half.',
-      mcpReloadNoRevision: 'Reload failed. The Host did not offer a new revision.',
-      mcpReloadFailed: 'Reload failed. The interface could not be reloaded.',
-      mcpReloadTitle: 'Load the newest EDH interface without restarting the app.',
     }
     const zh = {
       label: 'EDH',
@@ -142,6 +142,13 @@ window.__ModuleLoader__.load({
       offlineHint: '无网络：无法读取已发布版本。',
       dirtyHint: 'EDH 有未提交的改动，未做任何修改。',
       errorHint: '更新未能应用，请到「插件」页查看 EDH 对应行。',
+      reload: '重新载入',
+      reloading: '正在重新载入…',
+      reloadDone: '已重新载入',
+      reloadStale: '界面已重新载入。请重启以加载新的宿主部分。',
+      reloadNoRevision: '重新载入失败。宿主没有提供新的版本。',
+      reloadFailed: '重新载入失败。界面无法重新载入。',
+      reloadTitle: '无需重启应用即可加载最新的 EDH 界面。',
       mcpNav: 'MCP 服务器',
       mcpTitle: 'MCP 服务器',
       mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
@@ -191,13 +198,6 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: '环境变量每行写成 NAME=value。',
       mcpNotReady: '服务器尚未就绪，请先启动再试。',
       mcpUnknownServer: '该服务器已不在列表中。',
-      mcpReload: '重新载入',
-      mcpReloading: '正在重新载入…',
-      mcpReloaded: '已重新载入',
-      mcpReloadedStale: '界面已重新载入。请重启以加载新的宿主部分。',
-      mcpReloadNoRevision: '重新载入失败。宿主没有提供新的版本。',
-      mcpReloadFailed: '重新载入失败。界面无法重新载入。',
-      mcpReloadTitle: '无需重启应用即可加载最新的 EDH 界面。',
     }
 
     /**
@@ -1329,6 +1329,99 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * `IconDownloadOutlineRegular`, as drawn in the shipped icon set.
+     *
+     * The path data is copied verbatim from `@deepseek-ai/dsh-client-ui-primitives`
+     * (16 by 16 box, 1px stroke, `currentColor`): the arrow into the tray, which
+     * is the mark this app already puts on "bring a new version in" — the Plugin
+     * Manager's install menu item and the desktop-update action both use it.
+     */
+    const ICON_UPDATE = [
+      'M8 1.95317V10.0469',
+      'M4.25 6.29688L8 10.0469L11.75 6.29688',
+      'M1.5 10.0469V13.158C1.5 13.3937 1.60536 13.6198 1.79289 13.7865C1.98043 13.9532 2.23478 14.0469 2.5 14.0469H13.5C13.7652 14.0469 14.0196 13.9532 14.2071 13.7865C14.3946 13.6198 14.5 13.3937 14.5 13.158V10.0469',
+    ]
+
+    /**
+     * `IconRefreshOutlineRegular`, from the same shipped set.
+     *
+     * The circular arrow the Plugin Manager paints on its own Update action and
+     * on its refresh button, i.e. the shipped mark for "load this again". Used
+     * here for Reload so the two glyphs say two different things: download a
+     * version, refresh the interface.
+     */
+    const ICON_RELOAD = [
+      'M14.5001 8C14.5 9.28552 14.1188 10.5422 13.4045 11.611C12.6903 12.6799 11.6752 13.5129 10.4875 14.0049C9.29982 14.4968 7.99295 14.6255 6.73212 14.3747C5.4713 14.124 4.31314 13.505 3.4041 12.596C2.49514 11.687 1.87614 10.5288 1.62537 9.26798C1.37459 8.00716 1.50331 6.70028 1.99525 5.51261C2.48719 4.32494 3.32025 3.30981 4.3891 2.59557C5.45795 1.88134 6.71458 1.50008 8.0001 1.5C9.9001 1.5 11.7001 2.3 13.0001 3.6L14.5001 5.1',
+      'M14.4999 1.5V5.1H10.8999',
+    ]
+
+    /**
+     * One shipped glyph, at the size the Plugin Manager's action row draws them.
+     *
+     * The geometry stays in its own 16 unit box and only the rendered box
+     * changes, which is how the shipped components are reused at 13 and 14px
+     * beside their own buttons. Decorative by construction: the button's label
+     * is the accessible name, so the glyph is hidden from assistive technology.
+     * @param paths - the glyph's path data, in its 16 by 16 space.
+     * @param size - the rendered box in pixels.
+     */
+    function icon(paths, size = 14) {
+      return h('svg', {
+        width: size,
+        height: size,
+        viewBox: '0 0 16 16',
+        fill: 'none',
+        strokeWidth: 1,
+        'aria-hidden': 'true',
+        focusable: 'false',
+      }, ...paths.map(d => h('path', { key: d, d, stroke: 'currentColor' })))
+    }
+
+    /**
+     * The style one control in the Plugin Manager's action row wears.
+     *
+     * That row belongs to the shipped page, so its buttons carry their look
+     * inline rather than in a stylesheet: 24px tall beside the shipped 28px
+     * buttons, a 12px label with a small gap for the glyph, and the hover fill
+     * swapped by the component's own hover state.
+     * @param primary - whether this control is the one to press (an update offered).
+     * @param hover - whether the pointer is over it.
+     * @param actionable - whether pressing it does anything.
+     */
+    function controlStyle(primary, hover, actionable) {
+      return {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '6px',
+        height: '24px',
+        padding: '0 8px',
+        border: primary ? '1px solid var(--dsw-alias-brand-primary)' : '1px solid transparent',
+        borderRadius: '6px',
+        background: hover && actionable ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+        color: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
+        font: 'inherit',
+        fontSize: '12px',
+        lineHeight: '16px',
+        whiteSpace: 'nowrap',
+        cursor: actionable ? 'pointer' : 'default',
+        flexShrink: 0,
+        userSelect: 'none',
+        transition: 'background 120ms ease, color 120ms ease',
+      }
+    }
+
+    /**
+     * The colours a reload note takes, matching the tones the switch uses.
+     * @param tone - `ok`, `warn`, or `bad`.
+     */
+    function noteColour(tone) {
+      if (tone === 'ok') return 'var(--dsw-alias-state-success-primary)'
+      if (tone === 'warn') return 'var(--dsw-alias-state-warn-primary)'
+      return 'var(--dsw-alias-state-error-primary)'
+    }
+
+    /**
      * The Plugin Manager action that updates EDH from its published repo.
      *
      * It checks on mount, quietly, and then offers the one thing it can do: apply
@@ -1432,26 +1525,75 @@ window.__ModuleLoader__.load({
           },
           onMouseEnter: () => setHover(true),
           onMouseLeave: () => setHover(false),
-          style: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '24px',
-            padding: '0 8px',
-            border: primary ? '1px solid var(--dsw-alias-brand-primary)' : '1px solid transparent',
-            borderRadius: '6px',
-            background: hover && actionable ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
-            color: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
-            font: 'inherit',
-            fontSize: '12px',
-            lineHeight: '16px',
-            whiteSpace: 'nowrap',
-            cursor: actionable ? 'pointer' : 'default',
-            flexShrink: 0,
-            userSelect: 'none',
-            transition: 'background 120ms ease, color 120ms ease',
-          },
-        }, text.label)
+          style: controlStyle(primary, hover, actionable),
+        }, icon(ICON_UPDATE), text.label)
+      }
+    }
+
+    /**
+     * The Plugin Manager action that reloads EDH's interface in place.
+     *
+     * It sits beside the update control and replaces the same browser half, but
+     * it is not the update feature: it asks the module system for a new revision
+     * of what is already installed. So it follows the `modules` service and
+     * nothing else — not the update row, which only gates the route that fetches
+     * a new version. Without that service there is no reload to offer, and the
+     * control is absent rather than dead.
+     * @param t - the dictionary's translate function.
+     * @param reloader - holds the optional `modules` reload face.
+     */
+    function createReloadControl(t, reloader) {
+      return function EdhReloadControl({ subject }) {
+        const target = updateSubject(subject)
+        const [state, setState] = React.useState({ status: 'idle', reason: '' })
+        const [hover, setHover] = React.useState(false)
+        const face = reloader.current
+
+        // A confirmation is not a status: it clears itself, so the row goes
+        // quiet again without being clicked. A failure stays until retried.
+        React.useEffect(() => {
+          if (state.status !== 'done' && state.status !== 'needs-restart') return undefined
+          const timer = window.setTimeout(() => setState({ status: 'idle', reason: '' }), RELOAD_NOTE_MS)
+          return () => window.clearTimeout(timer)
+        }, [state.status])
+
+        const onReload = React.useCallback(async () => {
+          setState({ status: 'reloading', reason: '' })
+          setState(await runReload({ reload: reloader.current, check: () => requestUpdate('GET'), log: updateWrite }))
+        }, [])
+
+        if (!reloadVisible(target, face)) return null
+
+        const copy = reloadText(state, t)
+        const busy = state.status === 'reloading'
+
+        return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '8px' } },
+          copy.note === ''
+            ? null
+            : h('span', {
+              role: copy.tone === 'bad' ? 'alert' : 'status',
+              style: {
+                color: noteColour(copy.tone),
+                fontSize: '12px',
+                lineHeight: '16px',
+                whiteSpace: 'nowrap',
+              },
+            }, copy.note),
+          // The visible word is the accessible name; the tooltip says what it
+          // replaces, which is the part that needs explaining.
+          h('button', {
+            type: 'button',
+            title: t('reloadTitle'),
+            'aria-busy': busy || undefined,
+            disabled: busy,
+            onClick: () => {
+              void onReload()
+            },
+            onMouseEnter: () => setHover(true),
+            onMouseLeave: () => setHover(false),
+            style: controlStyle(false, hover, !busy),
+          }, icon(ICON_RELOAD), copy.label),
+        )
       }
     }
 
@@ -1844,16 +1986,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Whether the page may offer the Reload button.
+     * Whether a Plugin Manager detail page may offer the Reload button.
      *
-     * Reload replaces this bundle through the client module system, which is an
-     * optional service here: a page that never got it has nothing to click, and a
-     * page whose MCP row is off is showing a note rather than a working route.
-     * @param enabled - whether the MCP row is loaded and enabled.
-     * @param reload - the reload face, when the page was given one.
+     * Two conditions, neither of them a feature row: the page has to be EDH's
+     * own (nothing else could sensibly reload EDH's interface), and the client
+     * module system has to be there to ask for a new revision. The update row is
+     * deliberately *not* consulted — reloading what is installed is not the
+     * update feature, and it stays useful on a profile that paused updating.
+     * @param target - the page's subject, as `updateSubject` reads it.
+     * @param reload - the shared reload face, when the page has one.
      */
-    function reloadAvailable(enabled, reload) {
-      return enabled === true && typeof reload === 'function'
+    function reloadVisible(target, reload) {
+      return target !== undefined && typeof reload === 'function'
     }
 
     /**
@@ -1906,19 +2050,19 @@ window.__ModuleLoader__.load({
       const reason = state !== null && typeof state === 'object' ? state.reason : undefined
       switch (status) {
         case 'reloading':
-          return { label: t('mcpReloading'), note: '', tone: '' }
+          return { label: t('reloading'), note: '', tone: '' }
         case 'done':
-          return { label: t('mcpReload'), note: t('mcpReloaded'), tone: 'ok' }
+          return { label: t('reload'), note: t('reloadDone'), tone: 'ok' }
         case 'needs-restart':
-          return { label: t('mcpReload'), note: t('mcpReloadedStale'), tone: 'warn' }
+          return { label: t('reload'), note: t('reloadStale'), tone: 'warn' }
         case 'failed':
           return {
-            label: t('mcpReload'),
-            note: t(reason === 'revision' ? 'mcpReloadNoRevision' : 'mcpReloadFailed'),
+            label: t('reload'),
+            note: t(reason === 'revision' ? 'reloadNoRevision' : 'reloadFailed'),
             tone: 'bad',
           }
         default:
-          return { label: t('mcpReload'), note: '', tone: '' }
+          return { label: t('reload'), note: '', tone: '' }
       }
     }
 
@@ -1960,8 +2104,8 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The server page: its own heading, one row per server, one inline panel to
-     * add another, and one Reload control for the interface itself.
+     * The server page: its own heading, one row per server, and one inline panel
+     * to add another.
      *
      * It carries the page frame the shipped sections use — a heading and one
      * introduction line over a 760px column — because a Settings section is a
@@ -1974,10 +2118,8 @@ window.__ModuleLoader__.load({
      * case registration cannot cover, a row switched off while the page is open.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
-     * @param reloader - holds the optional `modules` reload face, shared with the
-     *   update control that replaces the same browser half.
      */
-    function createMcpPage(t, controller, reloader) {
+    function createMcpPage(t, controller) {
       const useMcpEnabled = createFeatureHook(controller, MCP_MODULE, rowEnabled)
 
       return function EdhMcpPage() {
@@ -1990,7 +2132,6 @@ window.__ModuleLoader__.load({
         const errorId = React.useId()
         const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
         const [busy, setBusy] = React.useState({})
-        const [reload, setReload] = React.useState({ status: 'idle', reason: '' })
         const firstField = React.useRef(null)
 
         // Read once on mount and once per retry: the page never polls, because
@@ -2023,14 +2164,6 @@ window.__ModuleLoader__.load({
             current = false
           }
         }, [enabled, attempt])
-
-        // A confirmation is not a status: it clears itself, so the page goes quiet
-        // again without being clicked. A failure stays until the next attempt.
-        React.useEffect(() => {
-          if (reload.status !== 'done' && reload.status !== 'needs-restart') return undefined
-          const timer = window.setTimeout(() => setReload({ status: 'idle', reason: '' }), RELOAD_NOTE_MS)
-          return () => window.clearTimeout(timer)
-        }, [reload.status])
 
         const closePanel = React.useCallback(() => {
           setPanel(false)
@@ -2136,17 +2269,6 @@ window.__ModuleLoader__.load({
           const done = await submit(action, server.id, serverActionBody(action, server.id))
           if (done !== undefined && done.ok) mcpWrite({ phase: 'loaded', via: action, id: server.id })
         }, [submit])
-
-        /**
-         * Replace EDH's own browser half, then say honestly what that did to the
-         * Host half. The work is in `runReload`, which never throws; this only
-         * owns the button's own state.
-         */
-        const onReload = React.useCallback(async () => {
-          setReload({ status: 'reloading', reason: '' })
-          const face = reloader === undefined ? undefined : reloader.current
-          setReload(await runReload({ reload: face, check: () => requestUpdate('GET'), log: mcpWrite }))
-        }, [])
 
         if (!enabled) return h('p', { className: 'edh-mcp-status' }, t('mcpOff'))
 
@@ -2350,36 +2472,6 @@ window.__ModuleLoader__.load({
         }
 
         const servers = view.servers
-        const reloadFace = reloader === undefined ? undefined : reloader.current
-        const reloadCopy = reloadText(reload, t)
-        const reloading = reload.status === 'reloading'
-
-        // The interface control sits above the list rather than in it: reloading
-        // EDH is not a change to any server, and it has to stay reachable when the
-        // list itself could not be read.
-        const reloadControl = reloadAvailable(enabled, reloadFace)
-          ? h('div', { className: 'edh-mcp-toolbar' },
-            reloadCopy.note === ''
-              ? null
-              : h('span', {
-                className: 'edh-mcp-reloadNote',
-                'data-tone': reloadCopy.tone,
-                role: reloadCopy.tone === 'bad' ? 'alert' : 'status',
-              }, reloadCopy.note),
-            // The visible word is the accessible name; the tooltip says what it
-            // replaces, which is the part that needs explaining.
-            h('button', {
-              type: 'button',
-              className: 'edh-mcp-button edh-mcp-reload',
-              title: t('mcpReloadTitle'),
-              'aria-busy': reloading || undefined,
-              disabled: reloading,
-              onClick: () => {
-                void onReload()
-              },
-            }, reloadCopy.label),
-          )
-          : null
 
         return h('div', { className: 'edh-mcp' },
           // The page frame, in every state including a failed read: the heading
@@ -2387,7 +2479,6 @@ window.__ModuleLoader__.load({
           // only part of the page that cannot depend on the route.
           h('h2', { className: 'edh-mcp-title' }, t('mcpTitle')),
           h('p', { className: 'edh-mcp-intro' }, t('mcpIntro')),
-          reloadControl,
           notice.text === '' ? null : h('p', {
             className: 'edh-mcp-notice',
             'data-tone': notice.tone,
@@ -2443,12 +2534,6 @@ window.__ModuleLoader__.load({
       '.edh-mcp-error,.edh-mcp-empty{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
       '.edh-mcp-empty p{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
       '.edh-mcp-head{justify-content:flex-end;align-items:center;display:flex}',
-      '.edh-mcp-toolbar{justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:4px 8px;min-height:24px;display:flex}',
-      '.edh-mcp-reload{flex:none}',
-      '.edh-mcp-reloadNote{color:var(--dsw-alias-label-tertiary);text-align:right;font-size:12px;line-height:18px}',
-      '.edh-mcp-reloadNote[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
-      '.edh-mcp-reloadNote[data-tone=warn]{color:var(--dsw-alias-state-warn-primary)}',
-      '.edh-mcp-reloadNote[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
       '.edh-mcp-list{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}',
       '.edh-mcp-row{border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:minmax(0,1fr) max-content 44px max-content;align-items:center;gap:4px 16px;padding:10px 0;display:grid}',
       '.edh-mcp-ident{align-items:center;gap:8px;min-width:0;display:flex}',
@@ -2594,6 +2679,27 @@ window.__ModuleLoader__.load({
         }
       })
 
+      // reload — the same row, immediately to the right of update, because the
+      // two are one errand: bring a version in, then load the interface that is
+      // installed. It is its own entry rather than part of the update control so
+      // it is not gated on the update row: it asks the module system for a new
+      // revision of what is already here, which is not the update route.
+      const ReloadControl = createReloadControl(t, reloader)
+      ctx.slots.inject('plugins.detail.actions', () => {
+        try {
+          return ctx.slots.register({
+            name: 'plugins.detail.actions',
+            id: 'edh-reload',
+            order: 11,
+            locale: NS,
+            label: () => t('reload'),
+          }, ReloadControl)
+        } catch (error) {
+          updateWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+          throw error
+        }
+      })
+
       // mcp — its own page in the Settings navigation. It is a section, not a
       // tab under Plugins: servers are not part of the plugin inventory, and a
       // page found only after opening a page someone else opened is buried.
@@ -2605,7 +2711,7 @@ window.__ModuleLoader__.load({
       // controller's own state and re-synced on every change. The settings nav
       // redraws from `ctx.slots.entries` on each register and dispose, so the
       // cell appears and disappears with the row instead of pinning a dead link.
-      const McpPage = createMcpPage(t, controller, reloader)
+      const McpPage = createMcpPage(t, controller)
       ctx.effect(() => installMcpStyles(), 'edh: mcp styles')
       ctx.slots.inject(MCP_SECTION_SLOT, () => {
         let dispose
@@ -2646,11 +2752,12 @@ window.__ModuleLoader__.load({
         }
       })
 
-      // The reload face is optional: without `modules` the update control still
-      // checks and applies, and the MCP page simply has no Reload button — both
-      // say so rather than pretending. The face is shared because both surfaces
-      // replace the same browser half; the caller supplies the breadcrumb writer
-      // of the surface the person is looking at.
+      // The reload face is optional: without `modules` both controls still check
+      // and apply, and the Reload button is simply not offered rather than
+      // present-and-failing. The face is shared because the update control's
+      // live path and the Reload button replace the same browser half; the
+      // caller supplies the breadcrumb writer of the surface it speaks for, and
+      // there is only one surface now, so both write `edh:update`.
       ctx.inject(['modules'], scope => {
         scope.effect(() => {
           reloader.current = log => reloadBrowserHalf(scope.modules, log)
@@ -2739,11 +2846,15 @@ window.__ModuleLoader__.load({
       addServerBody,
       serverActionBody,
       withoutKey,
-      reloadAvailable,
+      reloadVisible,
       hostStaleness,
       reloadOutcome,
       reloadText,
       runReload,
+      icon,
+      controlStyle,
+      ICON_UPDATE,
+      ICON_RELOAD,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,

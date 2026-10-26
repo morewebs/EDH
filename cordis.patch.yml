@@ -1,0 +1,24 @@
+# EDH bundle patch — one row per thing EDH carries.
+#
+# The `edh` row is the shell: its module name is the bare package name, so the
+# browser half binds to it. It must stay enabled — disabling it would unload the
+# EDH control itself.
+#
+# Every other row is a feature: module names live under `@moreweb/edh/…`, which
+# is what the browser half scans for when it aggregates the master switch.
+# Turning a feature row off therefore never touches the shell or its UI.
+- insert:
+    - id: edh
+      name: '@moreweb/edh'
+      config: {}
+
+    # retry — unlimited retries of a failed model request inside the same turn.
+    - id: edh-retry
+      name: '@moreweb/edh/retry'
+      config: {}
+
+    # edit — edit a user message by forking just before it and seeding the fork's
+    # composer. The browser half reads this row's enablement to show the action.
+    - id: edh-edit
+      name: '@moreweb/edh/edit'
+      config: {}

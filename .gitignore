@@ -1,0 +1,11 @@
+# Dependencies, if a checkout ever grows a lockfile install
+node_modules/
+pnpm-lock.yaml.lock
+
+# Packed bundles
+*.tgz
+
+# Local editor and OS noise
+.DS_Store
+Thumbs.db
+*.log

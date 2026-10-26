@@ -28,3 +28,10 @@
     - id: edh-export
       name: '@moreweb/edh/export'
       config: {}
+
+    # update — update EDH itself from its published repo. The row owns the Host
+    # routes that check and apply; the browser half puts the action on EDH's own
+    # Plugin Manager page and reloads the new browser half in place.
+    - id: edh-update
+      name: '@moreweb/edh/update'
+      config: {}

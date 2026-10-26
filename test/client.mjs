@@ -18,6 +18,21 @@ assert.equal(definition.id, '@moreweb/edh')
 const mod = definition.factory(() => ({}))
 assert.deepEqual(mod.inject, ['slots', 'locale', 'remote', 'remote.pluginManager'])
 const { createController, findFeatures, featureEnabled, rowEnabled, contentParts, unwrap, EDIT_MODULE, EXPORT_MODULE } = mod.__test
+const {
+  updateSubject,
+  readCheck,
+  readApply,
+  updateText,
+  failureNote,
+  revisionOfFrame,
+  eventFrames,
+  moduleRevision,
+  UPDATE_MODULE,
+  PACKAGE_NAME,
+  UPDATE_ROUTE,
+  EVENTS_ROUTE,
+  UPDATE_DEBUG_KEY,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -246,4 +261,176 @@ function fakeRemote(options = {}) {
   }, 'an attachment block without a payload is kept verbatim')
 }
 
+// 13 — the update control addresses one route, one row, and one breadcrumb key.
+{
+  assert.equal(UPDATE_ROUTE, 'api/edh.update', 'document-relative, like the export route')
+  assert.equal(EVENTS_ROUTE, 'plugins/events', 'the route the shipped HMR client reads')
+  assert.equal(UPDATE_MODULE, '@moreweb/edh/update', 'the row that owns the routes')
+  assert.equal(PACKAGE_NAME, '@moreweb/edh', 'the package name and the module id are the same string')
+  assert.equal(UPDATE_DEBUG_KEY, 'edh:update', 'its own breadcrumb, beside edh:export')
+}
+
+// 14 — the control renders on EDH's own Plugin Manager page and nowhere else.
+{
+  const pkg = { name: PACKAGE_NAME, installed: true, availability: 'installed', official: false, enabled: true, rows: [] }
+  assert.equal(updateSubject({ kind: 'bundle', pkg }), 'bundle')
+  assert.equal(updateSubject({
+    kind: 'row',
+    pkg,
+    row: { rowId: 'edh-export', moduleName: EXPORT_MODULE, enabled: true },
+  }), 'row', 'a row page of the same package is still EDH')
+  assert.equal(updateSubject({ kind: 'bundle', pkg: { ...pkg, name: '@moreweb/edh-other' } }), undefined, 'another package is not ours')
+  assert.equal(updateSubject({ kind: 'row', pkg: { ...pkg, name: '@other/plugin' } }), undefined)
+  assert.equal(updateSubject({ kind: 'item', id: PACKAGE_NAME }), undefined, 'an official item id is not a package name')
+  for (const absent of [undefined, null, 'subject', {}, { kind: 'bundle' }, { kind: 'bundle', pkg: null }, { pkg }]) {
+    assert.equal(updateSubject(absent), undefined, `inert for ${JSON.stringify(absent)}`)
+  }
+}
+
+// 15 — a check answer becomes one state, and never offers an update it cannot name.
+{
+  assert.deepEqual(readCheck({ ok: true, installed: '0.4.0', latest: '0.5.0', available: true, checkout: true }), {
+    status: 'update-available',
+    stage: 'check',
+    installed: '0.4.0',
+    latest: '0.5.0',
+    from: '',
+    to: '',
+    reason: '',
+  })
+  assert.equal(readCheck({ ok: true, installed: '0.5.0', latest: '0.5.0', available: false, checkout: true }).status, 'up-to-date')
+  assert.equal(readCheck({ ok: true, available: true }).status, 'up-to-date', 'an update with no version to show is not offered')
+  assert.deepEqual(readCheck({ ok: false, reason: 'no-checkout', message: 'not a checkout' }), {
+    status: 'not-a-checkout',
+    stage: 'check',
+    installed: '',
+    latest: '',
+    from: '',
+    to: '',
+    reason: 'no-checkout',
+  })
+  for (const reason of ['offline', 'error', 'dirty', 'nonsense']) {
+    const state = readCheck({ ok: false, reason, message: 'no' })
+    assert.equal(state.status, 'failed', `a ${reason} check is a failure`)
+    assert.equal(state.stage, 'check')
+    assert.equal(state.reason, reason)
+  }
+  assert.equal(readCheck({ ok: false }).reason, 'error', 'a refusal without a reason is an error')
+  for (const absent of [undefined, null, 'nope']) {
+    assert.equal(readCheck(absent).status, 'failed', `inert for ${JSON.stringify(absent)}`)
+  }
+}
+
+// 16 — an apply answer applies in place only when the Host says it does not need a restart.
+{
+  assert.deepEqual(readApply({ ok: true, from: '0.4.0', to: '0.5.0', requiresRestart: false }), {
+    status: 'updated-live',
+    stage: 'apply',
+    installed: '0.5.0',
+    latest: '0.5.0',
+    from: '0.4.0',
+    to: '0.5.0',
+    reason: '',
+  })
+  assert.equal(readApply({ ok: true, from: '0.4.0', to: '0.5.0', requiresRestart: true }).status, 'updated-needs-restart')
+  assert.equal(readApply({ ok: true, from: '0.4.0', to: '0.5.0' }).status, 'updated-needs-restart', 'only an explicit false is live')
+  for (const reason of ['dirty', 'no-checkout', 'offline', 'error']) {
+    const state = readApply({ ok: false, reason, message: 'no' })
+    assert.equal(state.status, 'failed')
+    assert.equal(state.stage, 'apply')
+    assert.equal(state.reason, reason)
+  }
+  assert.equal(readApply({ ok: false }).reason, 'error')
+  assert.equal(readApply(null).status, 'failed')
+}
+
+// 17 — every state offers a short label and a tooltip, and an update names its version.
+{
+  const t = (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`)
+  assert.deepEqual(updateText(undefined, t), { label: 'update', title: 'updateHint' })
+  assert.deepEqual(updateText({ status: 'checking' }, t), { label: 'checking', title: 'checkingHint' })
+  assert.deepEqual(updateText({ status: 'up-to-date', latest: '0.5.0' }, t), {
+    label: 'upToDate',
+    title: 'upToDateHint({"version":"0.5.0"})',
+  })
+  assert.deepEqual(updateText({ status: 'update-available', latest: '0.5.0' }, t), {
+    label: 'updateTo({"version":"0.5.0"})',
+    title: 'updateToHint({"version":"0.5.0"})',
+  })
+  assert.deepEqual(updateText({ status: 'not-a-checkout', reason: 'no-checkout' }, t), {
+    label: 'notCheckout',
+    title: 'notCheckoutHint',
+  })
+  assert.deepEqual(updateText({ status: 'updating' }, t), { label: 'updating', title: 'updatingHint' })
+  assert.deepEqual(updateText({ status: 'updated-live', latest: '0.5.0' }, t), {
+    label: 'updated',
+    title: 'updatedHint({"version":"0.5.0"})',
+  })
+  assert.deepEqual(updateText({ status: 'updated-needs-restart', latest: '0.5.0' }, t), {
+    label: 'restartToFinish',
+    title: 'restartHint({"version":"0.5.0"})',
+  })
+  assert.deepEqual(updateText({ status: 'failed', stage: 'apply', reason: 'dirty' }, t), {
+    label: 'updateFailed',
+    title: 'dirtyHint',
+  })
+  assert.deepEqual(updateText({ status: 'failed', stage: 'check', reason: 'offline' }, t), {
+    label: 'checkFailed',
+    title: 'offlineHint',
+  })
+  assert.equal(updateText({ status: 'update-available' }, t).label, 'updateTo({"version":"?"})', 'a nameless version still reads as an update')
+  assert.equal(failureNote('no-checkout'), 'notCheckoutHint')
+  assert.equal(failureNote('dirty'), 'dirtyHint')
+  assert.equal(failureNote('offline'), 'offlineHint')
+  assert.equal(failureNote('error'), 'errorHint')
+  assert.equal(failureNote('anything else'), 'errorHint', 'an unknown refusal still has words for the user')
+}
+
+// 18 — the new revision is read from the Host's own frames, never invented.
+{
+  const REBUILT = JSON.stringify({ type: 'rebuilt', id: PACKAGE_NAME, rev: 'abc123' })
+  assert.equal(revisionOfFrame(REBUILT, PACKAGE_NAME, 'def456'), 'abc123')
+  assert.equal(revisionOfFrame(REBUILT, PACKAGE_NAME, 'abc123'), undefined, 'the page already runs it')
+  assert.equal(revisionOfFrame(REBUILT, '@moreweb/edhx', 'def456'), undefined, 'another module is not ours')
+  assert.equal(revisionOfFrame(JSON.stringify({
+    type: 'graph',
+    graph: { rev: 'g', modules: [{ id: PACKAGE_NAME, rev: 'abc123' }, { id: 'other', rev: 'zzz' }] },
+  }), PACKAGE_NAME, 'def456'), 'abc123', 'a graph frame carries every row')
+  assert.equal(revisionOfFrame(JSON.stringify({
+    type: 'graph',
+    graph: { modules: [{ id: PACKAGE_NAME, rev: 'abc123' }] },
+  }), PACKAGE_NAME, 'abc123'), undefined)
+  for (const frame of [
+    'not json',
+    'null',
+    JSON.stringify({ type: 'graph' }),
+    JSON.stringify({ type: 'graph', graph: null }),
+    JSON.stringify({ type: 'graph', graph: { modules: [] } }),
+    JSON.stringify({ type: 'graph', graph: { modules: [null, 7] } }),
+    JSON.stringify({ type: 'rebuilt', id: PACKAGE_NAME, rev: 7 }),
+    JSON.stringify({ type: 'other', id: PACKAGE_NAME, rev: 'abc123' }),
+  ]) {
+    assert.equal(revisionOfFrame(frame, PACKAGE_NAME, 'def456'), undefined, `inert for ${frame}`)
+  }
+
+  // One read carries complete frames, a partial frame, or only a comment.
+  assert.deepEqual(eventFrames(`data: ${REBUILT}\n\n`), { frames: [REBUILT], rest: '' })
+  assert.deepEqual(eventFrames(`: connected\n\ndata: ${REBUILT}\n\ndata: {"type":"gra`), {
+    frames: [REBUILT],
+    rest: 'data: {"type":"gra',
+  })
+  assert.deepEqual(eventFrames(''), { frames: [], rest: '' })
+  assert.deepEqual(eventFrames(': connected\n\n'), { frames: [], rest: '' })
+  assert.deepEqual(eventFrames('data:\n\n'), { frames: [], rest: '' }, 'an empty payload is not a frame')
+
+  // The revision the page booted with comes from the module system's own manifest.
+  const modules = { manifest: { modules: [{ id: PACKAGE_NAME, rev: 'abc123', url: 'plugins/??x&rev=abc123' }] } }
+  assert.equal(moduleRevision(modules, PACKAGE_NAME), 'abc123')
+  assert.equal(moduleRevision(modules, 'other'), undefined)
+  for (const absent of [undefined, null, {}, { manifest: {} }, { manifest: { modules: null } }, { manifest: { modules: [null] } }]) {
+    assert.equal(moduleRevision(absent, PACKAGE_NAME), undefined, `inert for ${JSON.stringify(absent)}`)
+  }
+}
+
+console.log('edh update: control and reload checks passed')
 console.log('edh switch: all checks passed')

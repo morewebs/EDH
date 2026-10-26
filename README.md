@@ -9,6 +9,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `retry` | Retries a failed model request inside the same turn, with no attempt limit |
 | `edit` | Adds a pencil to every user message: forks the Session just before it and puts the text back in the composer |
 | `export` | Downloads the Session as a Markdown document |
+| `update` | Updates EDH itself from its published repo, from EDH's page in Plugin Manager, and reloads the new browser half in place |
 
 A switch in the conversation header turns them all on or off together.
 

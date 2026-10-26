@@ -36,6 +36,17 @@ to the shell row.
   node is the only route, so the replacement must re-render the action row itself.
 - Reuse the shipped Factory for the parts you are not replacing
   (`conversation.chat.user.content` still paints the bubble).
+- **Plugin Manager seats hang off `main` keyed `plugins`.** `plugins.detail.actions` (list,
+  root scope) is the head of a detail page; its owner props are `{ subject }`, where the
+  page builds `{ kind: 'item', id }`, `{ kind: 'row', pkg, row }`, or `{ kind: 'bundle', pkg }`.
+  A package name is only on `pkg.name`, so that is what identifies EDH — an `item.id` is a
+  catalog id, not a package name. An entry must render `null` for a subject it has no
+  control for, and it exists only once the Plugins panel has been opened, because those
+  rows are declared by the panel's own entry.
+- **`modules.entries.reload(id, rev)` is how a browser half replaces itself**, but `rev` is
+  the Host's: it selects the rebuilt artifact and an unpublished revision answers 404. Read
+  the revision off the same `plugins/events` stream the shipped HMR client reads; never
+  synthesise one.
 
 ## Sessions
 
@@ -96,12 +107,15 @@ node --check client.js
 node test/retry.mjs
 node test/client.mjs
 node test/export.mjs
+node test/update.mjs
 ```
 
 There is often no browser control in a session, so EDH writes Local Storage breadcrumbs:
 `edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
-`view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`), and
-`edh:export` for the download button (`mounted` / `click` / `failed`).
+`view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`),
+`edh:export` for the download button (`mounted` / `click` / `failed`), and `edh:update` for
+the update control (`mounted` / `checked` / `update-started` / `updated` / `reload-failed` /
+`updated-needs-restart` / `failed`).
 Read them off disk while the app is closed or running:
 
 ```
@@ -121,3 +135,25 @@ them here.
 Commit small; `main` is the release branch. The local profile points at this directory with
 `link:`, so a page reload is enough for `client.js`, but a new or renamed row in
 `cordis.patch.yml` only appears in Plugin Manager after a full restart.
+
+The `edh-update` row is the way out of that: it updates this checkout from the published
+repo on EDH's own Plugin Manager page, and it answers `requiresRestart` per update rather
+than by a constant. Availability is a **commit count**, not a version string — `git fetch`
+then `git rev-list --count HEAD..FETCH_HEAD` — because this repo commits small and rarely
+bumps `package.json`, so a version comparison would call a stale checkout "up to date".
+Never `--depth`: a shallow graft makes the following `merge --ff-only` fail with "refusing to
+merge unrelated histories".
+
+After a merge it diffs the two revisions and reports `requiresRestart: false` only when
+nothing but browser-side files moved (`client.js`, `locale/`, `test/`, `package.json`,
+`icon.svg`, the docs) — then the page replaces its own browser half through
+`modules.entries.reload` and the change lands live. When a Host module moved it answers
+`true`, because the Loader cannot re-import a started Host module: `refresh()` no-ops on a
+live fiber, `update()` only re-patches options, `import()` hits the ESM cache, and
+`loader.exit()` is the host restarting itself. Do not "fix" that by returning `false`: the
+process would keep running the old Host half while the page claims it is current.
+
+`installed` is the version the process **loaded** (`LOADED_VERSION`, captured at import),
+reported beside `onDisk`. That distinction is load-bearing: after a merge the manifest on
+disk already equals the new version, so a page reload must still see "restart to finish"
+rather than "up to date".

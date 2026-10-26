@@ -12,6 +12,10 @@ window.__ModuleLoader__.load({
     const EDIT_MODULE = '@moreweb/edh/edit'
     /** The row that carries Markdown export; the browser half reads its enablement. */
     const EXPORT_MODULE = '@moreweb/edh/export'
+    /** The row that carries the update feature; the browser half reads its enablement. */
+    const UPDATE_MODULE = '@moreweb/edh/update'
+    /** This bundle's own package name: the Plugin Manager subject and the module id. */
+    const PACKAGE_NAME = '@moreweb/edh'
 
     const en = {
       label: 'EDH',
@@ -26,6 +30,27 @@ window.__ModuleLoader__.load({
       edit: 'Edit message',
       editFailed: 'The message could not be opened for editing.',
       export: 'Export as Markdown',
+      update: 'Update EDH',
+      updateHint: 'Check for a published EDH update.',
+      updateTo: 'Update to {version}',
+      updateToHint: 'Download and apply EDH {version}. Its checkout must have no local changes.',
+      checking: 'Checking…',
+      checkingHint: 'Reading the published EDH version.',
+      upToDate: 'Up to date',
+      upToDateHint: 'EDH {version} is the published version.',
+      notCheckout: 'Not a checkout',
+      notCheckoutHint: 'EDH was not installed from a git checkout, so it cannot update itself here.',
+      updating: 'Updating…',
+      updatingHint: 'Fast-forwarding the EDH checkout.',
+      updated: 'Updated',
+      updatedHint: 'EDH is now {version}.',
+      restartToFinish: 'Restart to finish',
+      restartHint: 'EDH is now {version}. The new host half lands on restart.',
+      checkFailed: 'Check failed',
+      updateFailed: 'Update failed',
+      offlineHint: 'No network: the published version could not be read.',
+      dirtyHint: 'EDH has uncommitted changes, so nothing was changed.',
+      errorHint: 'The update could not be applied. Open Plugins to check the EDH rows.',
     }
     const zh = {
       label: 'EDH',
@@ -40,6 +65,27 @@ window.__ModuleLoader__.load({
       edit: '编辑消息',
       editFailed: '无法打开该消息进行编辑。',
       export: '导出为 Markdown',
+      update: '更新 EDH',
+      updateHint: '检查已发布的 EDH 版本。',
+      updateTo: '更新到 {version}',
+      updateToHint: '下载并应用 EDH {version}，检出目录需无本地改动。',
+      checking: '检查中…',
+      checkingHint: '正在读取已发布的 EDH 版本。',
+      upToDate: '已是最新',
+      upToDateHint: 'EDH {version} 就是已发布的版本。',
+      notCheckout: '不是 git 检出',
+      notCheckoutHint: 'EDH 不是从 git 检出安装的，无法在此自行更新。',
+      updating: '更新中…',
+      updatingHint: '正在快进 EDH 检出目录。',
+      updated: '已更新',
+      updatedHint: 'EDH 现在是 {version}。',
+      restartToFinish: '重启以完成',
+      restartHint: 'EDH 现在是 {version}，新的宿主部分将在重启后生效。',
+      checkFailed: '检查失败',
+      updateFailed: '更新失败',
+      offlineHint: '无网络：无法读取已发布版本。',
+      dirtyHint: 'EDH 有未提交的改动，未做任何修改。',
+      errorHint: '更新未能应用，请到「插件」页查看 EDH 对应行。',
     }
 
     /**
@@ -73,6 +119,8 @@ window.__ModuleLoader__.load({
     const EDIT_DEBUG_KEY = 'edh:edit'
     /** Separate breadcrumb for Markdown export. */
     const EXPORT_DEBUG_KEY = 'edh:export'
+    /** Separate breadcrumb for the update action. */
+    const UPDATE_DEBUG_KEY = 'edh:update'
 
     function writeBreadcrumb(key, payload) {
       try {
@@ -92,6 +140,15 @@ window.__ModuleLoader__.load({
 
     function exportWrite(payload) {
       writeBreadcrumb(EXPORT_DEBUG_KEY, payload)
+    }
+
+    function updateWrite(payload) {
+      writeBreadcrumb(UPDATE_DEBUG_KEY, payload)
+    }
+
+    /** One error's text, whatever was thrown. */
+    function messageOf(error) {
+      return String(error?.message ?? error)
     }
 
     /**
@@ -847,6 +904,448 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------------------------------------------------------------------
+    // Updating EDH
+    //
+    // The Host half owns the routes that read the published version and
+    // fast-forward the checkout. The browser's job is the one control, in Plugin
+    // Manager on EDH's own page, and the last step of an applied update: handing
+    // this bundle's module to the client module system so the *new* browser half
+    // runs without a page reload.
+    // ---------------------------------------------------------------------
+
+    /**
+     * The Host route that answers one check (`GET`) and one apply (`POST`), in the
+     * document-relative form the browser resolves against its own base.
+     */
+    const UPDATE_ROUTE = 'api/edh.update'
+
+    /** Document-relative route the Host publishes graph and `rebuilt` frames on. */
+    const EVENTS_ROUTE = 'plugins/events'
+
+    /** How long the page waits for the Host to publish a new bundle revision. */
+    const REVISION_TIMEOUT_MS = 8000
+
+    /** A control that has not checked yet: it offers the check and nothing more. */
+    const IDLE_UPDATE = Object.freeze({
+      status: 'idle',
+      stage: '',
+      installed: '',
+      latest: '',
+      from: '',
+      to: '',
+      reason: '',
+    })
+
+    /**
+     * Which Plugin Manager detail page a subject is, when it is EDH's own.
+     *
+     * The shipped page builds three subjects: `item` for an official catalog
+     * entry, `row` for one configuration row, and `bundle` for one installed
+     * package. Only the last two carry a package at all, and `subject.pkg.name`
+     * is the bundle's own package name — the one field that identifies EDH
+     * without guessing at a title, a row id, or a version.
+     * @param subject - the page's subject prop.
+     * @returns `bundle` or `row` for an EDH page, `undefined` for any other.
+     */
+    function updateSubject(subject) {
+      if (subject === null || typeof subject !== 'object') return undefined
+      const pkg = subject.pkg
+      if (pkg === null || typeof pkg !== 'object' || pkg.name !== PACKAGE_NAME) return undefined
+      return subject.kind === 'bundle' || subject.kind === 'row' ? subject.kind : undefined
+    }
+
+    /**
+     * The state one check answer describes.
+     * @param payload - the route's parsed answer.
+     * @returns up to date, an update to offer, or why the check could not run.
+     */
+    function readCheck(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const installed = typeof answer.installed === 'string' ? answer.installed : ''
+      const latest = typeof answer.latest === 'string' ? answer.latest : ''
+      if (answer.ok !== true) {
+        const reason = typeof answer.reason === 'string' ? answer.reason : 'error'
+        return {
+          status: reason === 'no-checkout' ? 'not-a-checkout' : 'failed',
+          stage: 'check',
+          installed,
+          latest,
+          from: '',
+          to: '',
+          reason,
+        }
+      }
+      return {
+        status: answer.available === true && latest !== '' ? 'update-available' : 'up-to-date',
+        stage: 'check',
+        installed,
+        latest,
+        from: '',
+        to: '',
+        reason: '',
+      }
+    }
+
+    /**
+     * The state one apply answer describes. Only an explicit `requiresRestart:
+     * false` means the Host half was re-read in place; anything else says so
+     * rather than offering a reload that would only load a second browser half.
+     * @param payload - the route's parsed answer.
+     */
+    function readApply(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const from = typeof answer.from === 'string' ? answer.from : ''
+      const to = typeof answer.to === 'string' ? answer.to : ''
+      if (answer.ok !== true) {
+        const reason = typeof answer.reason === 'string' ? answer.reason : 'error'
+        return { status: 'failed', stage: 'apply', installed: from, latest: to, from, to, reason }
+      }
+      return {
+        status: answer.requiresRestart === false ? 'updated-live' : 'updated-needs-restart',
+        stage: 'apply',
+        installed: to,
+        latest: to,
+        from,
+        to,
+        reason: '',
+      }
+    }
+
+    /**
+     * The tooltip for one refusal reason, in the words the routes answer with.
+     * @param reason - `no-checkout`, `dirty`, `offline`, `error`, or anything else.
+     * @returns the dictionary key of the sentence to show.
+     */
+    function failureNote(reason) {
+      switch (reason) {
+        case 'no-checkout': return 'notCheckoutHint'
+        case 'dirty': return 'dirtyHint'
+        case 'offline': return 'offlineHint'
+        default: return 'errorHint'
+      }
+    }
+
+    /**
+     * The label and tooltip one update state offers.
+     *
+     * Kept pure so the Node test can pin the copy the control actually shows
+     * instead of reading it back out of a rendered element.
+     * @param state - the control's current state.
+     * @param t - the dictionary's translate function.
+     * @returns the visible label and the tooltip sentence.
+     */
+    function updateText(state, t) {
+      const status = state !== null && typeof state === 'object' ? state.status : undefined
+      const latest = typeof state?.latest === 'string' && state.latest !== '' ? state.latest : '?'
+      switch (status) {
+        case 'checking':
+          return { label: t('checking'), title: t('checkingHint') }
+        case 'update-available':
+          return { label: t('updateTo', { version: latest }), title: t('updateToHint', { version: latest }) }
+        case 'up-to-date':
+          return { label: t('upToDate'), title: t('upToDateHint', { version: latest }) }
+        case 'not-a-checkout':
+          return { label: t('notCheckout'), title: t(failureNote('no-checkout')) }
+        case 'updating':
+          return { label: t('updating'), title: t('updatingHint') }
+        case 'updated-live':
+          return { label: t('updated'), title: t('updatedHint', { version: latest }) }
+        case 'updated-needs-restart':
+          return { label: t('restartToFinish'), title: t('restartHint', { version: latest }) }
+        case 'failed':
+          return {
+            label: t(state.stage === 'apply' ? 'updateFailed' : 'checkFailed'),
+            title: t(failureNote(state.reason)),
+          }
+        default:
+          return { label: t('update'), title: t('updateHint') }
+      }
+    }
+
+    /**
+     * The revision one event frame reports for a module, when it is new.
+     *
+     * A `rebuilt` frame names the single module the Host just re-read; a `graph`
+     * frame carries every row, which is how the page learns a revision a missed
+     * rebuild frame already published.
+     * @param text - one frame's `data` payload.
+     * @param moduleId - the module to find.
+     * @param previous - the revision the page is already running.
+     * @returns the new revision, or `undefined` when the frame names none.
+     */
+    function revisionOfFrame(text, moduleId, previous) {
+      let frame
+      try {
+        frame = JSON.parse(text)
+      } catch (error) {
+        return undefined
+      }
+      if (frame === null || typeof frame !== 'object') return undefined
+      if (frame.type === 'rebuilt') {
+        if (frame.id !== moduleId || typeof frame.rev !== 'string' || frame.rev === previous) return undefined
+        return frame.rev
+      }
+      if (frame.type !== 'graph') return undefined
+      const rows = frame.graph === null || typeof frame.graph !== 'object' ? undefined : frame.graph.modules
+      const list = Array.isArray(rows) ? rows : []
+      const row = list.find(entry => entry !== null && typeof entry === 'object' && entry.id === moduleId)
+      if (row === undefined || typeof row.rev !== 'string' || row.rev === previous) return undefined
+      return row.rev
+    }
+
+    /**
+     * Split one text buffer into the payloads of the frames it holds.
+     *
+     * The Host writes `data: <json>` followed by a blank line per frame, so a
+     * growing read keeps its unterminated tail for the next chunk.
+     * @param buffer - the text read so far.
+     * @returns each complete frame's payload, and the tail to carry forward.
+     */
+    function eventFrames(buffer) {
+      const parts = String(buffer).split('\n\n')
+      const rest = parts.pop() ?? ''
+      const frames = []
+      for (const part of parts) {
+        const data = part.split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).replace(/^ /u, ''))
+          .join('\n')
+        if (data !== '') frames.push(data)
+      }
+      return { frames, rest }
+    }
+
+    /** The revision the page booted with for one module. */
+    function moduleRevision(modules, moduleId) {
+      const rows = modules === null || modules === undefined ? undefined : modules.manifest?.modules
+      const list = Array.isArray(rows) ? rows : []
+      const row = list.find(entry => entry !== null && typeof entry === 'object' && entry.id === moduleId)
+      return row !== undefined && typeof row.rev === 'string' ? row.rev : undefined
+    }
+
+    /** The request carrier the shell publishes, or the page's own `fetch`. */
+    function shellFetch() {
+      const transport = globalThis.__DSH_TRANSPORT__
+      if (transport !== undefined && transport !== null && typeof transport.fetch === 'function') return transport.fetch
+      return typeof fetch === 'function' ? fetch : undefined
+    }
+
+    /**
+     * The revision the Host now serves for one module.
+     *
+     * `entries.reload(id, rev)` rewrites the bundle URL's `rev` query, and the
+     * Host answers a revision it never published with 404 — so the revision has
+     * to come from the Host. Its reload chain republishes the graph on the
+     * document-relative events route the shipped HMR client already reads; this
+     * reads that stream until a frame names a revision the page is not running.
+     * @param moduleId - the module whose revision to read.
+     * @param previous - the revision the page is running now.
+     * @param timeoutMs - how long the read may take before it gives up.
+     * @returns the new revision, or `undefined` when none arrives in time.
+     */
+    async function nextRevision(moduleId, previous, timeoutMs = REVISION_TIMEOUT_MS) {
+      const request = shellFetch()
+      if (request === undefined || typeof AbortController !== 'function') return undefined
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const response = await request(EVENTS_ROUTE, {
+          method: 'GET',
+          headers: { accept: 'text/event-stream' },
+          signal: controller.signal,
+        })
+        if (response?.ok !== true || response.body === null || response.body === undefined) return undefined
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done === true) return undefined
+          buffer += decoder.decode(value, { stream: true })
+          const { frames, rest } = eventFrames(buffer)
+          buffer = rest
+          for (const frame of frames) {
+            const rev = revisionOfFrame(frame, moduleId, previous)
+            if (rev === undefined) continue
+            try {
+              await reader.cancel()
+            } catch (error) {
+              // The stream is being abandoned either way.
+            }
+            return rev
+          }
+        }
+      } catch (error) {
+        return undefined
+      } finally {
+        window.clearTimeout(timer)
+      }
+    }
+
+    /**
+     * Replace this bundle's browser half in place.
+     *
+     * The shipped HMR client makes the same call when it sees a `rebuilt` frame;
+     * this one makes the click deterministic instead of a race with it.
+     * @param modules - the client module system, from its own optional scope.
+     * @returns `replaced`, `absent` (no module system on this page), `stale` (the
+     * Host published no new revision) or `failed` (the replacement threw).
+     */
+    async function reloadBrowserHalf(modules) {
+      const entries = modules === null || modules === undefined ? undefined : modules.entries
+      if (entries === undefined || entries === null || typeof entries.reload !== 'function') return 'absent'
+      const rev = await nextRevision(PACKAGE_NAME, moduleRevision(modules, PACKAGE_NAME))
+      if (rev === undefined) return 'stale'
+      try {
+        await entries.reload(PACKAGE_NAME, rev)
+        return 'replaced'
+      } catch (error) {
+        updateWrite({ phase: 'reload-failed', rev, message: messageOf(error) })
+        return 'failed'
+      }
+    }
+
+    /**
+     * The Plugin Manager action that updates EDH from its published repo.
+     *
+     * It checks on mount, quietly, and then offers the one thing it can do: apply
+     * the published version, or re-check after a failure. It renders only on
+     * EDH's own detail page and only while the update row is loaded, so a profile
+     * whose patch predates the row never shows a control in front of a route
+     * that does not exist yet.
+     * @param t - the dictionary's translate function.
+     * @param controller - the switch controller holding the row states.
+     * @param reloader - holds the optional `modules` reload face.
+     */
+    function createUpdateControl(t, controller, reloader) {
+      const useUpdateEnabled = createFeatureHook(controller, UPDATE_MODULE, rowEnabled)
+
+      return function EdhUpdateControl({ subject }) {
+        const enabled = useUpdateEnabled()
+        const target = updateSubject(subject)
+        const [state, setState] = React.useState(IDLE_UPDATE)
+        const [hover, setHover] = React.useState(false)
+
+        const check = React.useCallback(async () => {
+          setState(previous => ({ ...previous, status: 'checking' }))
+          let answer
+          try {
+            answer = await requestUpdate('GET')
+          } catch (error) {
+            updateWrite({ phase: 'failed', stage: 'check', reason: 'error', message: messageOf(error) })
+            setState(readCheck({ ok: false, reason: 'error' }))
+            return
+          }
+          const checked = readCheck(answer)
+          if (checked.status === 'failed') {
+            updateWrite({ phase: 'failed', stage: 'check', reason: checked.reason })
+          } else {
+            updateWrite({ phase: 'checked', status: checked.status, installed: checked.installed, latest: checked.latest })
+          }
+          setState(checked)
+        }, [])
+
+        const apply = React.useCallback(async () => {
+          setState(previous => ({ ...previous, status: 'updating' }))
+          updateWrite({ phase: 'update-started', latest: state.latest })
+          let answer
+          try {
+            answer = await requestUpdate('POST')
+          } catch (error) {
+            updateWrite({ phase: 'failed', stage: 'apply', reason: 'error', message: messageOf(error) })
+            setState(readApply({ ok: false, reason: 'error' }))
+            return
+          }
+          const applied = readApply(answer)
+          setState(applied)
+          if (applied.status === 'failed') {
+            updateWrite({ phase: 'failed', stage: 'apply', reason: applied.reason })
+            return
+          }
+          updateWrite({
+            phase: 'updated',
+            from: applied.from,
+            to: applied.to,
+            requiresRestart: applied.status === 'updated-needs-restart',
+          })
+          if (applied.status !== 'updated-live') return
+          // The Host reports the new half is live; hand this bundle to the client
+          // module system so the new browser half runs instead of the old one.
+          const reload = reloader.current
+          const reloaded = typeof reload === 'function' ? await reload() : 'absent'
+          if (reloaded === 'replaced') return
+          updateWrite({ phase: 'updated-needs-restart', reload: reloaded })
+          setState(previous => ({ ...previous, status: 'updated-needs-restart' }))
+        }, [state.latest])
+
+        // Check quietly as soon as the page proves to be EDH's own and the row
+        // that answers the route is loaded.
+        React.useEffect(() => {
+          if (target === undefined || !enabled) return
+          updateWrite({ phase: 'mounted', subject: target, module: UPDATE_MODULE, reload: typeof reloader.current === 'function' })
+          void check()
+        }, [target, enabled])
+
+        if (!enabled || target === undefined) return null
+
+        const busy = state.status === 'checking' || state.status === 'updating'
+        const actionable = state.status === 'update-available'
+          || state.status === 'up-to-date'
+          || state.status === 'not-a-checkout'
+          || state.status === 'failed'
+        const primary = state.status === 'update-available'
+        const text = updateText(state, t)
+
+        return h('button', {
+          type: 'button',
+          'aria-label': text.label,
+          'aria-busy': busy || undefined,
+          title: text.title,
+          disabled: !actionable,
+          onClick: () => {
+            if (!actionable) return
+            if (state.status === 'update-available') void apply()
+            else void check()
+          },
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: '24px',
+            padding: '0 8px',
+            border: primary ? '1px solid var(--dsw-alias-brand-primary)' : '1px solid transparent',
+            borderRadius: '6px',
+            background: hover && actionable ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            color: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
+            font: 'inherit',
+            fontSize: '12px',
+            lineHeight: '16px',
+            whiteSpace: 'nowrap',
+            cursor: actionable ? 'pointer' : 'default',
+            flexShrink: 0,
+            userSelect: 'none',
+            transition: 'background 120ms ease, color 120ms ease',
+          },
+        }, text.label)
+      }
+    }
+
+    /**
+     * One request on the update route. The Host answers a report with 200 and
+     * only an unsupported method with anything else, so a non-200 status is the
+     * route failing rather than a version being unavailable.
+     * @param method - `GET` to check, `POST` to apply.
+     * @returns the parsed answer.
+     */
+    async function requestUpdate(method) {
+      const response = await fetch(UPDATE_ROUTE, { method, headers: { accept: 'application/json' } })
+      if (response?.ok !== true) throw new Error(`${UPDATE_ROUTE} answered ${response?.status ?? 'nothing'}`)
+      return await response.json()
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -861,7 +1360,7 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'locale', 'remote', 'remote.pluginManager']
 
     /**
-     * Mount the EDH master switch, and the message-editing surface it governs.
+     * Mount the EDH master switch and the surfaces it governs.
      * @param ctx - the browser plugin context.
      */
     function apply(ctx) {
@@ -907,6 +1406,39 @@ window.__ModuleLoader__.load({
           exportWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
           throw error
         }
+      })
+
+      // update — one action in Plugin Manager, on EDH's own detail page only. It
+      // checks the published version on mount and applies it on click; applying
+      // then hands the bundle back to the client module system so the new
+      // browser half runs without a page reload.
+      /** Filled by the optional `modules` scope; absent when the page has none. */
+      const reloader = { current: undefined }
+      const UpdateControl = createUpdateControl(t, controller, reloader)
+      ctx.slots.inject('plugins.detail.actions', () => {
+        try {
+          return ctx.slots.register({
+            name: 'plugins.detail.actions',
+            id: 'edh-update',
+            order: 10,
+            locale: NS,
+            label: () => t('update'),
+          }, UpdateControl)
+        } catch (error) {
+          updateWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+          throw error
+        }
+      })
+
+      // The reload face is optional: without `modules` the control still checks
+      // and applies, it just cannot replace the browser half and says so.
+      ctx.inject(['modules'], scope => {
+        scope.effect(() => {
+          reloader.current = () => reloadBrowserHalf(scope.modules)
+          return () => {
+            reloader.current = undefined
+          }
+        }, 'edh: update reload')
       })
 
       // edit — replace the `user` Chat renderer so a user message gains an Edit
@@ -962,9 +1494,22 @@ window.__ModuleLoader__.load({
       formatClock,
       unwrap,
       rowEnabled,
+      updateSubject,
+      readCheck,
+      readApply,
+      updateText,
+      failureNote,
+      revisionOfFrame,
+      eventFrames,
+      moduleRevision,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,
+      UPDATE_MODULE,
+      PACKAGE_NAME,
+      UPDATE_ROUTE,
+      EVENTS_ROUTE,
+      UPDATE_DEBUG_KEY,
     }
 
     return exports

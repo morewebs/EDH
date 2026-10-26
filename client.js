@@ -234,7 +234,8 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Build the switch component over one controller and its translator. */    function createSwitch(t, controller) {
+    /** Build the switch component over one controller and its translator. */
+    function createSwitch(t, controller) {
       return function EdhSwitch() {
         const [snapshot, setSnapshot] = React.useState(() => ({ ...controller.getSnapshot() }))
         const [hover, setHover] = React.useState(false)
@@ -741,10 +742,18 @@ window.__ModuleLoader__.load({
     // manager — the same hand-off the shipped Session-log export makes.
     // ---------------------------------------------------------------------
 
-    /** The Host route that answers one Session's Markdown document. */
-    const EXPORT_ROUTE = '/api/edh.export'.slice(1)
+    /**
+     * The Host route that answers one Session's Markdown document, in the
+     * document-relative form the browser resolves against its own base — the
+     * same hand-off the shipped Session-log export makes.
+     */
+    const EXPORT_ROUTE = 'api/edh.export'
 
-    /** Collapse a Session id into one filename segment, matching the Host. */
+    /**
+     * Collapse a Session id into one filename segment. `export.js` owns the
+     * same rule for the `content-disposition` header; the two must agree, and
+     * `test/export.mjs` pins the shape.
+     */
     function exportFilename(sessionId) {
       return `dsh-session-${String(sessionId).replace(/[^A-Za-z0-9_-]/gu, '_')}.md`
     }
@@ -784,7 +793,6 @@ window.__ModuleLoader__.load({
 
         return h('button', {
           type: 'button',
-          className: 'edh-headerAction',
           'aria-label': t('export'),
           title: t('export'),
           onClick: () => {
@@ -864,13 +872,20 @@ window.__ModuleLoader__.load({
       // enablement, so pausing the feature removes the action without touching
       // the switch that paused it.
       const ExportButton = createExportButton(t, controller)
-      ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-        name: 'conversation.session.header.utilities',
-        id: 'edh-export',
-        order: -10,
-        locale: NS,
-        label: () => t('export'),
-      }, ExportButton))
+      ctx.slots.inject('conversation.session.header.utilities', () => {
+        try {
+          return ctx.slots.register({
+            name: 'conversation.session.header.utilities',
+            id: 'edh-export',
+            order: -10,
+            locale: NS,
+            label: () => t('export'),
+          }, ExportButton)
+        } catch (error) {
+          exportWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+          throw error
+        }
+      })
 
       // edit — replace the `user` Chat renderer so a user message gains an Edit
       // action, and seed the fork's composer from the click. It mounts on its own
@@ -924,10 +939,8 @@ window.__ModuleLoader__.load({
       contentParts,
       formatClock,
       unwrap,
-      exportFilename,
       NS,
       EDIT_MODULE,
-      EXPORT_MODULE,
     }
 
     return exports

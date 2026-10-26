@@ -194,6 +194,7 @@ const assistantEvent = (seq, value, extra = {}) => ({
   const failing = {
     get(name) {
       if (name === 'sessions') return { get: () => undefined, flush() { throw new Error('unused') } }
+      if (name !== 'sessionPersistence') return undefined
       return {
         async open() {
           calls.push(['open'])

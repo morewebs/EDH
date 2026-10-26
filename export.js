@@ -41,11 +41,11 @@ function blocksOf(event) {
  * Fold one message event into a reader-facing entry.
  * @returns the entry, or `undefined` when the message carries nothing readable.
  */
-function entryOf(seq, role, time, blocks) {
+function entryOf(event, role) {
   const texts = []
   const files = []
   let images = 0
-  for (const block of blocks) {
+  for (const block of blocksOf(event)) {
     if (block === null || typeof block !== 'object') continue
     if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text)
     else if (block.type === 'image') images += 1
@@ -53,7 +53,7 @@ function entryOf(seq, role, time, blocks) {
   }
   const text = texts.join('\n\n').trim()
   if (text === '' && images === 0 && files.length === 0) return undefined
-  return { seq, role, time, text, images, files }
+  return { seq: event.seq, role, time: event.time, text, images, files }
 }
 
 /**
@@ -81,7 +81,7 @@ export function conversationEntries(events) {
     if (role === undefined) continue
     const seq = event.seq
     if (typeof seq !== 'number' || !Number.isFinite(seq)) continue
-    const entry = entryOf(seq, role, event.time, blocksOf(event))
+    const entry = entryOf(event, role)
     if (entry !== undefined) kept.set(seq, entry)
   }
   return [...kept.values()].sort((left, right) => left.seq - right.seq)
@@ -210,7 +210,10 @@ export async function readSessionEvents(ctx, sessionId) {
   }
 }
 
-/** Collapse an untrusted Session id into one filename segment. */
+/**
+ * Collapse an untrusted Session id into one filename segment. The browser half
+ * carries the same rule for its `download` attribute; the two must agree.
+ */
 function safeSessionId(sessionId) {
   return String(sessionId).replace(/[^A-Za-z0-9_-]/gu, '_')
 }
@@ -255,17 +258,16 @@ export async function sessionMarkdownResponse(ctx, request) {
 
 /**
  * Register the download route on the Host connection.
+ *
+ * The fiber waits on `connection` (see `inject`), so the registry is there. A
+ * route this deployment refuses still must not take the whole bundle down, so
+ * a registration failure is logged and the rest of EDH keeps running.
  * @param ctx - the Host context.
  */
 export function apply(ctx) {
   ctx.effect(() => {
     try {
-      const connection = ctx.get('connection')
-      if (connection === undefined || typeof connection.fetch?.register !== 'function') {
-        ctx.logger?.warn?.('edh-export: no connection.fetch registry; the Markdown route is not served')
-        return () => {}
-      }
-      const dispose = connection.fetch.register({
+      const dispose = ctx.connection.fetch.register({
         path: EXPORT_PATH,
         methods: ['GET'],
         requestBody: 'buffered',
@@ -279,7 +281,6 @@ export function apply(ctx) {
         }
       }
     } catch (error) {
-      // A route this deployment refuses must never take the whole bundle down.
       ctx.logger?.warn?.('edh-export: route registration failed: %o', error)
       return () => {}
     }

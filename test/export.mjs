@@ -44,14 +44,24 @@ const assistantEvent = (seq, value, extra = {}) => ({
   ])
 }
 
-// 2 — a compaction checkpoint replaces the range it shadows.
+// 2 — a compaction checkpoint is model-only. The conversation it shadows stays,
+// and the checkpoint itself never becomes a turn.
 {
-  const checkpoint = userEvent(5, 'summary of the first two turns', {
+  const checkpoint = {
+    type: 'user/message',
+    seq: 5,
+    time: AT + 5000,
     surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 },
-  })
+    data: {
+      id: 'u5',
+      role: 'user',
+      source: { kind: 'compact-checkpoint' },
+      content: text('This is an automatically generated checkpoint condensing an earlier span…'),
+    },
+  }
   assert.deepEqual(
     conversationEntries([userEvent(1, 'first'), assistantEvent(2, 'answer'), checkpoint]).map(entry => entry.text),
-    ['summary of the first two turns'],
+    ['first', 'answer'],
   )
 }
 
@@ -219,21 +229,29 @@ const assistantEvent = (seq, value, extra = {}) => ({
   assert.deepEqual(await readSessionEvents({ get: () => undefined }, 'session-abc'), { ok: false, reason: 'unavailable' })
 }
 
-// 8 — a replacement carried by an event that is not a message still drops the
-// range it shadows: compaction prunes with `system/message` too.
+// 8 — only what a person said becomes a User turn. The harness logs its own
+// context injections as `user/message` too; a transcript is not the request body.
 {
-  const pruning = {
-    type: 'system/message',
-    seq: 3,
-    time: AT + 3000,
-    surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 },
-    data: { message: { content: [] } },
-  }
+  const injection = (seq, kind, value) => ({
+    type: 'user/message',
+    seq,
+    time: AT + seq * 1000,
+    data: { id: `u${seq}`, role: 'user', source: { kind }, content: text(value) },
+  })
   assert.deepEqual(
-    conversationEntries([userEvent(1, 'gone'), assistantEvent(2, 'gone too'), pruning, userEvent(4, 'kept')]).map(
-      entry => entry.text,
-    ),
-    ['kept'],
+    conversationEntries([
+      injection(1, 'runtime-context', 'Time sampled while preparing turn 2: …'),
+      injection(2, 'user', 'please fix the export'),
+      injection(3, 'user-approval', 'yes, allow it'),
+      injection(4, 'skill-catalog', 'available skills: …'),
+      injection(5, 'agent-instructions', 'workspace instructions'),
+      assistantEvent(6, 'done'),
+    ]).map(entry => [entry.role, entry.text]),
+    [
+      ['user', 'please fix the export'],
+      ['user', 'yes, allow it'],
+      ['assistant', 'done'],
+    ],
   )
 }
 

@@ -199,7 +199,8 @@ window.__ModuleLoader__.load({
      *
      * A profile whose bundle patch predates a row (an upgrade that has not been
      * restarted yet) simply has no entry for it; that case follows the aggregate
-     * instead of silently switching the feature off.
+     * instead of silently switching the feature off. A feature that needs its
+     * own Host half cannot use that fallback — see `rowEnabled`.
      *
      * Kept pure so the Node test can exercise it without a browser.
      * @param snapshot - a `createController` snapshot.
@@ -215,16 +216,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether one feature row is *present and* enabled — no aggregate fallback.
+     *
+     * For a feature whose UI is useless without its Host half: before the
+     * restart that mounts a new row, the button would otherwise appear in front
+     * of a route that does not exist yet.
+     * @param snapshot - a `createController` snapshot.
+     * @param moduleName - the row's module name.
+     */
+    function rowEnabled(snapshot, moduleName) {
+      if (snapshot === null || typeof snapshot !== 'object') return false
+      if (snapshot.status !== 'ready') return false
+      const states = snapshot.moduleStates
+      if (states === null || typeof states !== 'object') return false
+      return states[moduleName] === true
+    }
+
+    /**
      * One hook per feature row: true while that row is loaded and enabled.
      * @param controller - the switch controller holding the row states.
      * @param moduleName - the row's module name, e.g. `@moreweb/edh/export`.
+     * @param isEnabled - the enablement rule; `rowEnabled` when the row's own
+     *   presence matters, `featureEnabled` when the aggregate may stand in.
      */
-    function createFeatureHook(controller, moduleName) {
+    function createFeatureHook(controller, moduleName, isEnabled = featureEnabled) {
       return function useFeatureEnabled() {
-        const [enabled, setEnabled] = React.useState(() => featureEnabled(controller.getSnapshot(), moduleName))
+        const [enabled, setEnabled] = React.useState(() => isEnabled(controller.getSnapshot(), moduleName))
         React.useEffect(() => {
           const sync = () => {
-            const next = featureEnabled(controller.getSnapshot(), moduleName)
+            const next = isEnabled(controller.getSnapshot(), moduleName)
             setEnabled(previous => (previous === next ? previous : next))
           }
           sync()
@@ -778,7 +798,9 @@ window.__ModuleLoader__.load({
      * like every other EDH feature, and it disappears when no Session is open.
      */
     function createExportButton(t, controller) {
-      const useExportEnabled = createFeatureHook(controller, EXPORT_MODULE)
+      // The button is pointless without the Host route its row mounts, so the
+      // aggregate fallback is not good enough here.
+      const useExportEnabled = createFeatureHook(controller, EXPORT_MODULE, rowEnabled)
 
       return function EdhExportButton({ sessionId }) {
         const enabled = useExportEnabled()
@@ -939,8 +961,10 @@ window.__ModuleLoader__.load({
       contentParts,
       formatClock,
       unwrap,
+      rowEnabled,
       NS,
       EDIT_MODULE,
+      EXPORT_MODULE,
     }
 
     return exports

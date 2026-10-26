@@ -17,7 +17,7 @@ assert.ok(definition, 'module definition captured')
 assert.equal(definition.id, '@moreweb/edh')
 const mod = definition.factory(() => ({}))
 assert.deepEqual(mod.inject, ['slots', 'locale', 'remote', 'remote.pluginManager'])
-const { createController, findFeatures, featureEnabled, contentParts, unwrap, EDIT_MODULE } = mod.__test
+const { createController, findFeatures, featureEnabled, rowEnabled, contentParts, unwrap, EDIT_MODULE, EXPORT_MODULE } = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -203,6 +203,19 @@ function fakeRemote(options = {}) {
   for (const snapshot of [undefined, null, {}, { status: 'loading' }, { status: 'ready' }, { status: 'ready', moduleStates: null }]) {
     assert.equal(featureEnabled(snapshot, EDIT_MODULE), false, `inert for ${JSON.stringify(snapshot)}`)
   }
+
+  // A feature whose UI is useless without its own Host half never borrows the
+  // aggregate: before the restart that mounts its row there is no route behind it.
+  const EXPORT = { entryId: 'include:edh-export', moduleName: EXPORT_MODULE, enabled: true, fiberPhase: 'active' }
+  const exporting = createController(fakeRemote({ rows: [SHELL, RETRY, EXPORT] }))
+  await exporting.refresh()
+  assert.equal(rowEnabled(exporting.getSnapshot(), EXPORT_MODULE), true)
+  assert.equal(rowEnabled(exporting.getSnapshot(), '@moreweb/edh/absent'), false, 'no aggregate fallback')
+
+  const preRestart = createController(fakeRemote({ rows: [SHELL, RETRY] }))
+  await preRestart.refresh()
+  assert.equal(featureEnabled(preRestart.getSnapshot(), EDIT_MODULE), true, 'edit may follow the aggregate')
+  assert.equal(rowEnabled(preRestart.getSnapshot(), EXPORT_MODULE), false, 'export may not: no route yet')
 }
 
 // 12 — a message body splits into text, attachments, and the remaining blocks.

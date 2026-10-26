@@ -50,10 +50,18 @@ to the shell row.
   `handle.read(0, undefined)` — the committed log only, never a torn tail. Flush a live
   Session (`ctx.sessions.get(id)` + `ctx.sessions.flush(session)`) first, or the export
   misses work still in memory.
-- **A replacement can arrive on any event type.** Compaction prunes with a
-  `system/message` carrying `surfaceOp: {op: 'replace', startSeq, endSeq}`, not only with a
-  checkpoint `user/message`. Fold the surface op before deciding whether an event is a
-  message, or pruned history leaks into anything you build from the log.
+- **A replacement is model-only: never build a human-facing view from the surface.**
+  `isAppendSurfaceEvent` says it outright — "the model-visible surface deliberately shadows
+  replaced ranges, so it is the wrong source for a human transcript — a landed replacement
+  would erase conversation the user already saw." Compaction lands exactly such a
+  replacement (a `user/message` with `surfaceOp: {op: 'replace', …}`) and prunes with
+  `system/message` too. Skip every event whose `surfaceOp` is an object; the turns it
+  shadows are still in the log and still readable.
+- **`user/message` is mostly not the user.** The Harness logs runtime context, the time
+  stamp, the skill catalog, agent instructions, subagent notices, and compaction
+  checkpoints into the same stream with `source.kind`. Only `user` and `user-approval` were
+  authored by a person; in one real Session 32 of 107 `user/message` events were the
+  human's. Filter on `data.source.kind`, or you export the request body.
 - Message shapes differ: `user/message` keeps the message on `data`, everything else under
   `data.message`. Nesting is the thing to get wrong.
 - The Session's title is a `session/title` event (`data.title`, newest wins), not a header

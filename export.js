@@ -16,10 +16,21 @@ export const name = 'edh-export'
 /** Absolute pathname the Host registers; the browser addresses it document-relative. */
 export const EXPORT_PATH = '/api/edh.export'
 
-/** Session event types that carry a message the reader should see. */
-const ROLE_BY_TYPE = new Map([
-  ['user/message', 'user'],
-  ['assistant/message', 'assistant'],
+/** The Session event type that carries an assistant message. */
+const ASSISTANT_TYPE = 'assistant/message'
+
+/**
+ * The `user/message` source kinds a person authored.
+ *
+ * The Harness logs its own context injections as `user/message` in the same
+ * stream — runtime context, the time stamp, the skill catalog, agent
+ * instructions, compaction checkpoints — and a transcript is not the request
+ * body. In this Session's own log, 32 of 107 `user/message` events were the
+ * human's; everything else was machinery.
+ */
+const USER_ROLE_BY_KIND = new Map([
+  ['user', 'user'],
+  ['user-approval', 'user'],
 ])
 
 /** The message object of one message event: `data` for user, `data.message` for the rest. */
@@ -56,35 +67,39 @@ function entryOf(event, role) {
   return { seq: event.seq, role, time: event.time, text, images, files }
 }
 
+/** Which transcript role one log event carries, if any. */
+function roleOf(event) {
+  if (event.type === ASSISTANT_TYPE) return 'assistant'
+  if (event.type !== 'user/message') return undefined
+  return USER_ROLE_BY_KIND.get(event.data?.source?.kind)
+}
+
 /**
  * The conversation one Session log shows, in order.
  *
- * An event whose `surfaceOp` replaces a sequence range drops everything it
- * shadows first — compaction prunes with a `system/message` as well as with a
- * checkpoint `user/message`, and the reader wants the surface, not the events
- * behind it.
+ * Replacement copies are skipped: `isAppendSurfaceEvent` in the Harness says
+ * why — "the model-visible surface deliberately shadows replaced ranges, so it
+ * is the wrong source for a human transcript — a landed replacement would
+ * erase conversation the user already saw". A compaction checkpoint is exactly
+ * such a replacement, so it stays model-only and the turns it shadows stay
+ * readable here.
  * @param events - the Session's committed events, in sequence order.
  * @returns the readable entries.
  */
 export function conversationEntries(events) {
-  const kept = new Map()
+  const entries = []
   for (const event of Array.isArray(events) ? events : []) {
     if (event === null || typeof event !== 'object') continue
     const op = event.surfaceOp
-    if (op !== null && typeof op === 'object' && op.op === 'replace') {
-      const { startSeq, endSeq } = op
-      if (typeof startSeq === 'number' && typeof endSeq === 'number') {
-        for (const key of [...kept.keys()]) if (key >= startSeq && key <= endSeq) kept.delete(key)
-      }
-    }
-    const role = ROLE_BY_TYPE.get(event.type)
+    if (op !== null && typeof op === 'object') continue
+    const role = roleOf(event)
     if (role === undefined) continue
     const seq = event.seq
     if (typeof seq !== 'number' || !Number.isFinite(seq)) continue
     const entry = entryOf(event, role)
-    if (entry !== undefined) kept.set(seq, entry)
+    if (entry !== undefined) entries.push(entry)
   }
-  return [...kept.values()].sort((left, right) => left.seq - right.seq)
+  return entries.sort((left, right) => left.seq - right.seq)
 }
 
 /** Longest title taken from the first prompt before it is clipped. */

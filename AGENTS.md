@@ -1,0 +1,101 @@
+# AGENTS.md — EDH
+
+Notes for an agent working in this repo. The README says what EDH is; this says what will
+bite you.
+
+## The one rule
+
+**Build in the plugin, never in the Harness.** No edits to the installed runtime, no fork
+of the harness, no patching `app.asar`. Everything ships as an EDH feature. If a capability
+looks impossible from the plugin side, the answer is a different seam, not a core change.
+
+## Layout and why the shell row exists
+
+`cordis.patch.yml` mounts a shell row (`@moreweb/edh`) plus one row per feature
+(`@moreweb/edh/…`). The browser half is served for the row whose module name is the **bare
+package name**. If the switch lived in a feature row, turning that feature off would unload
+the switch that has to turn it back on — so the shell stays enabled and carries the UI.
+
+The switch finds features by that prefix and only ever writes to rows EDH owns. Never write
+to the shell row.
+
+## Slots
+
+- **Shadowing needs a lower `priority`.** A keyed slot does *not* replace on a duplicate
+  key — it throws (`already has an entry for key "user" at priority 0 … register at a
+  different priority to shadow it (lowest renders)`). Entries are sorted by `priority`
+  ascending and the first entry per key wins, so a shadow registers *below* the shipped
+  entry's implicit 0. EDH uses `-1` for `conversation.chat.node` / `user`.
+- **Leave the shipped entry in place underneath.** Then a shadow that abdicates falls back
+  to the original renderer instead of blanking the row.
+- **Slot callbacks run after the `ctx.inject` body.** A `try` around `ctx.slots.inject`
+  does not catch a registration that throws when the callback actually fires. Wrap each
+  callback and record its own breadcrumb.
+- There is no additive seam on a user message row: `MessageIconActions.extraActions` is fed
+  only by the assistant-side `conversation.chat.assistant-actions`. Shadowing the `user`
+  node is the only route, so the replacement must re-render the action row itself.
+- Reuse the shipped Factory for the parts you are not replacing
+  (`conversation.chat.user.content` still paints the bubble).
+
+## Sessions
+
+- The log is **append-only and immutable** — it is the sole source of truth for fork,
+  resume, and replay. There is no truncate, rollback, rewind, or edit call anywhere.
+- The only mutation is `ctx.sessions.fork({ sessionId, atSeq, increaseTitle })`. `atSeq` is
+  **inclusive** (`events.slice(0, boundary + 1)`), so landing *before* a message means
+  `seq - 1`.
+- Open the fork with `ctx.uiWorkspace.openSession(childId)`.
+- Never treat an "edit" as a rewrite. Fork, then hand the text to the composer.
+
+## Services
+
+Put optional contracts on their own `ctx.inject([...], scope => …)` — a missing service
+must never unload the control surface. The switch keeps only `slots`, `locale`, `remote`,
+and `remote.pluginManager`.
+
+## Styling
+
+Class names are ours (`edh-`), but every rule and token is copied from the shipped
+`MessageItem.module.css` / `MessageIconActions.module.css`, including the
+`:has(~ [data-chat-flow-kind=user])` hover-reveal. Only `--dsw-alias-*` / `--dsh-*` tokens.
+Icon glyphs are the shipped 16px outline path data, not lookalikes.
+
+## Adding a feature
+
+1. Add `foo.js` exporting `apply` (and `name`, optional `inject`), plus `"./foo": "./foo.js"`
+   in `package.json` and `foo.js` in `files`.
+2. Insert a row in `cordis.patch.yml`: `- id: edh-foo` / `name: '@moreweb/edh/foo'`.
+3. If it needs UI, register it from `client.js` — the switch already aggregates every
+   `@moreweb/edh/…` row, so no extra switch code.
+4. Add a test beside the others and keep the suites green.
+
+## Verifying
+
+```
+node --check client.js
+node test/retry.mjs
+node test/client.mjs
+```
+
+There is often no browser control in a session, so EDH writes Local Storage breadcrumbs:
+`edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
+`view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`).
+Read them off disk while the app is closed or running:
+
+```
+%APPDATA%\@deepseek-ai\dsh-desktop\Local Storage\leveldb\*.log
+```
+
+The values are UTF-16LE after the key. That breadcrumb is how the keyed-slot priority
+collision was found after a full restart had failed to explain a missing button.
+
+To learn what the shipped UI actually does, read the installed asar: `seek(12)`, read a u32
+header length, parse the JSON header, then read entries at
+`16 + header_len + offset`. Prototype scripts are throwaway — archive them, do not commit
+them here.
+
+## Shipping
+
+Commit small; `main` is the release branch. The local profile points at this directory with
+`link:`, so a page reload is enough for `client.js`, but a new or renamed row in
+`cordis.patch.yml` only appears in Plugin Manager after a full restart.

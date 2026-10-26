@@ -43,6 +43,10 @@ to the shell row.
   catalog id, not a package name. An entry must render `null` for a subject it has no
   control for, and it exists only once the Plugins panel has been opened, because those
   rows are declared by the panel's own entry.
+- **Settings has two seats, and they are not interchangeable.** `settings.section` is a
+  whole page in the Settings nav; `settings.plugins.tab` is a tab inside the built-in
+  Plugins section. A feature that manages its own thing belongs in `settings.section` — a
+  tab under Plugins buries it behind a page the user opened for something else.
 - **`modules.entries.reload(id, rev)` is how a browser half replaces itself**, but `rev` is
   the Host's: it selects the rebuilt artifact and an unpublished revision answers 404. Read
   the revision off the same `plugins/events` stream the shipped HMR client reads; never

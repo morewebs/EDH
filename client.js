@@ -51,7 +51,9 @@ window.__ModuleLoader__.load({
       offlineHint: 'No network: the published version could not be read.',
       dirtyHint: 'EDH has uncommitted changes, so nothing was changed.',
       errorHint: 'The update could not be applied. Open Plugins to check the EDH rows.',
-      mcpTab: 'MCP servers',
+      mcpNav: 'MCP servers',
+      mcpTitle: 'MCP servers',
+      mcpIntro: 'Connect a server once and every session can use its tools.',
       mcpLoading: 'Reading servers…',
       mcpLoadFailed: 'The server list could not be read.',
       mcpRetry: 'Retry',
@@ -140,7 +142,9 @@ window.__ModuleLoader__.load({
       offlineHint: '无网络：无法读取已发布版本。',
       dirtyHint: 'EDH 有未提交的改动，未做任何修改。',
       errorHint: '更新未能应用，请到「插件」页查看 EDH 对应行。',
-      mcpTab: 'MCP 服务器',
+      mcpNav: 'MCP 服务器',
+      mcpTitle: 'MCP 服务器',
+      mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
       mcpLoading: '正在读取服务器…',
       mcpLoadFailed: '无法读取服务器列表。',
       mcpRetry: '重试',
@@ -1483,11 +1487,20 @@ window.__ModuleLoader__.load({
     const MCP_MODULE = '@moreweb/edh/mcp'
 
     /**
-     * The Settings seat: a page inside the Plugins section, beside the shipped
-     * inventory tab. The section declares it as a root list slot whose
-     * `{ id, order, label }` entries become ordered tabs.
+     * The Settings seat: one page in the Settings navigation. The settings shell
+     * declares `settings.section` as a root list slot, and its `{ id, order,
+     * label }` entries become the ordered nav cells — so an entry here is a
+     * page of its own, not a tab under the built-in Plugins page.
      */
-    const MCP_TAB_SLOT = 'settings.plugins.tab'
+    const MCP_SECTION_SLOT = 'settings.section'
+
+    /**
+     * Where that page sits in the nav. The shipped sections are General (0),
+     * Models (10) and Plugins (15), so 16 is the first free seat after them: the
+     * shipped pages stay contiguous, and this one is the next page rather than
+     * an appendix at some arbitrary number.
+     */
+    const MCP_SECTION_ORDER = 16
 
     /** Every action the route accepts besides reading. */
     const MCP_ACTIONS = ['add', 'remove', 'test', 'start', 'stop']
@@ -1947,12 +1960,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The server page: one row per server, one inline panel to add another, and
-     * one Reload control for the interface itself.
+     * The server page: its own heading, one row per server, one inline panel to
+     * add another, and one Reload control for the interface itself.
+     *
+     * It carries the page frame the shipped sections use — a heading and one
+     * introduction line over a 760px column — because a Settings section is a
+     * page, and the nav cell alone does not say what the page is for.
      *
      * It reads the `mcp` row's own enablement rather than the aggregate, because
      * the row is what mounts the route behind it — before the restart that
-     * mounts the row there would be a page in front of nothing.
+     * mounts the row there would be a page in front of nothing. The nav entry is
+     * gated the same way where it is registered; this is the answer for the one
+     * case registration cannot cover, a row switched off while the page is open.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
      * @param reloader - holds the optional `modules` reload face, shared with the
@@ -2363,6 +2382,11 @@ window.__ModuleLoader__.load({
           : null
 
         return h('div', { className: 'edh-mcp' },
+          // The page frame, in every state including a failed read: the heading
+          // and its one line are what the nav cell promised, and they are the
+          // only part of the page that cannot depend on the route.
+          h('h2', { className: 'edh-mcp-title' }, t('mcpTitle')),
+          h('p', { className: 'edh-mcp-intro' }, t('mcpIntro')),
           reloadControl,
           notice.text === '' ? null : h('p', {
             className: 'edh-mcp-notice',
@@ -2411,6 +2435,10 @@ window.__ModuleLoader__.load({
      */
     const MCP_CSS = [
       '.edh-mcp{color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;max-width:760px;display:flex}',
+      // The page frame both shipped sections that draw one use: a title and one
+      // introduction line over the content column.
+      '.edh-mcp-title{margin:0;font-size:16px;font-weight:500;line-height:24px}',
+      '.edh-mcp-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}',
       '.edh-mcp-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
       '.edh-mcp-error,.edh-mcp-empty{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
       '.edh-mcp-empty p{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
@@ -2566,25 +2594,55 @@ window.__ModuleLoader__.load({
         }
       })
 
-      // mcp — the server page in the Settings Plugins section, as a tab beside
-      // the shipped inventory. The row gates the page's data surface: with the
-      // row off the tab stays (a tab that vanishes would renumber the section
-      // under the person's cursor) and says one line instead of reading a route
-      // that is no longer mounted.
+      // mcp — its own page in the Settings navigation. It is a section, not a
+      // tab under Plugins: servers are not part of the plugin inventory, and a
+      // page found only after opening a page someone else opened is buried.
+      //
+      // The nav entry is gated on the row, unlike a tab: a section that leads to
+      // an empty page is worse than no entry, so nothing is registered while the
+      // row is missing or off. That state is not known at apply time — the row
+      // list is still being read — so the entry is registered from the
+      // controller's own state and re-synced on every change. The settings nav
+      // redraws from `ctx.slots.entries` on each register and dispose, so the
+      // cell appears and disappears with the row instead of pinning a dead link.
       const McpPage = createMcpPage(t, controller, reloader)
       ctx.effect(() => installMcpStyles(), 'edh: mcp styles')
-      ctx.slots.inject(MCP_TAB_SLOT, () => {
-        try {
-          return ctx.slots.register({
-            name: MCP_TAB_SLOT,
-            id: 'mcp',
-            order: 20,
-            locale: NS,
-            label: () => t('mcpTab'),
-          }, McpPage)
-        } catch (error) {
-          mcpWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
-          throw error
+      ctx.slots.inject(MCP_SECTION_SLOT, () => {
+        let dispose
+        let installed = false
+        /** Register, dispose, or leave alone, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), MCP_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({
+              name: MCP_SECTION_SLOT,
+              id: 'mcp',
+              order: MCP_SECTION_ORDER,
+              locale: NS,
+              label: () => t('mcpNav'),
+            }, McpPage)
+            installed = true
+          } catch (error) {
+            // This runs from the controller's own listener, so a throw would
+            // surface as a failed row read and take the switch with it. Record
+            // it and stay uninstalled: no nav cell, nothing half-mounted.
+            installed = false
+            mcpWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          dispose?.()
+          dispose = undefined
         }
       })
 
@@ -2695,7 +2753,8 @@ window.__ModuleLoader__.load({
       UPDATE_ROUTE,
       EVENTS_ROUTE,
       MCP_ROUTE,
-      MCP_TAB_SLOT,
+      MCP_SECTION_SLOT,
+      MCP_SECTION_ORDER,
       MCP_ACTIONS,
       UPDATE_DEBUG_KEY,
       MCP_DEBUG_KEY,

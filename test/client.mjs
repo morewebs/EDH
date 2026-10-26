@@ -59,7 +59,8 @@ const {
   runReload,
   MCP_MODULE,
   MCP_ROUTE,
-  MCP_TAB_SLOT,
+  MCP_SECTION_SLOT,
+  MCP_SECTION_ORDER,
   MCP_ACTIONS,
   MCP_DEBUG_KEY,
 } = mod.__test
@@ -462,11 +463,20 @@ function fakeRemote(options = {}) {
   }
 }
 
-// 19 — the MCP page addresses one route, one row, one settings tab, and one breadcrumb key.
+// 19 — the MCP page addresses one route, one row, one settings section, and one breadcrumb key.
 {
   assert.equal(MCP_ROUTE, 'api/edh.mcp', 'document-relative, like the export and update routes')
   assert.equal(MCP_MODULE, '@moreweb/edh/mcp', 'the row that owns the route')
-  assert.equal(MCP_TAB_SLOT, 'settings.plugins.tab', 'the Plugins settings section hosts pages as tabs')
+  assert.equal(
+    MCP_SECTION_SLOT,
+    'settings.section',
+    'the settings nav lists sections, so this is a page of its own rather than a tab under Plugins',
+  )
+  // Shipped sections are General 0, Models 10, Plugins 15: 16 is the first free
+  // seat after them, which keeps the shipped pages contiguous and puts this one
+  // next to them instead of at some arbitrary position.
+  assert.equal(MCP_SECTION_ORDER, 16, 'the first seat after the shipped sections')
+  assert.ok(MCP_SECTION_ORDER > 15, 'never ahead of a shipped section')
   assert.deepEqual(MCP_ACTIONS, ['add', 'remove', 'test', 'start', 'stop'], 'every action the route accepts')
   assert.equal(MCP_DEBUG_KEY, 'edh:mcp', 'its own breadcrumb, beside edh:export and edh:update')
   // The page is gated on its own row, as export and update are: the route is
@@ -882,7 +892,104 @@ function fakeRemote(options = {}) {
   }
 }
 
+// 25 — the seat: one settings section, registered only while its row exists.
+// The nav entry is what a section cannot get wrong: an entry that leads to an
+// empty page is worse than no entry, so the page is registered from the row's
+// own state and withdrawn when the row goes away.
+{
+  /** A fake ctx with the surfaces `apply` touches, recording every slot entry. */
+  function fakeSectionCtx(rows) {
+    const entries = []
+    const handlers = new Map()
+    const ctx = {
+      locale: {
+        bind: () => (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`),
+        register: () => () => {},
+        subscribe: () => () => {},
+      },
+      effect: fn => fn(),
+      slots: {
+        inject: (_name, callback) => callback(),
+        register: options => {
+          const entry = { options }
+          entries.push(entry)
+          return () => {
+            const at = entries.indexOf(entry)
+            if (at >= 0) entries.splice(at, 1)
+          }
+        },
+      },
+      remote: {
+        pluginManager: {
+          async listPlugins() {
+            return { ok: true, value: rows.map(row => ({ ...row })) }
+          },
+          async setPluginEnabled(entryId, enabled) {
+            const row = rows.find(candidate => candidate.entryId === entryId)
+            if (row !== undefined) row.enabled = enabled
+            return { ok: true, value: { application: 'applied', target: entryId } }
+          },
+        },
+        $on: (event, handler) => {
+          handlers.set(event, handler)
+          return () => handlers.delete(event)
+        },
+        on: () => () => {},
+      },
+      inject: () => undefined,
+      get: () => undefined,
+      logger: { warn() {}, error() {}, info() {} },
+    }
+    const sections = () => entries.filter(entry => entry.options.name === MCP_SECTION_SLOT)
+    return {
+      ctx,
+      entries,
+      sections,
+      /** Change a row the way the Host would, then let the switch re-read. */
+      async setRow(entryId, enabled) {
+        const row = rows.find(candidate => candidate.entryId === entryId)
+        row.enabled = enabled
+        handlers.get('plugin-manager/changed')()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      },
+    }
+  }
+
+  const shell = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
+  const mcpRow = { entryId: 'include:edh-mcp', moduleName: MCP_MODULE, enabled: true, fiberPhase: 'active' }
+  const harness = fakeSectionCtx([shell, { ...mcpRow }])
+  mod.apply(harness.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  const [section] = harness.sections()
+  assert.ok(section, 'the page registers once the row is known to be there')
+  assert.equal(section.options.id, 'mcp', 'the nav cell is keyed by the feature, like the row')
+  assert.equal(section.options.order, MCP_SECTION_ORDER, 'and sits where the constant says')
+  assert.equal(section.options.label(), 'mcpNav', 'the nav reads the localized name')
+  assert.equal(section.options.locale, 'edh', 'its copy comes from the plugin dictionary')
+  assert.equal(section.options.children, undefined, 'a section page owns no child slots')
+  assert.equal(
+    harness.entries.filter(entry => entry.options.name === 'settings.plugins.tab').length,
+    0,
+    'nothing is buried under the Plugins page any more',
+  )
+
+  // The row is the switch: off withdraws the entry, on puts it back, and the nav
+  // redraws either way because the slot ledger changed.
+  await harness.setRow('include:edh-mcp', false)
+  assert.deepEqual(harness.sections(), [], 'a row that is off leaves no nav cell')
+  await harness.setRow('include:edh-mcp', true)
+  assert.equal(harness.sections().length, 1, 'and turning it back on restores the page')
+
+  // A bundle patch that predates the row: no entry at all, never a dead cell.
+  const patchless = fakeSectionCtx([shell])
+  mod.apply(patchless.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(patchless.sections(), [], 'no row in this profile means no page to open')
+}
+
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
+console.log('edh mcp: settings section checks passed')
 console.log('edh update: control and reload checks passed')
 console.log('edh switch: all checks passed')

@@ -22,3 +22,9 @@
     - id: edh-edit
       name: '@moreweb/edh/edit'
       config: {}
+
+    # export — download the Session as Markdown. The row owns the Host download
+    # route; the browser half reads this row's enablement to show the button.
+    - id: edh-export
+      name: '@moreweb/edh/export'
+      config: {}

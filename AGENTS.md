@@ -46,6 +46,18 @@ to the shell row.
   `seq - 1`.
 - Open the fork with `ctx.uiWorkspace.openSession(childId)`.
 - Never treat an "edit" as a rewrite. Fork, then hand the text to the composer.
+- To read a Session's history, go through `ctx.sessionPersistence.open(id, 'read')` and
+  `handle.read(0, undefined)` — the committed log only, never a torn tail. Flush a live
+  Session (`ctx.sessions.get(id)` + `ctx.sessions.flush(session)`) first, or the export
+  misses work still in memory.
+- **A replacement can arrive on any event type.** Compaction prunes with a
+  `system/message` carrying `surfaceOp: {op: 'replace', startSeq, endSeq}`, not only with a
+  checkpoint `user/message`. Fold the surface op before deciding whether an event is a
+  message, or pruned history leaks into anything you build from the log.
+- Message shapes differ: `user/message` keeps the message on `data`, everything else under
+  `data.message`. Nesting is the thing to get wrong.
+- The Session's title is a `session/title` event (`data.title`, newest wins), not a header
+  field. The header carries no title at all.
 
 ## Services
 
@@ -75,11 +87,13 @@ Icon glyphs are the shipped 16px outline path data, not lookalikes.
 node --check client.js
 node test/retry.mjs
 node test/client.mjs
+node test/export.mjs
 ```
 
 There is often no browser control in a session, so EDH writes Local Storage breadcrumbs:
 `edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
-`view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`).
+`view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`), and
+`edh:export` for the download button (`mounted` / `click` / `failed`).
 Read them off disk while the app is closed or running:
 
 ```

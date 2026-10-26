@@ -10,6 +10,8 @@ window.__ModuleLoader__.load({
     const FEATURE_PREFIX = '@moreweb/edh/'
     /** The row that carries message editing; the browser half reads its enablement. */
     const EDIT_MODULE = '@moreweb/edh/edit'
+    /** The row that carries Markdown export; the browser half reads its enablement. */
+    const EXPORT_MODULE = '@moreweb/edh/export'
 
     const en = {
       label: 'EDH',
@@ -23,6 +25,7 @@ window.__ModuleLoader__.load({
       copied: 'Copied',
       edit: 'Edit message',
       editFailed: 'The message could not be opened for editing.',
+      export: 'Export as Markdown',
     }
     const zh = {
       label: 'EDH',
@@ -36,6 +39,7 @@ window.__ModuleLoader__.load({
       copied: '已复制',
       edit: '编辑消息',
       editFailed: '无法打开该消息进行编辑。',
+      export: '导出为 Markdown',
     }
 
     /**
@@ -67,6 +71,8 @@ window.__ModuleLoader__.load({
     const DEBUG_KEY = 'edh:debug'
     /** Separate breadcrumb for message editing, so the switch trace stays readable. */
     const EDIT_DEBUG_KEY = 'edh:edit'
+    /** Separate breadcrumb for Markdown export. */
+    const EXPORT_DEBUG_KEY = 'edh:export'
 
     function writeBreadcrumb(key, payload) {
       try {
@@ -82,6 +88,10 @@ window.__ModuleLoader__.load({
 
     function editWrite(payload) {
       writeBreadcrumb(EDIT_DEBUG_KEY, payload)
+    }
+
+    function exportWrite(payload) {
+      writeBreadcrumb(EXPORT_DEBUG_KEY, payload)
     }
 
     /**
@@ -204,8 +214,27 @@ window.__ModuleLoader__.load({
       return snapshot.enabled === true
     }
 
-    /** Build the switch component over one controller and its translator. */
-    function createSwitch(t, controller) {
+    /**
+     * One hook per feature row: true while that row is loaded and enabled.
+     * @param controller - the switch controller holding the row states.
+     * @param moduleName - the row's module name, e.g. `@moreweb/edh/export`.
+     */
+    function createFeatureHook(controller, moduleName) {
+      return function useFeatureEnabled() {
+        const [enabled, setEnabled] = React.useState(() => featureEnabled(controller.getSnapshot(), moduleName))
+        React.useEffect(() => {
+          const sync = () => {
+            const next = featureEnabled(controller.getSnapshot(), moduleName)
+            setEnabled(previous => (previous === next ? previous : next))
+          }
+          sync()
+          return controller.subscribe(sync)
+        }, [])
+        return enabled
+      }
+    }
+
+    /** Build the switch component over one controller and its translator. */    function createSwitch(t, controller) {
       return function EdhSwitch() {
         const [snapshot, setSnapshot] = React.useState(() => ({ ...controller.getSnapshot() }))
         const [hover, setHover] = React.useState(false)
@@ -391,6 +420,19 @@ window.__ModuleLoader__.load({
       }))
     }
 
+    /** The shipped 16px download glyph. */
+    function DownloadIcon() {
+      return glyph([
+        h('path', { key: 'shaft', d: 'M8 1.95317V10.0469', stroke: 'currentColor' }),
+        h('path', { key: 'head', d: 'M4.25 6.29688L8 10.0469L11.75 6.29688', stroke: 'currentColor' }),
+        h('path', {
+          key: 'tray',
+          d: 'M1.5 10.0469V13.158C1.5 13.3937 1.60536 13.6198 1.79289 13.7865C1.98043 13.9532 2.23478 14.0469 2.5 14.0469H13.5C13.7652 14.0469 14.0196 13.9532 14.2071 13.7865C14.3946 13.6198 14.5 13.3937 14.5 13.158V10.0469',
+          stroke: 'currentColor',
+        }),
+      ])
+    }
+
     const CLOCK_TIME = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
     const CLOCK_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
@@ -533,18 +575,7 @@ window.__ModuleLoader__.load({
       /** One-shot probe so a failed shadow is diagnosable without browser control. */
       let reported = false
 
-      function useEditEnabled() {
-        const [enabled, setEnabled] = React.useState(() => featureEnabled(controller.getSnapshot(), EDIT_MODULE))
-        React.useEffect(() => {
-          const sync = () => {
-            const next = featureEnabled(controller.getSnapshot(), EDIT_MODULE)
-            setEnabled(previous => (previous === next ? previous : next))
-          }
-          sync()
-          return controller.subscribe(sync)
-        }, [])
-        return enabled
-      }
+      const useEditEnabled = createFeatureHook(controller, EDIT_MODULE)
 
       return React.memo(function EdhUserMessageNodeView({ node, renderFactorySlot, loadImage, sessionId }) {
         const data = node?.data ?? {}
@@ -701,6 +732,91 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------------------------------------------------------------------
+    // Session export
+    //
+    // The document itself is built on the Host, which is the only place the
+    // Session log can be read in full. The browser's job is to know the Session
+    // it is looking at and hand the Host's download route to its own download
+    // manager — the same hand-off the shipped Session-log export makes.
+    // ---------------------------------------------------------------------
+
+    /** The Host route that answers one Session's Markdown document. */
+    const EXPORT_ROUTE = '/api/edh.export'.slice(1)
+
+    /** Collapse a Session id into one filename segment, matching the Host. */
+    function exportFilename(sessionId) {
+      return `dsh-session-${String(sessionId).replace(/[^A-Za-z0-9_-]/gu, '_')}.md`
+    }
+
+    /**
+     * Hand a document-relative Host route to the browser's download manager,
+     * which resolves it against the document's own base.
+     * @param url - document-relative route.
+     * @param filename - browser download filename.
+     */
+    function downloadUrl(url, filename) {
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filename
+      anchor.click()
+    }
+
+    /**
+     * The Session-header action that downloads the Session as Markdown.
+     *
+     * It reads the `export` row's enablement, so the master switch governs it
+     * like every other EDH feature, and it disappears when no Session is open.
+     */
+    function createExportButton(t, controller) {
+      const useExportEnabled = createFeatureHook(controller, EXPORT_MODULE)
+
+      return function EdhExportButton({ sessionId }) {
+        const enabled = useExportEnabled()
+        const [hover, setHover] = React.useState(false)
+        const available = enabled && typeof sessionId === 'string' && sessionId !== ''
+
+        React.useEffect(() => {
+          if (available) exportWrite({ phase: 'mounted', sessionId })
+        }, [available, sessionId])
+
+        if (!available) return null
+
+        return h('button', {
+          type: 'button',
+          className: 'edh-headerAction',
+          'aria-label': t('export'),
+          title: t('export'),
+          onClick: () => {
+            const url = `${EXPORT_ROUTE}?${new URLSearchParams({ sessionId }).toString()}`
+            exportWrite({ phase: 'click', sessionId, url })
+            try {
+              downloadUrl(url, exportFilename(sessionId))
+            } catch (error) {
+              exportWrite({ phase: 'failed', sessionId, message: String(error?.message ?? error) })
+            }
+          },
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '24px',
+            height: '24px',
+            padding: 0,
+            border: 'none',
+            borderRadius: '6px',
+            background: hover ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            color: 'var(--dsw-alias-label-secondary)',
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'background 120ms ease, color 120ms ease',
+          },
+        }, h(DownloadIcon))
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -743,6 +859,18 @@ window.__ModuleLoader__.load({
         order: -20,
         label: () => t('label'),
       }, Switch))
+
+      // export — one download action beside the switch. It carries its own row's
+      // enablement, so pausing the feature removes the action without touching
+      // the switch that paused it.
+      const ExportButton = createExportButton(t, controller)
+      ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+        name: 'conversation.session.header.utilities',
+        id: 'edh-export',
+        order: -10,
+        locale: NS,
+        label: () => t('export'),
+      }, ExportButton))
 
       // edit — replace the `user` Chat renderer so a user message gains an Edit
       // action, and seed the fork's composer from the click. It mounts on its own
@@ -796,8 +924,10 @@ window.__ModuleLoader__.load({
       contentParts,
       formatClock,
       unwrap,
+      exportFilename,
       NS,
       EDIT_MODULE,
+      EXPORT_MODULE,
     }
 
     return exports

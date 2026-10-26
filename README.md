@@ -10,6 +10,7 @@ Installed in the `desktop` profile.
 |---|---|
 | `retry` | Retries a failed model request inside the same turn, with no attempt limit |
 | `edit` | Adds a pencil to every user message: forks the Session just before it and puts the text back in the composer |
+| `export` | Downloads the Session as a Markdown document |
 
 A switch in the conversation header turns all of them on or off together, writing through
 Plugin Manager so the choice persists.
@@ -24,8 +25,8 @@ Loader rows.
   `link:` entry makes source edits live without reinstalling.
 - **From a tarball** — `npm pack` here and install the resulting `.tgz` the same way.
 
-Then check Plugin Manager for three rows: `edh` (the shell), `edh-retry`, and `edh-edit`.
-A browser reload picks up changes to `client.js`; adding or renaming a row in
+Then check Plugin Manager for four rows: `edh` (the shell), `edh-retry`, `edh-edit`, and
+`edh-export`. A browser reload picks up changes to `client.js`; adding or renaming a row in
 `cordis.patch.yml` needs a full Harness restart before Plugin Manager lists it.
 
 ## Structure
@@ -34,7 +35,8 @@ A browser reload picks up changes to `client.js`; adding or renaming a row in
 index.js            shell row (@moreweb/edh) — no behaviour; keeps the browser half alive
 retry.js            feature: unlimited model-request retries
 edit.js             feature: message editing (host half is empty)
-client.js           browser half: the master switch and the edit surface
+export.js           feature: Markdown export (host half owns the download route)
+client.js           browser half: the master switch, the edit surface, the export button
 cordis.patch.yml    rows: edh (shell) + one per feature
 locale/*.json       Plugin Manager title and description
 icon.svg            plugin icon
@@ -46,6 +48,7 @@ test/*.mjs          Node suites
 ```
 node test/retry.mjs
 node test/client.mjs
+node test/export.mjs
 ```
 
 ## License

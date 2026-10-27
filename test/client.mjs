@@ -88,6 +88,7 @@ const {
   sideCommands,
   sideTitle,
   sessionTitle,
+  sessionTitles,
   openSideChat,
   renameSideChat,
   SIDE_COMMAND_NAMES,
@@ -1168,12 +1169,49 @@ function fakeRemote(options = {}) {
   on[0].ui.run({ sessionId: 'parent' })
   assert.deepEqual(runCalls, [{ session: { sessionId: 'parent' }, options: undefined }], 'a command hands the runner its Session and nothing else')
 
-  // The name a side chat carries, from the parent's title and without one.
-  assert.equal(sideTitle('Refactor the parser', t), 'btwTitle({"title":"Refactor the parser"})')
-  assert.equal(sideTitle('  Padded  ', t), 'btwTitle({"title":"Padded"})', 'the title is trimmed')
-  for (const absent of ['', '   ', undefined, null, 42]) {
-    assert.equal(sideTitle(absent, t), 'btwLabel', `a parent without a title falls back: ${JSON.stringify(absent)}`)
+  // The name a side chat carries: the parent's title, unique among its siblings.
+  const parent = 'EDH'
+  const base = 'btwTitle({"title":"EDH"})'
+  const named = suffix => `${base} (${suffix})`
+  assert.equal(sideTitle('Refactor the parser', [], t), 'btwTitle({"title":"Refactor the parser"})', 'nothing else: the base')
+  assert.equal(sideTitle('  Padded  ', [], t), 'btwTitle({"title":"Padded"})', 'the title is trimmed')
+  assert.equal(sideTitle(parent, [base], t), named(2), 'one side chat exists: the next number')
+  assert.equal(sideTitle(parent, [base, named(2)], t), named(3), 'the third fork of one conversation')
+  assert.equal(sideTitle(parent, [base, named(2), named(3)], t), named(4))
+  // A gap is not reused: a title is a record, not a slot.
+  assert.equal(sideTitle(parent, [base, named(3)], t), named(4), 'the next number after the highest in use')
+  assert.equal(sideTitle(parent, [named(2)], t), named(3), 'and the same without a bare base')
+  // Only an exact base or `base (<digits>)` is ours. These are somebody else's
+  // titles that merely start with ours, or another parent's side chat.
+  for (const foreign of [`${base} notes`, `${base} (2) notes`, `${base}2`, `${base} (x)`, `Other: EDH`, `${base} (2`, '', '   ', null, 42]) {
+    assert.equal(sideTitle(parent, [foreign], t), base, `not a sibling: ${JSON.stringify(foreign)}`)
   }
+  assert.equal(
+    sideTitle(parent, ['Side: Other (2)', 'Side: EDH (draft)'], t),
+    base,
+    'another parent\'s numbered chat is not this parent\'s count',
+  )
+  // Titles that are not strings, or the list itself being unusable, cost a number.
+  assert.equal(sideTitle(parent, undefined, t), base, 'no list at all')
+  assert.equal(sideTitle(parent, ['', '   ', 7, null, base], t), named(2), 'junk is ignored, the real one counts')
+  for (const absent of ['', '   ', undefined, null, 42]) {
+    assert.equal(sideTitle(absent, [], t), 'btwLabel', `a parent without a title falls back: ${JSON.stringify(absent)}`)
+    assert.equal(
+      sideTitle(absent, ['btwLabel'], t),
+      'btwLabel (2)',
+      'and untitled parents number too, so their side chats stay apart',
+    )
+  }
+
+  // The titles a count is taken from: the same list projection, tolerated.
+  assert.deepEqual(
+    sessionTitles({ list: { getSnapshot: () => ({ byId: { a: { title: 'EDH' }, b: { title: 'Side: EDH' }, c: {} } }) } }),
+    ['EDH', 'Side: EDH'],
+    'every readable title, nothing else',
+  )
+  assert.deepEqual(sessionTitles({}), [], 'no list, no titles')
+  assert.deepEqual(sessionTitles({ list: { getSnapshot: () => { throw new Error('store refused') } } }), [], 'a refusing store')
+  assert.deepEqual(sessionTitles({ list: { getSnapshot: () => ({ byId: null }) } }), [])
 
   // The parent's title comes from the Session list's own projection.
   assert.equal(
@@ -1229,9 +1267,11 @@ function fakeRemote(options = {}) {
       options.onCreated('child-1')
       return 'child-1'
     },
-    async rename(sessionId, title) {
-      calls.push({ rename: { sessionId, title } })
-      return { ok: true, value: { title, seq: 7 } }
+    async using(target, options, operation) {
+      return await operation({ binding: { session: { async rename(title) {
+        calls.push({ rename: { sessionId: target, title } })
+        return { ok: true, value: { title, seq: 7 } }
+      } } } })
     },
     async refreshProjections(sessionId) {
       calls.push({ refresh: sessionId })
@@ -1277,8 +1317,9 @@ function fakeRemote(options = {}) {
         options.onCreated('child-5')
         return 'child-5'
       },
-      async rename() { return { ok: true, value: { title: 'btwLabel', seq: 1 } } },
-    },
+      async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => ({ ok: true, value: { title: 'btwLabel', seq: 1 } }) } } })
+      },    },
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
@@ -1298,8 +1339,9 @@ function fakeRemote(options = {}) {
         options.onCreated('child-2')
         throw new Error('fork child rename failed: conflict: title taken')
       },
-      async rename() { return { ok: true, value: { title: 'btwLabel', seq: 1 } } },
-      async refreshProjections() {},
+      async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => ({ ok: true, value: { title: 'btwLabel', seq: 1 } }) } } })
+      },      async refreshProjections() {},
     },
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
@@ -1319,8 +1361,9 @@ function fakeRemote(options = {}) {
         options.onCreated('child-3')
         return 'child-3'
       },
-      async rename() { return { ok: false, error: { code: 'forbidden' } } },
-      async refreshProjections() {},
+      async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => ({ ok: false, error: { code: 'forbidden' } }) } } })
+      },      async refreshProjections() {},
     },
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
@@ -1336,8 +1379,9 @@ function fakeRemote(options = {}) {
     sessions: {
       list: { getSnapshot: () => ({ byId: {} }) },
       async fork(options) { options.onCreated('child-4'); return 'child-4' },
-      async rename() { throw new Error('rename refused') },
-      async refreshProjections() { throw new Error('refresh refused') },
+      async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => { throw new Error('rename refused') } } } })
+      },      async refreshProjections() { throw new Error('refresh refused') },
     },
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
@@ -1363,12 +1407,12 @@ function fakeRemote(options = {}) {
         async using(target, options, operation) {
           resumes.push({ target, options: { source: options.source } })
           order.push('resume')
-          return await operation({ ready: true })
+          return await operation({ binding: { session: { async rename(title) {
+            order.push({ rename: { sessionId: target, title } })
+            return { ok: true, value: { title, seq: 2 } }
+          } } } })
         },
-        async rename(sessionId, title) {
-          order.push({ rename: { sessionId, title } })
-          return { ok: true, value: { title, seq: 2 } }
-        },
+
         async refreshProjections() {},
       },
       uiWorkspace: stillHere,
@@ -1408,8 +1452,9 @@ function fakeRemote(options = {}) {
       sessions: {
         list: { getSnapshot: () => ({ byId: {} }) },
         async fork(options) { options.onCreated('child-10'); return 'child-10' },
-        async using(target, options, operation) { return await operation({}) },
-        async rename() { return { ok: false, error: { code: 'session/title-invalid' } } },
+        async using(target, options, operation) {
+          return await operation({ binding: { session: { rename: async () => ({ ok: false, error: { code: 'session/title-invalid' } }) } } })
+        },
         async refreshProjections() {},
       },
       uiWorkspace: stillHere,
@@ -1421,14 +1466,52 @@ function fakeRemote(options = {}) {
     assert.equal(paneCalls.length, 1, 'the chat still opens')
   }
 
-  // A build without `using`: the rename is attempted directly, and a refusal is
-  // what it is — the fallback is in the code so an older client still tries.
+  // The route is `sessions.using`: `sessions` has no `rename(id, title)` of its
+  // own, so a service without `using` has no way to rename and says so rather
+  // than throwing a TypeError nobody would see.
+  {
+    const none = await renameSideChat({}, 'child-11', 'Side: x')
+    assert.deepEqual({ ok: none.ok, code: none.error.code }, { ok: false, code: 'no-rename-route' })
+
+    const seen = []
+    const refused = await renameSideChat({
+      async using(target, options, operation) {
+        seen.push({ target, source: options.source })
+        return await operation({ binding: { session: { rename: async title => ({ ok: true, value: { title, seq: 4 } }) } } })
+      },
+    }, 'child-11', 'Side: x')
+    assert.deepEqual(seen, [{ target: 'child-11', source: BTW_RETAIN_SOURCE }], 'the child is retained to rename it')
+    assert.deepEqual({ ok: refused.ok, value: refused.value }, { ok: true, value: { title: 'Side: x', seq: 4 } })
+  }
+
+  // Three side chats of one conversation: the third is named for its place.
   {
     storage.length = 0
-    const result = await renameSideChat({
-      async rename() { return { ok: false, error: { code: 'session/not-live' } } },
-    }, 'child-11', 'Side: x')
-    assert.deepEqual({ ok: result.ok, code: result.error.code }, { ok: false, code: 'session/not-live' })
+    let asked = ''
+    await openSideChat({
+      t,
+      sessions: {
+        list: {
+          getSnapshot: () => ({
+            byId: {
+              parent: { title: 'EDH' },
+              // The two siblings as the dictionary renders them: `Side: EDH` and
+              // `Side: EDH (2)` once the real translator is in play.
+              one: { title: base },
+              two: { title: named(2) },
+            },
+          }),
+        },
+        async fork(options) { options.onCreated('child-13'); return 'child-13' },
+        async using(target, options, operation) {
+          return await operation({ binding: { session: { rename: async title => { asked = title; return { ok: true, value: { title, seq: 5 } } } } } })
+        },
+      },
+      uiWorkspace: stillHere,
+      session: { sessionId: 'parent' },
+    })
+    assert.equal(asked, 'btwTitle({"title":"EDH"}) (3)', 'the third side chat of one conversation is numbered, not repeated')
+    assert.equal(crumbs()[2].renamed, true)
   }
 
   // A right column that refuses the address: recorded, and the fork still stands.
@@ -1439,8 +1522,9 @@ function fakeRemote(options = {}) {
       sessions: {
         list: { getSnapshot: () => ({ byId: {} }) },
         async fork(options) { options.onCreated('child-7'); return 'child-7' },
-        async rename() { return { ok: true, value: { title: 'Side chat', seq: 1 } } },
-        async refreshProjections() {},
+        async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => ({ ok: true, value: { title: 'Side chat', seq: 1 } }) } } })
+      },        async refreshProjections() {},
       },
       uiWorkspace: stillHere,
       // `openResource` throws synchronously for an address no type claims.
@@ -1458,8 +1542,9 @@ function fakeRemote(options = {}) {
       sessions: {
         list: { getSnapshot: () => ({ byId: {} }) },
         async fork(options) { options.onCreated('child-8'); return 'child-8' },
-        async rename() { return { ok: true, value: { title: 'Side chat', seq: 1 } } },
-      },
+        async using(target, options, operation) {
+        return await operation({ binding: { session: { rename: async () => ({ ok: true, value: { title: 'Side chat', seq: 1 } }) } } })
+      },      },
       uiWorkspace: stillHere,
       pane: { openResource: async () => { throw new Error('no on-screen session') } },
       session: { sessionId: 'parent' },
@@ -1688,12 +1773,12 @@ function fakeRemote(options = {}) {
         },
         async using(target, options, operation) {
           calls.push('using')
-          return await operation({})
+          return await operation({ binding: { session: { async rename() {
+            calls.push('rename')
+            return { ok: true, value: { title: 'Side chat', seq: 3 } }
+          } } } })
         },
-        async rename() {
-          calls.push('rename')
-          return { ok: true, value: { title: 'Side chat', seq: 3 } }
-        },
+
       },
       uiWorkspace: stillHere,
       pane: {

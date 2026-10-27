@@ -2679,18 +2679,59 @@ window.__ModuleLoader__.load({
     const SIDE_COMMAND_NAMES = ['btw', 'side']
 
     /**
-     * The name a side chat's row carries: the parent's title, or the fallback.
+     * The name a side chat's row carries, unique among its siblings.
      *
-     * A fork inherits its parent's titles, and `increaseTitle` already numbers a
-     * child inside its parent's line. This is the plainer label the sidebar shows
-     * for a chat that was opened to think out loud, so the fallback is the
-     * command's own label rather than a number nobody can read.
+     * A fork inherits its parent's titles, and `increaseTitle` numbers a child
+     * inside its parent's line — but from the *source* title, so every sibling of
+     * one parent is `EDH (1)`. Ours is a fixed string too, so three side chats of
+     * one conversation would all read `Side: EDH`; the number is what keeps them
+     * apart. The rule is the next number after the highest already in use, with a
+     * bare base counting as `(1)`: no siblings is the base, one is `base (2)`,
+     * and a gap is not reused (a title is a record, not a slot).
+     *
+     * Matching is exact, so `Side: EDH (2) notes` and `Side: EDH2` are somebody
+     * else's titles: only the base itself and `base (<digits>)` count.
      * @param parentTitle - the parent's title, when the list knows one.
+     * @param titles - every title the session list is showing.
      * @param t - the dictionary's translate function.
      */
-    function sideTitle(parentTitle, t) {
+    function sideTitle(parentTitle, titles, t) {
       const title = typeof parentTitle === 'string' ? parentTitle.trim() : ''
-      return title === '' ? t('btwLabel') : t('btwTitle', { title })
+      const base = title === '' ? t('btwLabel') : t('btwTitle', { title })
+      let highest = 0
+      for (const candidate of Array.isArray(titles) ? titles : []) {
+        if (typeof candidate !== 'string') continue
+        const present = candidate.trim()
+        if (present === base) {
+          highest = Math.max(highest, 1)
+          continue
+        }
+        if (!present.startsWith(`${base} (`) || !present.endsWith(')')) continue
+        const digits = present.slice(base.length + 2, -1)
+        if (/^\d+$/.test(digits)) highest = Math.max(highest, Number(digits))
+      }
+      return highest === 0 ? base : `${base} (${highest + 1})`
+    }
+
+    /**
+     * Every title the Session list is showing, as plain strings.
+     *
+     * The same projection the parent's own title comes from. Titles alone are
+     * enough: the base a side chat is named from embeds the parent's title, so a
+     * sibling is recognisable without a lineage field the projection may not
+     * carry. A store that refuses answers `[]` — the cost is a repeated name.
+     * @param sessions - the `sessions` service.
+     */
+    function sessionTitles(sessions) {
+      try {
+        const byId = sessions?.list?.getSnapshot?.()?.byId
+        if (byId === null || typeof byId !== 'object') return []
+        return Object.values(byId)
+          .map(row => (row !== null && typeof row === 'object' ? row.title : undefined))
+          .filter(title => typeof title === 'string' && title.trim() !== '')
+      } catch (error) {
+        return []
+      }
     }
 
     /**
@@ -2777,7 +2818,7 @@ window.__ModuleLoader__.load({
       // Best effort, and last before the pane: a refused rename is recorded and
       // nothing else. A title save never fails a working side chat.
       try {
-        const renamed = await renameSideChat(sessions, childId, sideTitle(sessionTitle(sessions, session), t))
+        const renamed = await renameSideChat(sessions, childId, sideTitle(sessionTitle(sessions, session), sessionTitles(sessions), t))
         btwWrite({
           phase: 'named',
           childId,
@@ -2821,26 +2862,31 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Name the side chat, with the child resumed first.
+     * Name the side chat through the live Session, as the sidebar's rename does.
      *
-     * The Host's rename RPC is documented as "rename one Session after explicitly
-     * resuming it": a Session it does not hold live is refused, and a fresh fork
-     * is not live — nothing has opened it yet. `sessions.using` retains the child,
-     * waits for that open, runs the rename, and releases again, which is what
-     * makes the title land. Without it every rename answers a failure and the tab
-     * keeps the fork's own number ("EDH (1)"), which is how it shipped once.
+     * The `sessions` service has **no** `rename(id, title)`: its surface is
+     * `retain` / `using` / `fork` / `create` / `refreshProjections` and the rest,
+     * so calling `sessions.rename(...)` throws and the fork keeps its number —
+     * which is precisely how it shipped twice. The shipped rename dialog does
+     * this instead, in the workspace package:
+     *
+     *     sessions.using(id, { source }, reference => reference.binding.session.rename(title))
+     *
+     * `using` retains the child (making it live), awaits the open, and the
+     * binding's own `rename(title)` is the Session instance's method — the one
+     * that sends the RPC and applies the title projection. That route works.
      * @param sessions - the `sessions` service.
      * @param childId - the fork's Session id.
      * @param title - the title to set.
-     * @returns the rename result: the accepted title, or the Remote failure.
+     * @returns the rename result: the accepted title, or a failure to record.
      */
     async function renameSideChat(sessions, childId, title) {
-      if (typeof sessions.using === 'function') {
-        return await sessions.using(childId, { source: BTW_RETAIN_SOURCE }, () => sessions.rename(childId, title))
+      if (typeof sessions?.using === 'function') {
+        return await sessions.using(childId, { source: BTW_RETAIN_SOURCE },
+          reference => reference.binding.session.rename(title))
       }
-      // A build without `using`: the rename may be refused for want of a resume,
-      // and that is recorded by the caller rather than hidden.
-      return await sessions.rename(childId, title)
+      // A build without `using` has no route at all; saying so beats a TypeError.
+      return { ok: false, error: { code: 'no-rename-route' } }
     }
 
     /**
@@ -3551,6 +3597,7 @@ window.__ModuleLoader__.load({
       ICON_RELOAD,
       sideCommands,
       sideTitle,
+      sessionTitles,
       sessionTitle,
       openSideChat,
       renameSideChat,

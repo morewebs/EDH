@@ -130,9 +130,9 @@ each to rediscover:
   gates it, and `MAX_DESCRIBED_ENTRIES = 4` means a fifth card drops every card's description.
 - **A Session cannot be renamed until it is resumed.** The Host's `session/rename` is
   documented as "rename one Session after explicitly resuming it" and refuses one it does not
-  hold live; a fresh fork is not live, so a bare `sessions.rename(childId, …)` answers a
+  hold live; a fresh fork is not live, so a bare `sessions.rename(childId, …)` — the facade has no such method at all, only a retained Session's own `rename(title)` sends the RPC answers a
   failure and the tab keeps the fork's own number (`EDH (1)`). Wrap it in
-  `sessions.using(childId, { source }, () => sessions.rename(…))`, which retains the child,
+  `sessions.using(childId, { source }, ref => ref.binding.session.rename(title))`, which retains the child,
   waits for the open, runs the rename, and releases again.
 - **A pane body renders a second Session only through `SessionProvider`.** The address is a
   resource (`ctx.resources.register({ protocol, async *open() })`) whose `open` retains the

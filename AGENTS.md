@@ -98,6 +98,14 @@ a function. **`register` scopes to the service's context, not your fiber** — t
 outlives your row, so keep every disposer and run it on stop, on re-sync, and in `ctx.effect`
 disposal, or turning the row off leaves tools pointing at dead servers.
 
+`/btw` and `/side` are `commandUi` contributions of kind `action`: a bare invocation runs a
+callback and submits no message. Three rules follow. They are client-only — a contribution
+whose name a Host command already uses throws *while the menu is being built*, taking every
+command with it. A contribution with arguments does not run at all: the input machine falls
+through to `session.prompt`, so `/btw how …` would be sent to the current conversation, which
+is why the copy says it takes no arguments. And `ui.run` is called un-awaited and
+uncatchable, so every path inside it catches for itself or the failure disappears.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -129,8 +137,10 @@ There is often no browser control in a session, so EDH writes Local Storage brea
 `view-mounted` with `sessionId`+`factory`+`seq` / `click` / `forked` / `draft-applied`),
 `edh:export` for the download button (`mounted` / `click` / `failed`), `edh:update` for
 both Plugin Manager controls — update (`mounted` / `checked` / `update-started` / `updated` /
-`updated-needs-restart` / `failed`) and reload (`reloaded` / `reload-failed`) — and `edh:mcp`
-for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`).
+`updated-needs-restart` / `failed`) and reload (`reloaded` / `reload-failed`) — `edh:mcp`
+for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
+and `edh:btw` for the side-chat commands (`click` / `forked` / `named` / `register-failed` /
+`failed`).
 Read them off disk while the app is closed or running:
 
 ```

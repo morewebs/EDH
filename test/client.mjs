@@ -7,8 +7,18 @@ import vm from 'node:vm'
 /** Load the browser module the way the page's module loader would. */
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 let definition
+// Every breadcrumb the module writes, in order: the features are diagnostic by
+// Local Storage, so that is where a test can see what actually happened.
+const storage = []
 const sandbox = {
-  window: { __ModuleLoader__: { load: value => { definition = value } } },
+  window: {
+    __ModuleLoader__: { load: value => { definition = value } },
+    localStorage: {
+      setItem(key, value) {
+        storage.push([key, value])
+      },
+    },
+  },
   console,
 }
 vm.runInNewContext(source, sandbox, { filename: 'client.js' })
@@ -66,6 +76,15 @@ const {
   MCP_SECTION_ORDER,
   MCP_ACTIONS,
   MCP_DEBUG_KEY,
+} = mod.__test
+const {
+  BTW_MODULE,
+  BTW_DEBUG_KEY,
+  sideCommands,
+  sideTitle,
+  sessionTitle,
+  openSideChat,
+  SIDE_COMMAND_NAMES,
 } = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
@@ -1061,8 +1080,240 @@ function fakeRemote(options = {}) {
   assert.deepEqual(patchless.sections(), [], 'no row in this profile means no page to open')
 }
 
+// 26 — the side chat: two spellings, one handler, and a fork that cannot throw
+// into the command registry. `ui.run` is called un-awaited and uncatchable, so a
+// rejected fork would surface as an unhandled rejection and the command would
+// look like it did nothing at all.
+{
+  const t = (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`)
+  /** The `edh:btw` breadcrumbs written since the last clear, newest last. */
+  const crumbs = () => storage
+    .filter(([key]) => key === BTW_DEBUG_KEY)
+    .map(([, value]) => JSON.parse(value))
+  const phases = () => crumbs().map(crumb => crumb.phase)
+
+  /** A switch controller showing one row state, and nothing read from a Host. */
+  const controllerAt = enabled => ({
+    getSnapshot: () => ({
+      status: 'ready',
+      moduleStates: enabled === undefined ? {} : { [BTW_MODULE]: enabled },
+      enabled: true,
+    }),
+  })
+  const noServices = { sessions: {}, uiWorkspace: {} }
+
+  // Both spellings, and only while the row is on.
+  const on = sideCommands(t, controllerAt(true), noServices)
+  const off = sideCommands(t, controllerAt(false), noServices)
+  assert.deepEqual(SIDE_COMMAND_NAMES, ['btw', 'side'])
+  assert.deepEqual(on.map(contribution => contribution.name), ['btw', 'side'], 'one contribution per spelling')
+  assert.equal(on.every(contribution => contribution.available() === true), true, 'the row being on lists both')
+  assert.equal(off.every(contribution => contribution.available() === false), true, 'and the row being off lists neither')
+  // No aggregate fallback: the snapshot says every feature is enabled, but the
+  // row itself is not in it, which is exactly the profile whose patch predates
+  // the row — offering the command there would fork from a page that has no row.
+  const patchless = sideCommands(t, controllerAt(undefined), noServices)
+  assert.equal(patchless.every(contribution => contribution.available() === false), true, 'no row, no command')
+
+  // The shape the registry reads: `label` and `description` are thunks, called
+  // on every candidate pass, and an action is a callback plus a kind.
+  for (const contribution of on) {
+    assert.deepEqual(
+      Object.keys(contribution).sort(),
+      ['available', 'description', 'label', 'name', 'ui'],
+      `${contribution.name} carries only what a contribution may`,
+    )
+    assert.equal(typeof contribution.label, 'function', 'the menu calls label()')
+    assert.equal(contribution.label(), 'btwLabel')
+    assert.equal(contribution.description(), 'btwDescription')
+    assert.equal(contribution.ui.kind, 'action', 'a bare invocation runs a callback, never a prompt')
+    assert.equal(typeof contribution.ui.run, 'function')
+  }
+
+  // One handler for both names: the two commands cannot drift apart.
+  assert.equal(on[0].ui.run, on[1].ui.run, 'the same run function, not two equal ones')
+
+  // The name a side chat carries, from the parent's title and without one.
+  assert.equal(sideTitle('Refactor the parser', t), 'btwTitle({"title":"Refactor the parser"})')
+  assert.equal(sideTitle('  Padded  ', t), 'btwTitle({"title":"Padded"})', 'the title is trimmed')
+  for (const absent of ['', '   ', undefined, null, 42]) {
+    assert.equal(sideTitle(absent, t), 'btwLabel', `a parent without a title falls back: ${JSON.stringify(absent)}`)
+  }
+
+  // The parent's title comes from the Session list's own projection.
+  assert.equal(
+    sessionTitle({ list: { getSnapshot: () => ({ byId: { parent: { title: 'From the list' } } }) } }, { sessionId: 'parent' }),
+    'From the list',
+  )
+  assert.equal(sessionTitle({}, { sessionId: 'parent', title: 'From the session' }), 'From the session', 'then the field')
+  assert.equal(sessionTitle({ list: { getSnapshot: () => ({ byId: {} }) } }, { sessionId: 'parent' }), '', 'nothing, when it has neither')
+  assert.equal(
+    sessionTitle({ list: { getSnapshot: () => { throw new Error('store refused') } } }, { sessionId: 'parent' }),
+    '',
+    'a refusing store costs the name, not the command',
+  )
+
+  // A fork that refuses: recorded, and nothing thrown.
+  storage.length = 0
+  const opened = []
+  const refused = await openSideChat({
+    t,
+    sessions: { fork: async () => { throw new Error('fork refused') } },
+    uiWorkspace: { openSession: id => opened.push(id) },
+    session: { sessionId: 'parent' },
+  })
+  assert.equal(refused, undefined, 'it answers nothing and never rejects')
+  assert.deepEqual(phases(), ['click', 'failed'])
+  assert.deepEqual({ step: crumbs()[1].step, message: crumbs()[1].message }, { step: 'fork', message: 'fork refused' })
+  assert.deepEqual(opened, [], 'no child, so nothing is opened')
+
+  // A fork with no session id to fork from is a breadcrumb, not a crash.
+  storage.length = 0
+  await openSideChat({ t, sessions: { fork: async () => 'child' }, uiWorkspace: { openSession: () => {} }, session: {} })
+  assert.deepEqual(phases(), ['click', 'failed'])
+  assert.equal(crumbs()[1].step, 'click')
+
+  // The working path: fork the whole conversation, open it, name it, and let the
+  // list agree — the order the sidebar sees.
+  const calls = []
+  const sessions = {
+    list: { getSnapshot: () => ({ byId: { parent: { title: 'Refactor the parser' } } }) },
+    async fork(options) {
+      calls.push({ fork: options })
+      options.onCreated('child-1')
+      return 'child-1'
+    },
+    async rename(sessionId, title) {
+      calls.push({ rename: { sessionId, title } })
+      return { ok: true, value: { title, seq: 7 } }
+    },
+    async refreshProjections(sessionId) {
+      calls.push({ refresh: sessionId })
+    },
+  }
+  opened.length = 0
+  storage.length = 0
+  await openSideChat({ t, sessions, uiWorkspace: { openSession: id => opened.push(id) }, session: { sessionId: 'parent' } })
+  assert.deepEqual(phases(), ['click', 'forked', 'named'])
+  assert.deepEqual({ sessionId: crumbs()[1].sessionId, childId: crumbs()[1].childId }, { sessionId: 'parent', childId: 'child-1' })
+  assert.equal(crumbs()[2].renamed, true)
+  assert.equal(calls[0].fork.sessionId, 'parent')
+  assert.equal(calls[0].fork.atSeq, undefined, 'no cut: the child carries everything said so far')
+  assert.equal(calls[0].fork.increaseTitle, true, 'the fork also numbers it inside the parent line')
+  assert.deepEqual(opened, ['child-1'], 'the side chat opens at once')
+  assert.deepEqual(calls[1].rename, { sessionId: 'child-1', title: 'btwTitle({"title":"Refactor the parser"})' })
+  assert.equal(calls[2].refresh, 'child-1', 'the list is asked to agree after the rename')
+
+  // The shipped fork can create the child and then throw (its own inherited-title
+  // rename fails after creation). The chat exists, so it is opened anyway.
+  opened.length = 0
+  storage.length = 0
+  await openSideChat({
+    t,
+    sessions: {
+      list: { getSnapshot: () => ({ byId: {} }) },
+      async fork(options) {
+        options.onCreated('child-2')
+        throw new Error('fork child rename failed: conflict: title taken')
+      },
+      async rename() { return { ok: true, value: { title: 'btwLabel', seq: 1 } } },
+      async refreshProjections() {},
+    },
+    uiWorkspace: { openSession: id => opened.push(id) },
+    session: { sessionId: 'parent' },
+  })
+  assert.deepEqual(phases(), ['click', 'forked', 'failed', 'named'], 'the failed numbering is recorded, then the chat is still named')
+  assert.equal(crumbs()[2].step, 'fork-title')
+  assert.deepEqual(opened, ['child-2'], 'a chat that exists is never stranded')
+
+  // A refused rename is the last step, so it costs the name and nothing else.
+  opened.length = 0
+  storage.length = 0
+  await openSideChat({
+    t,
+    sessions: {
+      list: { getSnapshot: () => ({ byId: {} }) },
+      async fork(options) {
+        options.onCreated('child-3')
+        return 'child-3'
+      },
+      async rename() { return { ok: false, error: { code: 'forbidden' } } },
+      async refreshProjections() {},
+    },
+    uiWorkspace: { openSession: id => opened.push(id) },
+    session: { sessionId: 'parent' },
+  })
+  assert.deepEqual(opened, ['child-3'])
+  assert.equal(crumbs()[2].renamed, false, 'the breadcrumb says the rename was refused')
+  assert.equal(phases().includes('failed'), false, 'and no step failed: the chat is open and usable')
+
+  // A throwing rename or projection refresh is caught the same way.
+  storage.length = 0
+  await openSideChat({
+    t,
+    sessions: {
+      list: { getSnapshot: () => ({ byId: {} }) },
+      async fork(options) { options.onCreated('child-4'); return 'child-4' },
+      async rename() { throw new Error('rename refused') },
+      async refreshProjections() { throw new Error('refresh refused') },
+    },
+    uiWorkspace: { openSession: () => {} },
+    session: { sessionId: 'parent' },
+  })
+  assert.deepEqual(phases(), ['click', 'forked', 'failed'])
+  assert.equal(crumbs()[2].step, 'name')
+
+  // And the registration itself: two entries through `commandUi`, both removed
+  // when the effect disposes. Nothing else in `apply` may need these services,
+  // which is why a profile without them still mounts the switch.
+  {
+    const registered = []
+    const effects = []
+    const registry = {
+      register(contribution) {
+        registered.push(contribution)
+        return () => {
+          const at = registered.indexOf(contribution)
+          if (at >= 0) registered.splice(at, 1)
+        }
+      },
+    }
+    const scope = {
+      commandUi: registry,
+      sessions: { fork: async () => 'child' },
+      uiWorkspace: { openSession() {} },
+      effect(fn) {
+        const dispose = fn()
+        effects.push(dispose)
+        return dispose
+      },
+    }
+    const ctx = {
+      locale: { bind: () => t, register: () => () => {}, subscribe: () => () => {} },
+      effect: () => () => {},
+      slots: { inject: () => () => {} },
+      remote: {
+        pluginManager: { async listPlugins() { return { ok: true, value: [] } } },
+        $on: () => () => {},
+        on: () => () => {},
+      },
+      inject: (names, callback) => (names.includes('commandUi') ? callback(scope) : undefined),
+      get: () => undefined,
+      logger: { warn() {}, error() {}, info() {} },
+    }
+    storage.length = 0
+    mod.apply(ctx)
+    assert.deepEqual(registered.map(contribution => contribution.name), ['btw', 'side'], 'both spellings are registered')
+    assert.equal(registered[0].ui.run, registered[1].ui.run, 'through the one handler')
+    assert.equal(effects.length, 1, 'one effect owns both registrations')
+    effects[0]()
+    assert.deepEqual(registered, [], 'disposing the effect takes both names out of the menu')
+  }
+}
+
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
 console.log('edh mcp: settings section checks passed')
 console.log('edh update: control and reload checks passed')
+console.log('edh btw: side chat command checks passed')
 console.log('edh switch: all checks passed')

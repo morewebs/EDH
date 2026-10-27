@@ -1,6 +1,6 @@
 {
   "name": "@moreweb/edh",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Everything DeepSeek Harness",
   "type": "module",
@@ -9,6 +9,7 @@
     ".": "./index.js",
     "./retry": "./retry.js",
     "./edit": "./edit.js",
+    "./btw": "./btw.js",
     "./export": "./export.js",
     "./update": "./update.js",
     "./mcp": "./mcp.js",
@@ -20,6 +21,7 @@
     "index.js",
     "retry.js",
     "edit.js",
+    "btw.js",
     "export.js",
     "update.js",
     "mcp.js",
@@ -38,7 +40,8 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-commands"
       ]
     }
   },

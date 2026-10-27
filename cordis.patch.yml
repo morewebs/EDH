@@ -23,6 +23,13 @@
       name: '@moreweb/edh/edit'
       config: {}
 
+    # btw — open a side chat: a fork of this conversation, opened at once as its
+    # own row in the sidebar. The Host half is empty; the browser half adds the
+    # /btw and /side commands and reads this row's enablement before listing them.
+    - id: edh-btw
+      name: '@moreweb/edh/btw'
+      config: {}
+
     # export — download the Session as Markdown. The row owns the Host download
     # route; the browser half reads this row's enablement to show the button.
     - id: edh-export

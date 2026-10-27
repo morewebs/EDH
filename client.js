@@ -14,6 +14,8 @@ window.__ModuleLoader__.load({
     const EXPORT_MODULE = '@moreweb/edh/export'
     /** The row that carries the update feature; the browser half reads its enablement. */
     const UPDATE_MODULE = '@moreweb/edh/update'
+    /** The row that carries the side-chat commands; the browser half reads its enablement. */
+    const BTW_MODULE = '@moreweb/edh/btw'
     /** This bundle's own package name: the Plugin Manager subject and the module id. */
     const PACKAGE_NAME = '@moreweb/edh'
 
@@ -58,6 +60,9 @@ window.__ModuleLoader__.load({
       reloadNoRevision: 'Reload failed. The Host did not offer a new revision.',
       reloadFailed: 'Reload failed. The interface could not be reloaded.',
       reloadTitle: 'Load the newest EDH interface without restarting the app.',
+      btwLabel: 'Side chat',
+      btwDescription: 'Open a side chat that carries this conversation. It takes no arguments.',
+      btwTitle: 'Side: {title}',
       mcpNav: 'MCP servers',
       mcpTitle: 'MCP servers',
       mcpIntro: 'Connect a server once and every session can use its tools.',
@@ -149,6 +154,9 @@ window.__ModuleLoader__.load({
       reloadNoRevision: '重新载入失败。宿主没有提供新的版本。',
       reloadFailed: '重新载入失败。界面无法重新载入。',
       reloadTitle: '无需重启应用即可加载最新的 EDH 界面。',
+      btwLabel: '旁支对话',
+      btwDescription: '打开一个携带当前对话的旁支对话。它不接受参数。',
+      btwTitle: '旁支：{title}',
       mcpNav: 'MCP 服务器',
       mcpTitle: 'MCP 服务器',
       mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
@@ -235,6 +243,8 @@ window.__ModuleLoader__.load({
     const UPDATE_DEBUG_KEY = 'edh:update'
     /** Separate breadcrumb for the MCP server page. */
     const MCP_DEBUG_KEY = 'edh:mcp'
+    /** Separate breadcrumb for the side-chat commands. */
+    const BTW_DEBUG_KEY = 'edh:btw'
 
     function writeBreadcrumb(key, payload) {
       try {
@@ -262,6 +272,10 @@ window.__ModuleLoader__.load({
 
     function mcpWrite(payload) {
       writeBreadcrumb(MCP_DEBUG_KEY, payload)
+    }
+
+    function btwWrite(payload) {
+      writeBreadcrumb(BTW_DEBUG_KEY, payload)
     }
 
     /** One error's text, whatever was thrown. */
@@ -2605,6 +2619,158 @@ window.__ModuleLoader__.load({
      */
     const SHADOW_PRIORITY = -1
 
+    // ---------------------------------------------------------------------
+    // Side chats
+    //
+    // `/btw` and `/side` are one errand with two spellings: fork this
+    // conversation, open the fork, and name it for what it is. The fork is the
+    // shipped one — no `atSeq`, so it cuts at the last completed turn and the
+    // child carries everything said so far.
+    //
+    // They ride the command surface rather than the composer, which means they
+    // are `commandUi` contributions of kind `action`: a bare invocation runs a
+    // callback and never submits a message. Two consequences decide the code
+    // below. A contribution with arguments does not run at all — the input
+    // machine falls through to `session.prompt`, i.e. `btw how do I …` would be
+    // sent to the *current* conversation — so the copy says it takes none. And
+    // `ui.run` is called without awaiting or catching, so every path here has to
+    // catch for itself or a failure disappears.
+    // ---------------------------------------------------------------------
+
+    /** The spellings of the command, one contribution each. */
+    const SIDE_COMMAND_NAMES = ['btw', 'side']
+
+    /**
+     * The name a side chat's row carries: the parent's title, or the fallback.
+     *
+     * A fork inherits its parent's titles, and `increaseTitle` already numbers a
+     * child inside its parent's line. This is the plainer label the sidebar shows
+     * for a chat that was opened to think out loud, so the fallback is the
+     * command's own label rather than a number nobody can read.
+     * @param parentTitle - the parent's title, when the list knows one.
+     * @param t - the dictionary's translate function.
+     */
+    function sideTitle(parentTitle, t) {
+      const title = typeof parentTitle === 'string' ? parentTitle.trim() : ''
+      return title === '' ? t('btwLabel') : t('btwTitle', { title })
+    }
+
+    /**
+     * The title the Session list is showing for one Session, when it is readable.
+     *
+     * The list projection is where the sidebar's own title comes from, and it is
+     * a projection: a Session the list has not seen — or a store that refuses —
+     * simply has none, which costs the nicer name and nothing else.
+     * @param sessions - the `sessions` service.
+     * @param session - the Session the command was invoked from.
+     */
+    function sessionTitle(sessions, session) {
+      const sessionId = session?.sessionId
+      try {
+        const row = sessions?.list?.getSnapshot?.()?.byId?.[sessionId]
+        if (row !== undefined && typeof row.title === 'string' && row.title.trim() !== '') return row.title.trim()
+      } catch (error) {
+        // Diagnostic only: fall through to the session object's own field.
+      }
+      const title = session?.title
+      return typeof title === 'string' ? title.trim() : ''
+    }
+
+    /**
+     * Open the side chat: fork this conversation, open the fork, name it.
+     *
+     * Never rejects — `ui.run` calls it un-awaited from the command registry, so
+     * anything thrown here would surface as an unhandled rejection and the person
+     * who typed the command would see nothing at all. Each step records its own
+     * `edh:btw` breadcrumb instead.
+     *
+     * The fork reports its child through `onCreated` *before* it can still throw
+     * (its own inherited-title rename fails after the child exists), so the child
+     * id is captured there: a chat that exists gets opened even when the call
+     * that created it then failed.
+     * @param options - the dictionary, the three services, and the Session.
+     */
+    async function openSideChat({ t, sessions, uiWorkspace, session }) {
+      const sessionId = session?.sessionId
+      btwWrite({ phase: 'click', sessionId: String(sessionId ?? '') })
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        btwWrite({ phase: 'failed', step: 'click', message: 'the command had no session id' })
+        return
+      }
+
+      let childId
+      try {
+        childId = await sessions.fork({
+          sessionId,
+          increaseTitle: true,
+          onCreated: id => {
+            childId = id
+            btwWrite({ phase: 'forked', sessionId, childId: id })
+          },
+        })
+      } catch (error) {
+        if (typeof childId !== 'string' || childId === '') {
+          btwWrite({ phase: 'failed', step: 'fork', message: messageOf(error) })
+          return
+        }
+        // The child exists: the fork only failed to number it, and the rename
+        // below replaces that number anyway.
+        btwWrite({ phase: 'failed', step: 'fork-title', childId, message: messageOf(error) })
+      }
+      if (typeof childId !== 'string' || childId === '') {
+        btwWrite({ phase: 'failed', step: 'fork', message: 'the fork answered no child session' })
+        return
+      }
+
+      try {
+        uiWorkspace.openSession(childId)
+      } catch (error) {
+        btwWrite({ phase: 'failed', step: 'open', childId, message: messageOf(error) })
+      }
+
+      // Best effort, and last: the chat is open by now, so a refused rename is
+      // recorded and nothing else. A title save never fails a working side chat.
+      try {
+        const renamed = await sessions.rename(childId, sideTitle(sessionTitle(sessions, session), t))
+        btwWrite({ phase: 'named', childId, renamed: renamed?.ok === true })
+        try {
+          await sessions.refreshProjections(childId)
+        } catch (error) {
+          // The rename already applied the title projection; this is only the
+          // list's chance to agree, so its failure is not the rename's.
+        }
+      } catch (error) {
+        btwWrite({ phase: 'failed', step: 'name', childId, message: messageOf(error) })
+      }
+    }
+
+    /**
+     * The contributions for both spellings, sharing one handler.
+     *
+     * `available` is the row's own enablement — a plain predicate, no aggregate
+     * fallback — so turning `edh-btw` off takes both rows out of the menu on the
+     * spot, and a profile whose patch predates the row never offers them.
+     * @param t - the dictionary's translate function.
+     * @param controller - the switch controller holding the row states.
+     * @param services - the `sessions` and `uiWorkspace` faces.
+     */
+    function sideCommands(t, controller, services) {
+      /** One handler for both names: the two commands must not drift apart. */
+      const run = session => {
+        void openSideChat({ t, sessions: services.sessions, uiWorkspace: services.uiWorkspace, session })
+      }
+      // Each contribution states its own copy as a thunk: the menu reads `label`
+      // and `description` on every candidate pass, so a locale switch lands
+      // without re-registering anything.
+      return SIDE_COMMAND_NAMES.map(name => ({
+        name,
+        label: () => t('btwLabel'),
+        description: () => t('btwDescription'),
+        available: () => rowEnabled(controller.getSnapshot(), BTW_MODULE),
+        ui: { kind: 'action', run },
+      }))
+    }
+
     /** Required services: slot registry, locale, and the Plugin Manager Remote face. */
     const inject = ['slots', 'locale', 'remote', 'remote.pluginManager']
 
@@ -2767,6 +2933,36 @@ window.__ModuleLoader__.load({
         }, 'edh: update reload')
       })
 
+      // btw — /btw and /side open a side chat. They are command contributions,
+      // not slots: the slash menu asks `commandUi` for them, and a contribution
+      // is bare-token only (with arguments the line falls through to the current
+      // Session's prompt). Registering them client-side is the whole feature —
+      // a Host `/btw` would collide, and a collision throws while the menu is
+      // being built, taking every other command down with it.
+      //
+      // Both disposers ride one effect so turning the row off, or unloading this
+      // scope, removes both names together.
+      ctx.inject(['commandUi', 'sessions', 'uiWorkspace'], scope => {
+        scope.effect(() => {
+          const contributions = sideCommands(t, controller, {
+            sessions: scope.sessions,
+            uiWorkspace: scope.uiWorkspace,
+          })
+          const disposers = []
+          try {
+            for (const contribution of contributions) disposers.push(scope.commandUi.register(contribution))
+          } catch (error) {
+            // Half a pair is worse than none: a duplicate name, or a registry
+            // that refuses, leaves nothing listed.
+            btwWrite({ phase: 'register-failed', message: String(error?.message ?? error) })
+            for (const dispose of disposers) dispose()
+          }
+          return () => {
+            for (const dispose of disposers) dispose()
+          }
+        }, 'edh: side chat commands')
+      })
+
       // edit — replace the `user` Chat renderer so a user message gains an Edit
       // action, and seed the fork's composer from the click. It mounts on its own
       // dependency scope: if Session control ever goes away, the control surface
@@ -2855,6 +3051,11 @@ window.__ModuleLoader__.load({
       controlStyle,
       ICON_UPDATE,
       ICON_RELOAD,
+      sideCommands,
+      sideTitle,
+      sessionTitle,
+      openSideChat,
+      SIDE_COMMAND_NAMES,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,
@@ -2869,6 +3070,8 @@ window.__ModuleLoader__.load({
       MCP_ACTIONS,
       UPDATE_DEBUG_KEY,
       MCP_DEBUG_KEY,
+      BTW_DEBUG_KEY,
+      BTW_MODULE,
     }
 
     return exports

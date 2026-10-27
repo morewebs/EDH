@@ -20,6 +20,11 @@ const sandbox = {
     },
   },
   console,
+  // The browser globals the module parses addresses and signals with. They are
+  // the real ones, so the resource protocol is exercised, not simulated.
+  URL,
+  URLSearchParams,
+  AbortController,
 }
 vm.runInNewContext(source, sandbox, { filename: 'client.js' })
 
@@ -85,6 +90,18 @@ const {
   sessionTitle,
   openSideChat,
   SIDE_COMMAND_NAMES,
+  registerSideChatPane,
+  btwAddress,
+  parseBtwAddress,
+  btwResourceProvider,
+  BtwChatTab,
+  BtwConversationPanel,
+  BTW_PROTOCOL,
+  BTW_ADDRESS,
+  BTW_TAB_ID,
+  BTW_TAB_KIND,
+  BTW_CHAT_SLOT,
+  BTW_RETAIN_SOURCE,
 } = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
@@ -1217,7 +1234,7 @@ function fakeRemote(options = {}) {
     },
     session: { sessionId: 'parent' },
   })
-  assert.deepEqual(phases(), ['click', 'forked', 'named'])
+  assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-failed'], 'no right column in this case: fork, name, record the missing pane')
   assert.deepEqual({ sessionId: crumbs()[1].sessionId, childId: crumbs()[1].childId }, { sessionId: 'parent', childId: 'child-1' })
   assert.equal(crumbs()[2].renamed, true)
   assert.deepEqual(calls[0], { forkSession: { sessionId: 'parent', onCreated: 'function' } }, 'the shipped fork-in-place is the route')
@@ -1247,7 +1264,7 @@ function fakeRemote(options = {}) {
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
-  assert.deepEqual(phases(), ['click', 'forked', 'named'])
+  assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-failed'])
   assert.deepEqual(fallbackCalls, [{ sessionId: 'parent', increaseTitle: true }])
   assert.deepEqual(navigations, [], 'the fallback does not navigate either')
 
@@ -1269,7 +1286,7 @@ function fakeRemote(options = {}) {
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
-  assert.deepEqual(phases(), ['click', 'forked', 'failed', 'named'], 'the failed numbering is recorded, then the chat is still named')
+  assert.deepEqual(phases(), ['click', 'forked', 'failed', 'named', 'pane-failed'], 'the failed numbering is recorded, then the chat is still named')
   assert.equal(crumbs()[2].step, 'fork-title')
   assert.deepEqual(navigations, [], 'a chat that exists is still just a row')
 
@@ -1307,13 +1324,277 @@ function fakeRemote(options = {}) {
     uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
-  assert.deepEqual(phases(), ['click', 'forked', 'failed'])
+  assert.deepEqual(phases(), ['click', 'forked', 'failed', 'pane-failed'])
   assert.equal(crumbs()[2].step, 'name')
+
+  // The live right column: the fork, the name, then the pane — in that order, and
+  // at the address the resource protocol claims, asking for a new pane so the
+  // side chat sits beside this conversation instead of over it.
+  {
+    storage.length = 0
+    const paneCalls = []
+    const livePane = {
+      current: {
+        openResource(address, options) {
+          paneCalls.push({ address, options })
+          return Promise.resolve()
+        },
+      },
+    }
+    await openSideChat({
+      t,
+      sessions: {
+        list: { getSnapshot: () => ({ byId: { parent: { title: 'Refactor the parser' } } }) },
+        async fork(options) { options.onCreated('child-6'); return 'child-6' },
+        async rename() { return { ok: true, value: { title: 'Side: x', seq: 2 } } },
+        async refreshProjections() {},
+      },
+      uiWorkspace: stillHere,
+      pane: livePane.current,
+      session: { sessionId: 'parent' },
+    })
+    assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-opened'], 'the pane is opened after the name is settled')
+    assert.equal(crumbs()[3].childId, 'child-6')
+    assert.deepEqual(paneCalls, [{
+      address: btwAddress('child-6'),
+      options: { kind: BTW_TAB_KIND, preferNewPane: true },
+    }], 'the tab is claimed by kind, in a new pane')
+    assert.equal(paneCalls[0].address, 'dsh-resource://edhbtw/session/child-6')
+    assert.deepEqual(navigations, [], 'opening a pane is not navigating the centre')
+  }
+
+  // A right column that refuses the address: recorded, and the fork still stands.
+  {
+    storage.length = 0
+    await openSideChat({
+      t,
+      sessions: {
+        list: { getSnapshot: () => ({ byId: {} }) },
+        async fork(options) { options.onCreated('child-7'); return 'child-7' },
+        async rename() { return { ok: true, value: { title: 'Side chat', seq: 1 } } },
+        async refreshProjections() {},
+      },
+      uiWorkspace: stillHere,
+      // `openResource` throws synchronously for an address no type claims.
+      pane: { openResource() { throw new Error('sidebarRight: no registered tab type claims "x"') } },
+      session: { sessionId: 'parent' },
+    })
+    assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-failed'])
+    assert.equal(crumbs()[3].childId, 'child-7')
+    assert.equal(crumbs()[3].message, 'sidebarRight: no registered tab type claims "x"')
+  }
+  {
+    storage.length = 0
+    await openSideChat({
+      t,
+      sessions: {
+        list: { getSnapshot: () => ({ byId: {} }) },
+        async fork(options) { options.onCreated('child-8'); return 'child-8' },
+        async rename() { return { ok: true, value: { title: 'Side chat', seq: 1 } } },
+      },
+      uiWorkspace: stillHere,
+      pane: { openResource: async () => { throw new Error('no on-screen session') } },
+      session: { sessionId: 'parent' },
+    })
+    assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-failed'], 'a rejecting open degrades the same way')
+    assert.equal(crumbs()[3].message, 'no on-screen session')
+  }
 
   // Structural: the side-chat path cannot navigate. `openSession` is the only
   // call that moves the main view, and it is nowhere in the handler — the `open`
   // failure step went with it.
   assert.equal(openSideChat.toString().includes('openSession'), false, 'a side chat is a row, not a view')
+
+  // The address scheme: one side chat is one child Session, and nothing else
+  // claims to be one.
+  assert.equal(BTW_PROTOCOL, 'edhbtw')
+  assert.equal(BTW_ADDRESS, 'dsh-resource://edhbtw/session/')
+  assert.equal(btwAddress('child-1'), 'dsh-resource://edhbtw/session/child-1')
+  assert.equal(btwAddress('a/b c'), 'dsh-resource://edhbtw/session/a%2Fb%20c', 'the id is encoded')
+  assert.equal(parseBtwAddress('dsh-resource://edhbtw/session/a%2Fb%20c'), 'a/b c', 'and decoded back to the id')
+  assert.equal(parseBtwAddress(btwAddress('child-1')), 'child-1')
+  for (const foreign of [
+    'dsh-resource://subagentchat/session/s1?parent=p&mode=one-shot',
+    'dsh-resource://edhbtw/session/',
+    'dsh-resource://edhbtw/session/a/b',
+    'dsh-resource://edhbtw/other/a',
+    'dsh-resource://edhbtw/session/%E0%A4%A',
+    'sidebar://guide',
+    'not a url',
+    '',
+  ]) {
+    assert.equal(parseBtwAddress(foreign), undefined, `another plugin's address stays foreign: ${foreign}`)
+  }
+
+  // The four registrations the pane needs, against fakes: one protocol, one tab
+  // type in the extension band, the keyed pane entry with its session-scoped
+  // child, and the panel on that child.
+  const stubbed = definition.factory(() => ({
+    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+  })).__test
+  {
+    const effectLabels = []
+    const protocols = []
+    const tabTypes = []
+    const slotEntries = []
+    const scope = {
+      sessions: {
+        retain: () => ({ release() {} }),
+        list: { getSnapshot: () => ({ byId: { 'child-1': { title: 'Side: Refactor the parser' } } }) },
+      },
+      resources: {
+        register(provider) {
+          protocols.push(provider)
+          return () => {}
+        },
+      },
+      sidebarRightTabs: {
+        register(definition) {
+          tabTypes.push(definition)
+          return () => {}
+        },
+      },
+      slots: {
+        inject(name, callback) {
+          callback()
+          return () => {}
+        },
+        register(options, component) {
+          slotEntries.push({ name: options.name, options, component })
+          return () => {}
+        },
+      },
+      effect(fn, label) {
+        const dispose = fn()
+        effectLabels.push(label)
+        return dispose
+      },
+    }
+    registerSideChatPane(t, scope)
+
+    assert.deepEqual(effectLabels, [
+      'edh: side chat resources',
+      'edh: side chat tab-type',
+      'edh: side chat pane',
+      'edh: side chat panel',
+    ], 'four effects, each owning one seat')
+    assert.deepEqual(protocols.map(provider => provider.protocol), ['edhbtw'], 'one resource protocol')
+
+    const [type] = tabTypes
+    assert.equal(type.id, 'moreweb-edh/btw', 'the id is namespaced: another plugin may register a kind too')
+    assert.equal(type.kind, 'edh-btw-chat')
+    assert.deepEqual(type.patterns, ['dsh-resource://edhbtw/session/**'], 'the glob claims our whole address space')
+    assert.equal(type.priority, 'extension', 'a plugin outside the product registers in the extension band')
+    assert.equal(type.canOpen(btwAddress('child-1')), true)
+    assert.equal(type.canOpen('dsh-resource://subagentchat/session/x?parent=p&mode=one-shot'), false)
+    assert.equal(type.title(btwAddress('child-1')), 'Side: Refactor the parser', 'the chip is the child Session title')
+    assert.equal(type.title(btwAddress('unknown')), 'btwLabel', 'and the label when the list knows no title')
+    assert.equal(type.title('not ours'), 'btwLabel')
+
+    const pane = slotEntries.find(entry => entry.name === 'sidebar.right.pane.tab')
+    assert.equal(pane.options.key, BTW_TAB_ID, 'the tab type id keys the entry')
+    assert.deepEqual(
+      pane.options.children,
+      { 'edh.btw.chat': { kind: 'single', scope: 'session' } },
+      'the child slot is session-scoped: that is what gives the panel its Session',
+    )
+    assert.equal(pane.component, BtwChatTab, 'the body binds the retained reference')
+    const panel = slotEntries.find(entry => entry.name === 'edh.btw.chat')
+    assert.equal(panel.component, BtwConversationPanel, 'and the child renders the conversation')
+    assert.equal(BTW_CHAT_SLOT, 'edh.btw.chat')
+  }
+
+  // The provider: retain for the tab's lifetime, release in `finally`.
+  {
+    const retained = []
+    const released = []
+    const provider = btwResourceProvider({
+      retain(target, options) {
+        retained.push({ target, options })
+        return { release: () => released.push(target) }
+      },
+    })
+    const controller = new AbortController()
+    const frames = provider.open(btwAddress('child-1'), { signal: controller.signal })
+    const first = await frames.next()
+    assert.equal(first.value.ok, true)
+    assert.equal(first.value.value.childId, 'child-1')
+    assert.equal(typeof first.value.value.reference, 'object', 'the pane is handed the reference, not the id')
+    assert.equal(retained[0].target, 'child-1')
+    assert.equal(retained[0].options.source, BTW_RETAIN_SOURCE, 'the retain is traceable to this feature')
+    assert.equal(retained[0].options.signal, controller.signal, 'and rides the tab signal')
+    assert.deepEqual(released, [], 'held while the tab lives')
+    controller.abort()
+    assert.deepEqual(await frames.next(), { value: undefined, done: true }, 'closing the tab ends the generator')
+    assert.deepEqual(released, ['child-1'], 'and releases the Session in finally')
+
+    // A retain that refuses (an unknown Session) throws before yielding, so the
+    // body has no reference to bind and paints nothing.
+    const failing = btwResourceProvider({ retain() { throw new Error('sessions.retain: unknown session child-9') } })
+    await assert.rejects(
+      async () => await failing.open(btwAddress('child-9'), { signal: new AbortController().signal }).next(),
+      /unknown session child-9/,
+    )
+    const bad = btwResourceProvider({ retain: () => ({ release() {} }) })
+    await assert.rejects(
+      async () => await bad.open('dsh-resource://other/session/x', { signal: new AbortController().signal }).next(),
+      /invalid side-chat address/,
+    )
+  }
+
+  // The body: nothing without a reference, and `SessionProvider` around the chat
+  // slot with one. The provider is what hands the child slot its Session.
+  assert.equal(stubbed.BtwChatTab({
+    useTabInfo: () => ({ tab: { contentId: btwAddress('child-9') } }),
+    useResource: () => ({ value: undefined }),
+    SessionProvider: () => 'should not render',
+    renderSlot: () => 'should not render',
+  }), null, 'no resource, no body: an empty pane is worse than none')
+
+  {
+    const reference = { sessionId: 'child-1', binding: {} }
+    let asked = ''
+    const SessionProvider = props => ({ provider: true, props })
+    const tree = stubbed.BtwChatTab({
+      useTabInfo: () => ({ tab: { contentId: btwAddress('child-1') } }),
+      useResource: contentId => { asked = contentId; return { value: { reference } } },
+      SessionProvider,
+      renderSlot: name => `slot:${name}`,
+    })
+    assert.equal(asked, btwAddress('child-1'), 'the resource is read at the tab address')
+    assert.equal(tree.type, SessionProvider, 'the child slot is wrapped in the provider and nothing else')
+    assert.equal(tree.props.session, reference, 'bound to the retained reference')
+    assert.equal(tree.props.children, 'slot:edh.btw.chat', 'and the session-scoped child renders inside it')
+  }
+
+  // The conversation: the shipped content, embedded, with a fixed chat view.
+  {
+    const calls = []
+    const render = (session, summaryBlank) => stubbed.BtwConversationPanel({
+      sessionId: 'child-1',
+      useSession: selector => selector(session),
+      useConversation: selector => selector({ activeTargets: new Map() }),
+      useSessions: selector => selector({ byId: { 'child-1': { blank: summaryBlank } } }),
+      renderFactorySlot: (name, props, options) => {
+        calls.push({ name, props, options })
+        return 'content'
+      },
+    })
+    assert.equal(render({ blank: true, openState: 'open', running: false, promptAttempted: false }, true), 'content')
+    assert.equal(calls[0].name, 'conversation.content')
+    assert.deepEqual(
+      { variant: calls[0].props.variant, phase: calls[0].props.phase, hero: calls[0].props.hero },
+      { variant: 'embedded', phase: 'hero', hero: true },
+      'a fresh fork opens on the hero, embedded in the pane',
+    )
+    assert.equal(typeof calls[0].options.slots.views, 'function', 'the chat view is fixed, not chosen by the pane')
+    render({ blank: false, openState: 'open', running: true, promptAttempted: true }, false)
+    assert.deepEqual(
+      { phase: calls[1].props.phase, hero: calls[1].props.hero },
+      { phase: 'active', hero: false },
+      'and a running chat is the live one',
+    )
+  }
 
   // And the registration itself: two entries through `commandUi`, both removed
   // when the effect disposes. Nothing else in `apply` may need these services,

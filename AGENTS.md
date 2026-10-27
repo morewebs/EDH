@@ -106,6 +106,26 @@ through to `session.prompt`, so `/btw how …` would be sent to the current conv
 is why the copy says it takes no arguments. And `ui.run` is called un-awaited and
 uncatchable, so every path inside it catches for itself or the failure disappears.
 
+The side chat shows **beside** the conversation, never in place of it. Four facts cost a day
+each to rediscover:
+
+- **The right column is the only side-by-side space.** The centre panel (`main`) is a keyed
+  replace-the-centre registry: there is no split API, and `uiWorkspace.openSession` navigates
+  away. Anything that has to be visible *next to* a conversation lives in the right column.
+- **`ctx.sidebarRight.openResource(address, { kind, preferNewPane: true })` is the aside
+  opener.** It throws synchronously for an address no registered tab type claims, and it acts
+  on the *on-screen* session, which is why it never moves the view.
+- **A pane body renders a second Session only through `SessionProvider`.** The address is a
+  resource (`ctx.resources.register({ protocol, async *open() })`) whose `open` retains the
+  child with `ctx.sessions.retain(id, { source, signal })` and releases it in `finally`; the
+  body reads `useResource(tab.contentId)` and wraps its own **session-scoped child slot** in
+  `SessionProvider session={reference}`. Without that provider, or with a bare id instead of a
+  reference, the slot has no Session and paints nothing. Inside, `renderFactorySlot(
+  'conversation.content', { variant: 'embedded', … }, { slots: { views: FixedChatView } })`
+  is the real, writable conversation.
+- **The pane is per-parent-session storage**, keyed by the tab type id: it stays with the
+  conversation that opened it and will not follow you to another session.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -139,8 +159,8 @@ There is often no browser control in a session, so EDH writes Local Storage brea
 both Plugin Manager controls — update (`mounted` / `checked` / `update-started` / `updated` /
 `updated-needs-restart` / `failed`) and reload (`reloaded` / `reload-failed`) — `edh:mcp`
 for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
-and `edh:btw` for the side-chat commands (`click` / `forked` / `named` / `register-failed` /
-`failed`).
+and `edh:btw` for the side-chat commands (`click` / `forked` / `named` / `pane-opened` /
+`pane-failed` / `register-failed` / `failed` with the step that failed).
 Read them off disk while the app is closed or running:
 
 ```

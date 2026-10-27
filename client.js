@@ -2682,24 +2682,26 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Create the side chat: fork this conversation in place and name the fork.
+     * Open the side chat: fork this conversation, name the fork, show it beside.
      *
      * Never rejects — `ui.run` calls it un-awaited from the command registry, so
      * anything thrown here would surface as an unhandled rejection and the person
      * who typed the command would see nothing at all. Each step records its own
      * `edh:btw` breadcrumb instead.
      *
-     * It creates a row and nothing else: no `openSession`, no navigation, so the
-     * conversation that typed the command is the one still on screen.
+     * The view does not move: the fork is opened as a tab in the right-hand pane,
+     * so this conversation stays on screen beside it. That tab is the only
+     * optional step — without a right column the Session still exists and the
+     * sidebar lists it, which is a usable result, just not a side-by-side one.
      *
      * The fork reports its child through `onCreated` *before* it can still throw
      * (its own inherited-title rename fails after the child exists), so the child
      * id is captured there: a chat that exists still gets named even when the
      * call that created it then failed.
-     * @param options - the dictionary, the services the fork and the rename need,
-     *   and the Session the command was typed in.
+     * @param options - the dictionary, the services the fork, the rename, and the
+     *   pane need, and the Session the command was typed in.
      */
-    async function openSideChat({ t, sessions, uiWorkspace, session }) {
+    async function openSideChat({ t, sessions, uiWorkspace, pane, session }) {
       const sessionId = session?.sessionId
       btwWrite({ phase: 'click', sessionId: String(sessionId ?? '') })
       if (typeof sessionId !== 'string' || sessionId === '') {
@@ -2754,6 +2756,22 @@ window.__ModuleLoader__.load({
       } catch (error) {
         btwWrite({ phase: 'failed', step: 'name', childId, message: messageOf(error) })
       }
+      // Then show it beside this conversation, in the right-hand pane. This is
+      // the one step that may degrade: the fork exists and the sidebar lists it,
+      // so a build without a right column, or a column that refuses the address,
+      // costs the second pane and nothing else. `openResource` throws
+      // synchronously for an address no tab type claims, so both shapes land in
+      // the same catch.
+      try {
+        if (typeof pane?.openResource !== 'function') {
+          btwWrite({ phase: 'pane-failed', childId, reason: 'no-right-column' })
+        } else {
+          await pane.openResource(btwAddress(childId), { kind: BTW_TAB_KIND, preferNewPane: true })
+          btwWrite({ phase: 'pane-opened', childId })
+        }
+      } catch (error) {
+        btwWrite({ phase: 'pane-failed', childId, message: messageOf(error) })
+      }
     }
 
     /**
@@ -2764,12 +2782,21 @@ window.__ModuleLoader__.load({
      * spot, and a profile whose patch predates the row never offers them.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
-     * @param services - the `sessions` face and the `uiWorkspace` fork-in-place.
+     * @param services - the `sessions` face, the `uiWorkspace` fork-in-place, and
+     *   the holder the optional right column fills when it exists.
      */
     function sideCommands(t, controller, services) {
       /** One handler for both names: the two commands must not drift apart. */
       const run = session => {
-        void openSideChat({ t, sessions: services.sessions, uiWorkspace: services.uiWorkspace, session })
+        void openSideChat({
+          t,
+          sessions: services.sessions,
+          uiWorkspace: services.uiWorkspace,
+          // The holder is read per click, so a right column that mounts later
+          // (or never) is honoured without re-registering the commands.
+          pane: services.pane?.current,
+          session,
+        })
       }
       // Each contribution states its own copy as a thunk: the menu reads `label`
       // and `description` on every candidate pass, so a locale switch lands
@@ -2781,6 +2808,206 @@ window.__ModuleLoader__.load({
         available: () => rowEnabled(controller.getSnapshot(), BTW_MODULE),
         ui: { kind: 'action', run },
       }))
+    }
+
+    // --- the right-hand pane the side chat is shown in --------------------
+    //
+    // Side by side is the whole request: the parent stays on screen and the fork
+    // opens in the right column, as a tab that renders a second Session's real,
+    // writable conversation. That column is the only place this build can put
+    // two conversations at once — the centre panel is a replace-the-centre
+    // registry with no split — and the shipped subagent chat is exactly this:
+    // a pane tab whose body binds a *retained* Session reference around the
+    // conversation slot.
+    //
+    // Three pieces make that work, and each is needed:
+    //   1. a resource protocol, so the tab's content is an address the registry
+    //      can claim, and closing the tab releases the Session through `finally`;
+    //   2. a tab type, which claims our addresses and paints the chip title;
+    //   3. a keyed entry in `sidebar.right.pane.tab` that declares a
+    //      session-scoped child slot, and the panel registered on that child,
+    //      which renders `conversation.content` with `variant: 'embedded'`.
+    // The pane body itself gets the reference from `useResource(tab.contentId)`
+    // and hands it to `SessionProvider`; without that provider the child slot has
+    // no Session and paints nothing.
+
+    /** The resource protocol one side chat's tab is addressed by. */
+    const BTW_PROTOCOL = 'edhbtw'
+    /** Address of one side chat: `dsh-resource://edhbtw/session/<childSessionId>`. */
+    const BTW_ADDRESS = `dsh-resource://${BTW_PROTOCOL}/session/`
+    /** The tab type's registration id, unique across every contributing plugin. */
+    const BTW_TAB_ID = 'moreweb-edh/btw'
+    /** The kind both the type and `openResource` name. */
+    const BTW_TAB_KIND = 'edh-btw-chat'
+    /** The session-scoped child slot the pane body renders its conversation in. */
+    const BTW_CHAT_SLOT = 'edh.btw.chat'
+    /** The retain source, so a leaked reference is traceable to this feature. */
+    const BTW_RETAIN_SOURCE = 'edhSideChat'
+
+    /**
+     * The address one side chat is opened at.
+     * @param childId - the fork's Session id.
+     */
+    function btwAddress(childId) {
+      return `${BTW_ADDRESS}${encodeURIComponent(childId)}`
+    }
+
+    /**
+     * The child Session one side-chat address names.
+     *
+     * Mirrors the shipped parser: a `dsh-resource:` URL whose host is our
+     * protocol and whose path is `session/<id>`. Anything else is not ours, and
+     * answering `undefined` is how a foreign address stays foreign.
+     * @param value - a possible side-chat resource address.
+     * @returns the child Session id, or `undefined` for another or malformed address.
+     */
+    function parseBtwAddress(value) {
+      let url
+      try {
+        url = new URL(value)
+      } catch (error) {
+        return undefined
+      }
+      if (url.protocol !== 'dsh-resource:' || url.hostname.toLowerCase() !== BTW_PROTOCOL) return undefined
+      const parts = url.pathname.split('/').filter(Boolean)
+      if (parts.length !== 2 || parts[0] !== 'session') return undefined
+      try {
+        return decodeURIComponent(parts[1])
+      } catch (error) {
+        return undefined
+      }
+    }
+
+    /** Resolve once the tab that opened this resource has gone away. */
+    function btwWaitForAbort(signal) {
+      if (signal.aborted) return Promise.resolve()
+      return new Promise(resolve => {
+        signal.addEventListener('abort', () => {
+          resolve()
+        }, { once: true })
+      })
+    }
+
+    /**
+     * The resource provider that keeps one side chat's Session alive.
+     *
+     * The tab body is handed whatever this yields; the reference is what carries
+     * the Session's authority into the pane, so it is retained for exactly as
+     * long as the tab exists and released in `finally` whatever happens.
+     * @param sessions - the `sessions` service.
+     */
+    function btwResourceProvider(sessions) {
+      return {
+        protocol: BTW_PROTOCOL,
+        async *open(address, { signal }) {
+          const childId = parseBtwAddress(address)
+          if (childId === undefined) throw new Error(`edh btw: invalid side-chat address "${address}"`)
+          if (signal.aborted) return
+          const reference = sessions.retain(childId, { source: BTW_RETAIN_SOURCE, signal })
+          try {
+            yield { ok: true, value: { childId, reference } }
+            await btwWaitForAbort(signal)
+          } finally {
+            reference.release()
+          }
+        },
+      }
+    }
+
+    /** Fixed chat selection used by an embedded Conversation occurrence. */
+    function FixedChatConversationView(props) {
+      return props.renderSlot('conversation.session', { view: 'chat' })
+    }
+
+    /**
+     * The pane body: bind the retained child Session around its chat slot.
+     *
+     * It paints no frame of its own — the conversation package styles itself, and
+     * the tab chrome belongs to the right column. With no resource (the retain
+     * failed, or the tab is still settling) there is no Session to show, so it
+     * renders nothing rather than an empty shell.
+     */
+    function BtwChatTab({ useTabInfo, useResource, SessionProvider, renderSlot }) {
+      const { tab } = useTabInfo()
+      const resource = useResource(tab.contentId)
+      if (resource.value === undefined) return null
+      return h(SessionProvider, { session: resource.value.reference },
+        renderSlot(BTW_CHAT_SLOT, {}))
+    }
+
+    /**
+     * The side chat's conversation: the shipped content, rendered embedded.
+     *
+     * `variant: 'embedded'` is what makes a second Session's writeable
+     * conversation fit a pane instead of the centre, and the phase decides
+     * whether the hero, the settling shell, or the live chat is shown — a fresh
+     * fork is blank, so the hero with its composer comes first.
+     */
+    function BtwConversationPanel({ sessionId, useSession, useConversation, useSessions, renderFactorySlot }) {
+      const session = useSession(value => value)
+      const shellPhase = useConversation(value => value).activeTargets.size > 0 || !session.blank && !session.awaitingFirstTurn || session.running
+        ? 'active'
+        : session.promptAttempted ? 'engaging' : 'blank'
+      const summaryBlank = useSessions(state => state.byId[sessionId]?.blank)
+      const settling = shellPhase === 'blank' && session.openState === 'loading' && summaryBlank !== true
+      const hero = shellPhase === 'blank' && (session.openState === 'open' || summaryBlank === true)
+      return renderFactorySlot('conversation.content', {
+        variant: 'embedded',
+        phase: settling ? 'settling' : hero ? 'hero' : 'active',
+        hero,
+      }, { slots: { views: FixedChatConversationView } })
+    }
+
+    /**
+     * Register everything the pane needs.
+     *
+     * Four registrations, each in its own effect and its own `try`: a build that
+     * refuses one of these seats still gets the others, and each failure is
+     * recorded instead of thrown, because this runs while the plugin mounts and a
+     * throw here would take the whole control surface with it. Each effect owns
+     * its own disposal, so the scope going away removes them all.
+     * @param t - the dictionary's translate function.
+     * @param scope - the optional scope carrying the right column, its tab
+     *   registry, the resource registry, and the slot registry.
+     */
+    function registerSideChatPane(t, scope) {
+      /** Run one registration and record which part refused, if any. */
+      const install = (part, effect) => {
+        try {
+          scope.effect(effect, `edh: side chat ${part}`)
+        } catch (error) {
+          btwWrite({ phase: 'register-failed', part, message: messageOf(error) })
+        }
+      }
+
+      install('resources', () => scope.resources.register(btwResourceProvider(scope.sessions)))
+      install('tab-type', () => scope.sidebarRightTabs.register({
+        id: BTW_TAB_ID,
+        kind: BTW_TAB_KIND,
+        patterns: [`${BTW_ADDRESS}**`],
+        priority: 'extension',
+        canOpen: address => parseBtwAddress(address) !== undefined,
+        // The chip reads the Session store on every pass, so the rename lands on
+        // the tab without reopening it.
+        title: address => {
+          const childId = parseBtwAddress(address)
+          if (childId === undefined) return t('btwLabel')
+          try {
+            const title = scope.sessions.list.getSnapshot().byId[childId]?.title
+            return typeof title === 'string' && title.trim() !== '' ? title : t('btwLabel')
+          } catch (error) {
+            return t('btwLabel')
+          }
+        },
+      }))
+      install('pane', () => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
+        name: 'sidebar.right.pane.tab',
+        key: BTW_TAB_ID,
+        children: { [BTW_CHAT_SLOT]: { kind: 'single', scope: 'session' } },
+      }, BtwChatTab)))
+      install('panel', () => scope.slots.inject(BTW_CHAT_SLOT, () => scope.slots.register({
+        name: BTW_CHAT_SLOT,
+      }, BtwConversationPanel)))
     }
 
     /** Required services: slot registry, locale, and the Plugin Manager Remote face. */
@@ -2945,22 +3172,29 @@ window.__ModuleLoader__.load({
         }, 'edh: update reload')
       })
 
-      // btw — /btw and /side create a side chat: a fork of this conversation that
-      // arrives as a row in the sidebar, without moving the view. They are
-      // command contributions, not slots: the slash menu asks `commandUi` for
-      // them, and a contribution is bare-token only (with arguments the line
-      // falls through to the current Session's prompt). Registering them
-      // client-side is the whole feature — a Host `/btw` would collide, and a
-      // collision throws while the menu is being built, taking every other
-      // command down with it.
+      // btw — /btw and /side open a side chat: a fork of this conversation, shown
+      // beside it in the right-hand pane, with the view never leaving this chat.
+      // They are command contributions, not slots: the slash menu asks
+      // `commandUi` for them, and a contribution is bare-token only (with
+      // arguments the line falls through to the current Session's prompt).
+      // Registering them client-side is the whole feature — a Host `/btw` would
+      // collide, and a collision throws while the menu is being built, taking
+      // every other command down with it.
+      //
+      // The right column is optional and reached separately, through the holder
+      // below: if this build has no such column the commands still exist and the
+      // fork still happens, because a missing pane must not cost the chat.
       //
       // Both disposers ride one effect so turning the row off, or unloading this
       // scope, removes both names together.
+      /** Filled by the optional right-column scope; absent when the build has none. */
+      const sidePane = { current: undefined }
       ctx.inject(['commandUi', 'sessions', 'uiWorkspace'], scope => {
         scope.effect(() => {
           const contributions = sideCommands(t, controller, {
             sessions: scope.sessions,
             uiWorkspace: scope.uiWorkspace,
+            pane: sidePane,
           })
           const disposers = []
           try {
@@ -2975,6 +3209,27 @@ window.__ModuleLoader__.load({
             for (const dispose of disposers) dispose()
           }
         }, 'edh: side chat commands')
+      })
+
+      // btw — the right-hand pane the side chat is shown in. Its own optional
+      // scope: the right column, its tab registry, and the resource registry are
+      // a separate package's contracts, and a build without them must still have
+      // `/btw`. Everything registered here is recorded, never thrown, and the
+      // service itself is published through the holder for the handler to read at
+      // click time — which is also how a build without a right column reports
+      // `pane-failed` instead of failing the fork.
+      ctx.inject(['sidebarRight', 'sidebarRightTabs', 'resources', 'sessions', 'slots'], scope => {
+        try {
+          scope.effect(() => {
+            sidePane.current = scope.sidebarRight
+            return () => {
+              sidePane.current = undefined
+            }
+          }, 'edh: side chat pane')
+        } catch (error) {
+          btwWrite({ phase: 'register-failed', part: 'pane-face', message: String(error?.message ?? error) })
+        }
+        registerSideChatPane(t, scope)
       })
 
       // edit — replace the `user` Chat renderer so a user message gains an Edit
@@ -3070,6 +3325,18 @@ window.__ModuleLoader__.load({
       sessionTitle,
       openSideChat,
       SIDE_COMMAND_NAMES,
+      registerSideChatPane,
+      btwAddress,
+      parseBtwAddress,
+      btwResourceProvider,
+      BtwChatTab,
+      BtwConversationPanel,
+      BTW_PROTOCOL,
+      BTW_ADDRESS,
+      BTW_TAB_ID,
+      BTW_TAB_KIND,
+      BTW_CHAT_SLOT,
+      BTW_RETAIN_SOURCE,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,

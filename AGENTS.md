@@ -112,9 +112,19 @@ each to rediscover:
 - **The right column is the only side-by-side space.** The centre panel (`main`) is a keyed
   replace-the-centre registry: there is no split API, and `uiWorkspace.openSession` navigates
   away. Anything that has to be visible *next to* a conversation lives in the right column.
-- **`ctx.sidebarRight.openResource(address, { kind, preferNewPane: true })` is the aside
-  opener.** It throws synchronously for an address no registered tab type claims, and it acts
-  on the *on-screen* session, which is why it never moves the view.
+- **`ctx.sidebarRight.openResource(address, { kind })` is the aside opener, and the kind is
+  the only option it should get.** `preferNewPane` asks the dock to *split*, which lands the
+  chat in a second pane beside the launcher instead of as a tab in the pane already open;
+  `replaceTab` and `revealIfOpened` are placement overrides a side chat does not want either
+  (the default already re-activates a tab holding the same address). It throws synchronously
+  for an address no registered tab type claims, and it acts on the *on-screen* session, which
+  is why it never moves the view.
+- **A Session cannot be renamed until it is resumed.** The Host's `session/rename` is
+  documented as "rename one Session after explicitly resuming it" and refuses one it does not
+  hold live; a fresh fork is not live, so a bare `sessions.rename(childId, …)` answers a
+  failure and the tab keeps the fork's own number (`EDH (1)`). Wrap it in
+  `sessions.using(childId, { source }, () => sessions.rename(…))`, which retains the child,
+  waits for the open, runs the rename, and releases again.
 - **A pane body renders a second Session only through `SessionProvider`.** The address is a
   resource (`ctx.resources.register({ protocol, async *open() })`) whose `open` retains the
   child with `ctx.sessions.retain(id, { source, signal })` and releases it in `finally`; the

@@ -89,6 +89,7 @@ const {
   sideTitle,
   sessionTitle,
   openSideChat,
+  renameSideChat,
   SIDE_COMMAND_NAMES,
   registerSideChatPane,
   btwAddress,
@@ -1327,40 +1328,90 @@ function fakeRemote(options = {}) {
   assert.deepEqual(phases(), ['click', 'forked', 'failed', 'pane-failed'])
   assert.equal(crumbs()[2].step, 'name')
 
-  // The live right column: the fork, the name, then the pane — in that order, and
-  // at the address the resource protocol claims, asking for a new pane so the
-  // side chat sits beside this conversation instead of over it.
+  // The live right column: the fork, the name, then the pane — in that order, at
+  // the address the resource protocol claims, and with no placement flags: the
+  // tab belongs in the pane the person is already looking at, never in a split.
   {
     storage.length = 0
     const paneCalls = []
-    const livePane = {
-      current: {
-        openResource(address, options) {
-          paneCalls.push({ address, options })
-          return Promise.resolve()
-        },
-      },
-    }
+    const resumes = []
+    const order = []
     await openSideChat({
       t,
       sessions: {
         list: { getSnapshot: () => ({ byId: { parent: { title: 'Refactor the parser' } } }) },
         async fork(options) { options.onCreated('child-6'); return 'child-6' },
-        async rename() { return { ok: true, value: { title: 'Side: x', seq: 2 } } },
+        // The Host refuses a rename for a Session it is not holding live, so the
+        // rename has to run after a resume. `using` is that resume.
+        async using(target, options, operation) {
+          resumes.push({ target, options: { source: options.source } })
+          order.push('resume')
+          return await operation({ ready: true })
+        },
+        async rename(sessionId, title) {
+          order.push({ rename: { sessionId, title } })
+          return { ok: true, value: { title, seq: 2 } }
+        },
         async refreshProjections() {},
       },
       uiWorkspace: stillHere,
-      pane: livePane.current,
+      pane: {
+        openResource(address, options) {
+          paneCalls.push({ address, options })
+          order.push('openResource')
+          return Promise.resolve()
+        },
+      },
       session: { sessionId: 'parent' },
     })
     assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-opened'], 'the pane is opened after the name is settled')
     assert.equal(crumbs()[3].childId, 'child-6')
     assert.deepEqual(paneCalls, [{
       address: btwAddress('child-6'),
-      options: { kind: BTW_TAB_KIND, preferNewPane: true },
-    }], 'the tab is claimed by kind, in a new pane')
+      options: { kind: BTW_TAB_KIND },
+    }], 'the tab is claimed by kind and nothing else: no split, no replacement')
+    assert.equal(paneCalls[0].options.preferNewPane, undefined, 'a side chat never splits the dock')
     assert.equal(paneCalls[0].address, 'dsh-resource://edhbtw/session/child-6')
     assert.deepEqual(navigations, [], 'opening a pane is not navigating the centre')
+    assert.deepEqual(resumes, [{ target: 'child-6', options: { source: BTW_RETAIN_SOURCE } }], 'the child is resumed before the rename')
+    assert.deepEqual(order, [
+      'resume',
+      { rename: { sessionId: 'child-6', title: 'btwTitle({"title":"Refactor the parser"})' } },
+      'openResource',
+    ], 'resume, rename, then the tab: the title is in the store before the tab claims it')
+  }
+
+  // A rename the Host still refuses: recorded with its reason, and the pane opens
+  // anyway — a numbered title is better than no chat.
+  {
+    storage.length = 0
+    const paneCalls = []
+    await openSideChat({
+      t,
+      sessions: {
+        list: { getSnapshot: () => ({ byId: {} }) },
+        async fork(options) { options.onCreated('child-10'); return 'child-10' },
+        async using(target, options, operation) { return await operation({}) },
+        async rename() { return { ok: false, error: { code: 'session/title-invalid' } } },
+        async refreshProjections() {},
+      },
+      uiWorkspace: stillHere,
+      pane: { openResource: (address, options) => { paneCalls.push({ address, options }); return Promise.resolve() } },
+      session: { sessionId: 'parent' },
+    })
+    assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-opened'])
+    assert.deepEqual({ renamed: crumbs()[2].renamed, reason: crumbs()[2].reason }, { renamed: false, reason: 'session/title-invalid' })
+    assert.equal(paneCalls.length, 1, 'the chat still opens')
+  }
+
+  // A build without `using`: the rename is attempted directly, and a refusal is
+  // what it is — the fallback is in the code so an older client still tries.
+  {
+    storage.length = 0
+    const result = await renameSideChat({
+      async rename() { return { ok: false, error: { code: 'session/not-live' } } },
+    }, 'child-11', 'Side: x')
+    assert.deepEqual({ ok: result.ok, code: result.error.code }, { ok: false, code: 'session/not-live' })
   }
 
   // A right column that refuses the address: recorded, and the fork still stands.

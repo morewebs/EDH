@@ -2741,12 +2741,16 @@ window.__ModuleLoader__.load({
         return
       }
 
-      // Best effort, and last: the row is in the sidebar by now, so a refused
-      // rename is recorded and nothing else. A title save never fails a working
-      // side chat.
+      // Best effort, and last before the pane: a refused rename is recorded and
+      // nothing else. A title save never fails a working side chat.
       try {
-        const renamed = await sessions.rename(childId, sideTitle(sessionTitle(sessions, session), t))
-        btwWrite({ phase: 'named', childId, renamed: renamed?.ok === true })
+        const renamed = await renameSideChat(sessions, childId, sideTitle(sessionTitle(sessions, session), t))
+        btwWrite({
+          phase: 'named',
+          childId,
+          renamed: renamed?.ok === true,
+          ...(renamed?.ok === true ? {} : { reason: String(renamed?.error?.code ?? renamed?.error ?? 'unknown') }),
+        })
         try {
           await sessions.refreshProjections(childId)
         } catch (error) {
@@ -2762,16 +2766,45 @@ window.__ModuleLoader__.load({
       // costs the second pane and nothing else. `openResource` throws
       // synchronously for an address no tab type claims, so both shapes land in
       // the same catch.
+      //
+      // No placement flags. `preferNewPane` asks the dock to *split*, which put
+      // the side chat in a second pane beside the launcher instead of a tab in
+      // the one that was already open; leaving it out puts the tab where the
+      // person already is, and the default `revealIfOpened` re-activates an
+      // existing tab rather than opening the same address twice.
       try {
         if (typeof pane?.openResource !== 'function') {
           btwWrite({ phase: 'pane-failed', childId, reason: 'no-right-column' })
         } else {
-          await pane.openResource(btwAddress(childId), { kind: BTW_TAB_KIND, preferNewPane: true })
+          await pane.openResource(btwAddress(childId), { kind: BTW_TAB_KIND })
           btwWrite({ phase: 'pane-opened', childId })
         }
       } catch (error) {
         btwWrite({ phase: 'pane-failed', childId, message: messageOf(error) })
       }
+    }
+
+    /**
+     * Name the side chat, with the child resumed first.
+     *
+     * The Host's rename RPC is documented as "rename one Session after explicitly
+     * resuming it": a Session it does not hold live is refused, and a fresh fork
+     * is not live — nothing has opened it yet. `sessions.using` retains the child,
+     * waits for that open, runs the rename, and releases again, which is what
+     * makes the title land. Without it every rename answers a failure and the tab
+     * keeps the fork's own number ("EDH (1)"), which is how it shipped once.
+     * @param sessions - the `sessions` service.
+     * @param childId - the fork's Session id.
+     * @param title - the title to set.
+     * @returns the rename result: the accepted title, or the Remote failure.
+     */
+    async function renameSideChat(sessions, childId, title) {
+      if (typeof sessions.using === 'function') {
+        return await sessions.using(childId, { source: BTW_RETAIN_SOURCE }, () => sessions.rename(childId, title))
+      }
+      // A build without `using`: the rename may be refused for want of a resume,
+      // and that is recorded by the caller rather than hidden.
+      return await sessions.rename(childId, title)
     }
 
     /**
@@ -3324,6 +3357,7 @@ window.__ModuleLoader__.load({
       sideTitle,
       sessionTitle,
       openSideChat,
+      renameSideChat,
       SIDE_COMMAND_NAMES,
       registerSideChatPane,
       btwAddress,

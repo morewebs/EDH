@@ -1155,26 +1155,37 @@ function fakeRemote(options = {}) {
 
   // A fork that refuses: recorded, and nothing thrown.
   storage.length = 0
-  const opened = []
+  const navigations = []
+  /** Every way a view could move: the row menu's Fork must not use any of them. */
+  const stillHere = { openSession: id => navigations.push(id) }
   const refused = await openSideChat({
     t,
     sessions: { fork: async () => { throw new Error('fork refused') } },
-    uiWorkspace: { openSession: id => opened.push(id) },
+    uiWorkspace: {
+      ...stillHere,
+      forkSession: async () => { throw new Error('fork refused') },
+    },
     session: { sessionId: 'parent' },
   })
   assert.equal(refused, undefined, 'it answers nothing and never rejects')
   assert.deepEqual(phases(), ['click', 'failed'])
   assert.deepEqual({ step: crumbs()[1].step, message: crumbs()[1].message }, { step: 'fork', message: 'fork refused' })
-  assert.deepEqual(opened, [], 'no child, so nothing is opened')
+  assert.deepEqual(navigations, [], 'nothing to show, so nothing is opened')
 
   // A fork with no session id to fork from is a breadcrumb, not a crash.
   storage.length = 0
-  await openSideChat({ t, sessions: { fork: async () => 'child' }, uiWorkspace: { openSession: () => {} }, session: {} })
+  await openSideChat({
+    t,
+    sessions: { fork: async () => 'child' },
+    uiWorkspace: { ...stillHere, forkSession: async () => 'child' },
+    session: {},
+  })
   assert.deepEqual(phases(), ['click', 'failed'])
   assert.equal(crumbs()[1].step, 'click')
 
-  // The working path: fork the whole conversation, open it, name it, and let the
-  // list agree — the order the sidebar sees.
+  // The working path: fork the whole conversation in place, name it, and let the
+  // list agree — the order the sidebar sees. Nothing navigates: the side chat is
+  // a row next to this conversation, and this conversation stays selected.
   const calls = []
   const sessions = {
     list: { getSnapshot: () => ({ byId: { parent: { title: 'Refactor the parser' } } }) },
@@ -1191,22 +1202,58 @@ function fakeRemote(options = {}) {
       calls.push({ refresh: sessionId })
     },
   }
-  opened.length = 0
+  navigations.length = 0
   storage.length = 0
-  await openSideChat({ t, sessions, uiWorkspace: { openSession: id => opened.push(id) }, session: { sessionId: 'parent' } })
+  await openSideChat({
+    t,
+    sessions,
+    uiWorkspace: {
+      ...stillHere,
+      /** The shipped fork-in-place: same call the sidebar's own Fork makes. */
+      async forkSession(sessionId, onCreated) {
+        calls.push({ forkSession: { sessionId, onCreated: typeof onCreated } })
+        return sessions.fork({ sessionId, increaseTitle: true, onCreated })
+      },
+    },
+    session: { sessionId: 'parent' },
+  })
   assert.deepEqual(phases(), ['click', 'forked', 'named'])
   assert.deepEqual({ sessionId: crumbs()[1].sessionId, childId: crumbs()[1].childId }, { sessionId: 'parent', childId: 'child-1' })
   assert.equal(crumbs()[2].renamed, true)
-  assert.equal(calls[0].fork.sessionId, 'parent')
-  assert.equal(calls[0].fork.atSeq, undefined, 'no cut: the child carries everything said so far')
-  assert.equal(calls[0].fork.increaseTitle, true, 'the fork also numbers it inside the parent line')
-  assert.deepEqual(opened, ['child-1'], 'the side chat opens at once')
-  assert.deepEqual(calls[1].rename, { sessionId: 'child-1', title: 'btwTitle({"title":"Refactor the parser"})' })
-  assert.equal(calls[2].refresh, 'child-1', 'the list is asked to agree after the rename')
+  assert.deepEqual(calls[0], { forkSession: { sessionId: 'parent', onCreated: 'function' } }, 'the shipped fork-in-place is the route')
+  assert.equal(calls[1].fork.sessionId, 'parent')
+  assert.equal(calls[1].fork.atSeq, undefined, 'no cut: the child carries everything said so far')
+  assert.equal(calls[1].fork.increaseTitle, true, 'the fork also numbers it inside the parent line')
+  assert.deepEqual(navigations, [], 'the view never moves: the child is a sidebar row')
+  assert.deepEqual(calls[2].rename, { sessionId: 'child-1', title: 'btwTitle({"title":"Refactor the parser"})' })
+  assert.equal(calls[3].refresh, 'child-1', 'the list is asked to agree after the rename')
+
+  // A build without `forkSession`: the same fork straight from `sessions`, and
+  // still no navigation — no path here may move the view.
+  navigations.length = 0
+  storage.length = 0
+  const fallbackCalls = []
+  await openSideChat({
+    t,
+    sessions: {
+      list: { getSnapshot: () => ({ byId: {} }) },
+      async fork(options) {
+        fallbackCalls.push({ sessionId: options.sessionId, increaseTitle: options.increaseTitle })
+        options.onCreated('child-5')
+        return 'child-5'
+      },
+      async rename() { return { ok: true, value: { title: 'btwLabel', seq: 1 } } },
+    },
+    uiWorkspace: stillHere,
+    session: { sessionId: 'parent' },
+  })
+  assert.deepEqual(phases(), ['click', 'forked', 'named'])
+  assert.deepEqual(fallbackCalls, [{ sessionId: 'parent', increaseTitle: true }])
+  assert.deepEqual(navigations, [], 'the fallback does not navigate either')
 
   // The shipped fork can create the child and then throw (its own inherited-title
-  // rename fails after creation). The chat exists, so it is opened anyway.
-  opened.length = 0
+  // rename fails after creation). The chat exists, so it is still named.
+  navigations.length = 0
   storage.length = 0
   await openSideChat({
     t,
@@ -1219,15 +1266,15 @@ function fakeRemote(options = {}) {
       async rename() { return { ok: true, value: { title: 'btwLabel', seq: 1 } } },
       async refreshProjections() {},
     },
-    uiWorkspace: { openSession: id => opened.push(id) },
+    uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
   assert.deepEqual(phases(), ['click', 'forked', 'failed', 'named'], 'the failed numbering is recorded, then the chat is still named')
   assert.equal(crumbs()[2].step, 'fork-title')
-  assert.deepEqual(opened, ['child-2'], 'a chat that exists is never stranded')
+  assert.deepEqual(navigations, [], 'a chat that exists is still just a row')
 
   // A refused rename is the last step, so it costs the name and nothing else.
-  opened.length = 0
+  navigations.length = 0
   storage.length = 0
   await openSideChat({
     t,
@@ -1240,12 +1287,12 @@ function fakeRemote(options = {}) {
       async rename() { return { ok: false, error: { code: 'forbidden' } } },
       async refreshProjections() {},
     },
-    uiWorkspace: { openSession: id => opened.push(id) },
+    uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
-  assert.deepEqual(opened, ['child-3'])
+  assert.deepEqual(navigations, [])
   assert.equal(crumbs()[2].renamed, false, 'the breadcrumb says the rename was refused')
-  assert.equal(phases().includes('failed'), false, 'and no step failed: the chat is open and usable')
+  assert.equal(phases().includes('failed'), false, 'and no step failed: the chat exists and is usable')
 
   // A throwing rename or projection refresh is caught the same way.
   storage.length = 0
@@ -1257,11 +1304,16 @@ function fakeRemote(options = {}) {
       async rename() { throw new Error('rename refused') },
       async refreshProjections() { throw new Error('refresh refused') },
     },
-    uiWorkspace: { openSession: () => {} },
+    uiWorkspace: stillHere,
     session: { sessionId: 'parent' },
   })
   assert.deepEqual(phases(), ['click', 'forked', 'failed'])
   assert.equal(crumbs()[2].step, 'name')
+
+  // Structural: the side-chat path cannot navigate. `openSession` is the only
+  // call that moves the main view, and it is nowhere in the handler — the `open`
+  // failure step went with it.
+  assert.equal(openSideChat.toString().includes('openSession'), false, 'a side chat is a row, not a view')
 
   // And the registration itself: two entries through `commandUi`, both removed
   // when the effect disposes. Nothing else in `apply` may need these services,
@@ -1281,7 +1333,7 @@ function fakeRemote(options = {}) {
     const scope = {
       commandUi: registry,
       sessions: { fork: async () => 'child' },
-      uiWorkspace: { openSession() {} },
+      uiWorkspace: { forkSession: async () => 'child', openSession() {} },
       effect(fn) {
         const dispose = fn()
         effects.push(dispose)

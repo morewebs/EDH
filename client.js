@@ -2623,9 +2623,14 @@ window.__ModuleLoader__.load({
     // Side chats
     //
     // `/btw` and `/side` are one errand with two spellings: fork this
-    // conversation, open the fork, and name it for what it is. The fork is the
-    // shipped one — no `atSeq`, so it cuts at the last completed turn and the
-    // child carries everything said so far.
+    // conversation, leave it on screen, and name the fork for what it is. The
+    // fork is the shipped one — no `atSeq`, so it cuts at the last completed turn
+    // and the child carries everything said so far.
+    //
+    // A side chat is a *row*, not a view: the point is to keep talking here and
+    // have the branch standing beside it, so nothing on this path navigates. The
+    // sidebar's own Fork already has exactly this behaviour
+    // (`uiWorkspace.forkSession`), which is what the handler calls.
     //
     // They ride the command surface rather than the composer, which means they
     // are `commandUi` contributions of kind `action`: a bare invocation runs a
@@ -2677,18 +2682,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Open the side chat: fork this conversation, open the fork, name it.
+     * Create the side chat: fork this conversation in place and name the fork.
      *
      * Never rejects — `ui.run` calls it un-awaited from the command registry, so
      * anything thrown here would surface as an unhandled rejection and the person
      * who typed the command would see nothing at all. Each step records its own
      * `edh:btw` breadcrumb instead.
      *
+     * It creates a row and nothing else: no `openSession`, no navigation, so the
+     * conversation that typed the command is the one still on screen.
+     *
      * The fork reports its child through `onCreated` *before* it can still throw
      * (its own inherited-title rename fails after the child exists), so the child
-     * id is captured there: a chat that exists gets opened even when the call
-     * that created it then failed.
-     * @param options - the dictionary, the three services, and the Session.
+     * id is captured there: a chat that exists still gets named even when the
+     * call that created it then failed.
+     * @param options - the dictionary, the services the fork and the rename need,
+     *   and the Session the command was typed in.
      */
     async function openSideChat({ t, sessions, uiWorkspace, session }) {
       const sessionId = session?.sessionId
@@ -2699,15 +2708,23 @@ window.__ModuleLoader__.load({
       }
 
       let childId
+      /** The fork reports its child before it can still throw; capture it there. */
+      const onCreated = id => {
+        childId = id
+        btwWrite({ phase: 'forked', sessionId, childId: id })
+      }
       try {
-        childId = await sessions.fork({
-          sessionId,
-          increaseTitle: true,
-          onCreated: id => {
-            childId = id
-            btwWrite({ phase: 'forked', sessionId, childId: id })
-          },
-        })
+        // `forkSession` is the shipped fork-in-place — the sidebar's own Fork
+        // uses it: it forks with `increaseTitle` and deliberately does not
+        // navigate, so the child arrives as a row beside its source while this
+        // conversation stays on screen. That is the whole point of a side chat.
+        if (typeof uiWorkspace?.forkSession === 'function') {
+          childId = await uiWorkspace.forkSession(sessionId, onCreated)
+        } else {
+          // A build without that facade still gets the same result, and still
+          // never navigates: nothing here may move the view.
+          childId = await sessions.fork({ sessionId, increaseTitle: true, onCreated })
+        }
       } catch (error) {
         if (typeof childId !== 'string' || childId === '') {
           btwWrite({ phase: 'failed', step: 'fork', message: messageOf(error) })
@@ -2722,14 +2739,9 @@ window.__ModuleLoader__.load({
         return
       }
 
-      try {
-        uiWorkspace.openSession(childId)
-      } catch (error) {
-        btwWrite({ phase: 'failed', step: 'open', childId, message: messageOf(error) })
-      }
-
-      // Best effort, and last: the chat is open by now, so a refused rename is
-      // recorded and nothing else. A title save never fails a working side chat.
+      // Best effort, and last: the row is in the sidebar by now, so a refused
+      // rename is recorded and nothing else. A title save never fails a working
+      // side chat.
       try {
         const renamed = await sessions.rename(childId, sideTitle(sessionTitle(sessions, session), t))
         btwWrite({ phase: 'named', childId, renamed: renamed?.ok === true })
@@ -2752,7 +2764,7 @@ window.__ModuleLoader__.load({
      * spot, and a profile whose patch predates the row never offers them.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
-     * @param services - the `sessions` and `uiWorkspace` faces.
+     * @param services - the `sessions` face and the `uiWorkspace` fork-in-place.
      */
     function sideCommands(t, controller, services) {
       /** One handler for both names: the two commands must not drift apart. */
@@ -2933,12 +2945,14 @@ window.__ModuleLoader__.load({
         }, 'edh: update reload')
       })
 
-      // btw — /btw and /side open a side chat. They are command contributions,
-      // not slots: the slash menu asks `commandUi` for them, and a contribution
-      // is bare-token only (with arguments the line falls through to the current
-      // Session's prompt). Registering them client-side is the whole feature —
-      // a Host `/btw` would collide, and a collision throws while the menu is
-      // being built, taking every other command down with it.
+      // btw — /btw and /side create a side chat: a fork of this conversation that
+      // arrives as a row in the sidebar, without moving the view. They are
+      // command contributions, not slots: the slash menu asks `commandUi` for
+      // them, and a contribution is bare-token only (with arguments the line
+      // falls through to the current Session's prompt). Registering them
+      // client-side is the whole feature — a Host `/btw` would collide, and a
+      // collision throws while the menu is being built, taking every other
+      // command down with it.
       //
       // Both disposers ride one effect so turning the row off, or unloading this
       // scope, removes both names together.

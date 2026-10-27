@@ -112,13 +112,22 @@ each to rediscover:
 - **The right column is the only side-by-side space.** The centre panel (`main`) is a keyed
   replace-the-centre registry: there is no split API, and `uiWorkspace.openSession` navigates
   away. Anything that has to be visible *next to* a conversation lives in the right column.
-- **`ctx.sidebarRight.openResource(address, { kind })` is the aside opener, and the kind is
-  the only option it should get.** `preferNewPane` asks the dock to *split*, which lands the
-  chat in a second pane beside the launcher instead of as a tab in the pane already open;
-  `replaceTab` and `revealIfOpened` are placement overrides a side chat does not want either
-  (the default already re-activates a tab holding the same address). It throws synchronously
-  for an address no registered tab type claims, and it acts on the *on-screen* session, which
-  is why it never moves the view.
+- **`ctx.sidebarRight.openResource(address, { kind })` is the aside opener.** The kind, and a
+  `replaceTab` only when a launcher card is being replaced, is all it should get:
+  `preferNewPane` asks the dock to *split*, which lands the chat in a second pane beside the
+  launcher instead of as a tab in the pane already open, and `revealIfOpened` is a placement
+  override it does not want either (the default already re-activates a tab holding the same
+  address). It throws synchronously for an address no registered tab type claims, and it acts
+  on the *on-screen* session, which is why it never moves the view.
+- **The right column's launcher ("Start") is not a slot of its own.** Those cards are
+  `guide` entries on **tab type registrations** — `sidebarRightTabs.register({ …, guide: [{ id,
+  order, title: () => …, description: () => …, icon }] })` — collected by the registry and
+  sorted by `order` (shipped: Workspace files 10, New terminal 20, Browser 30). Picking one
+  opens its type *as a page* in the card's own tab, so a card whose type needs an argument (a
+  child Session address) must also register a body on the keyed, session-scoped
+  `sidebar.right.tab.guide.entry` under its type id and run its own action there. Two
+  consequences: the card only exists while the type is registered, which is how a row switch
+  gates it, and `MAX_DESCRIBED_ENTRIES = 4` means a fifth card drops every card's description.
 - **A Session cannot be renamed until it is resumed.** The Host's `session/rename` is
   documented as "rename one Session after explicitly resuming it" and refuses one it does not
   hold live; a fresh fork is not live, so a bare `sessions.rename(childId, …)` answers a
@@ -169,8 +178,9 @@ There is often no browser control in a session, so EDH writes Local Storage brea
 both Plugin Manager controls — update (`mounted` / `checked` / `update-started` / `updated` /
 `updated-needs-restart` / `failed`) and reload (`reloaded` / `reload-failed`) — `edh:mcp`
 for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
-and `edh:btw` for the side-chat commands (`click` / `forked` / `named` / `pane-opened` /
-`pane-failed` / `register-failed` / `failed` with the step that failed).
+and `edh:btw` for the side-chat commands and its launcher card (`click` / `guide-click` /
+`forked` / `named` / `pane-opened` / `pane-failed` / `register-failed` / `failed` with the
+step that failed).
 Read them off disk while the app is closed or running:
 
 ```

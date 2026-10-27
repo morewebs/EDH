@@ -92,6 +92,11 @@ const {
   renameSideChat,
   SIDE_COMMAND_NAMES,
   registerSideChatPane,
+  createSideGuideEntry,
+  createSideChatRunner,
+  sideChatTabType,
+  SideGuideIcon,
+  BTW_GUIDE_ORDER,
   btwAddress,
   parseBtwAddress,
   btwResourceProvider,
@@ -103,6 +108,7 @@ const {
   BTW_TAB_KIND,
   BTW_CHAT_SLOT,
   BTW_RETAIN_SOURCE,
+  ICON_SIDE,
 } = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
@@ -1118,7 +1124,13 @@ function fakeRemote(options = {}) {
       enabled: true,
     }),
   })
-  const noServices = { sessions: {}, uiWorkspace: {} }
+  /** Every call the shared runner saw, so identity can be checked by behaviour. */
+  const runCalls = []
+  /** The one runner the two commands and the launcher card all carry. */
+  const runSpy = (session, options) => {
+    runCalls.push({ session, options })
+  }
+  const noServices = { run: runSpy }
 
   // Both spellings, and only while the row is on.
   const on = sideCommands(t, controllerAt(true), noServices)
@@ -1148,8 +1160,13 @@ function fakeRemote(options = {}) {
     assert.equal(typeof contribution.ui.run, 'function')
   }
 
-  // One handler for both names: the two commands cannot drift apart.
-  assert.equal(on[0].ui.run, on[1].ui.run, 'the same run function, not two equal ones')
+  // One handler for both names, and it is the shared runner itself — the same
+  // object the launcher card calls, not a second implementation of the flow.
+  assert.equal(on[0].ui.run, runSpy, 'the contribution carries the shared runner verbatim')
+  assert.equal(on[1].ui.run, runSpy, 'both spellings, one runner')
+  runCalls.length = 0
+  on[0].ui.run({ sessionId: 'parent' })
+  assert.deepEqual(runCalls, [{ session: { sessionId: 'parent' }, options: undefined }], 'a command hands the runner its Session and nothing else')
 
   // The name a side chat carries, from the parent's title and without one.
   assert.equal(sideTitle('Refactor the parser', t), 'btwTitle({"title":"Refactor the parser"})')
@@ -1477,9 +1494,10 @@ function fakeRemote(options = {}) {
     assert.equal(parseBtwAddress(foreign), undefined, `another plugin's address stays foreign: ${foreign}`)
   }
 
-  // The four registrations the pane needs, against fakes: one protocol, one tab
-  // type in the extension band, the keyed pane entry with its session-scoped
-  // child, and the panel on that child.
+  // The registrations the pane needs, against fakes: the protocol, the keyed pane
+  // entry with its session-scoped child, the panel on that child, the launcher
+  // card, the stylesheet — and the tab type, which is the one seat that follows
+  // the row because it carries the card.
   const stubbed = definition.factory(() => ({
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
   })).__test
@@ -1488,6 +1506,26 @@ function fakeRemote(options = {}) {
     const protocols = []
     const tabTypes = []
     const slotEntries = []
+    const watchers = []
+    let rowOn = true
+    const harnessController = {
+      getSnapshot: () => ({
+        status: 'ready',
+        moduleStates: rowOn ? { [BTW_MODULE]: true } : { [BTW_MODULE]: false },
+      }),
+      subscribe(fn) {
+        watchers.push(fn)
+        return () => {
+          const at = watchers.indexOf(fn)
+          if (at >= 0) watchers.splice(at, 1)
+        }
+      },
+    }
+    /** Change the row the way the Host would, then let the pane re-sync. */
+    const setRow = on => {
+      rowOn = on
+      for (const watch of [...watchers]) watch()
+    }
     const scope = {
       sessions: {
         retain: () => ({ release() {} }),
@@ -1502,7 +1540,10 @@ function fakeRemote(options = {}) {
       sidebarRightTabs: {
         register(definition) {
           tabTypes.push(definition)
-          return () => {}
+          return () => {
+            const at = tabTypes.indexOf(definition)
+            if (at >= 0) tabTypes.splice(at, 1)
+          }
         },
       },
       slots: {
@@ -1521,14 +1562,16 @@ function fakeRemote(options = {}) {
         return dispose
       },
     }
-    registerSideChatPane(t, scope)
+    registerSideChatPane(t, scope, harnessController, { run: runSpy })
 
     assert.deepEqual(effectLabels, [
       'edh: side chat resources',
-      'edh: side chat tab-type',
+      'edh: side chat styles',
       'edh: side chat pane',
       'edh: side chat panel',
-    ], 'four effects, each owning one seat')
+      'edh: side chat guide',
+      'edh: side chat tab-type',
+    ], 'one effect per seat, each owning its own disposal')
     assert.deepEqual(protocols.map(provider => provider.protocol), ['edhbtw'], 'one resource protocol')
 
     const [type] = tabTypes
@@ -1542,6 +1585,18 @@ function fakeRemote(options = {}) {
     assert.equal(type.title(btwAddress('unknown')), 'btwLabel', 'and the label when the list knows no title')
     assert.equal(type.title('not ours'), 'btwLabel')
 
+    // The launcher card: the shipped entry shape, last among the shipped doors.
+    assert.equal(type.guide.length, 1, 'one card, declared on the type that owns the address')
+    const [card] = type.guide
+    assert.deepEqual(Object.keys(card).sort(), ['description', 'icon', 'id', 'order', 'title'], 'exactly the shipped entry shape')
+    assert.equal(card.id, 'side')
+    assert.equal(card.order, BTW_GUIDE_ORDER)
+    assert.equal(card.order > 30, true, 'after Workspace files 10, New terminal 20, Browser 30')
+    assert.equal(card.title(), 'btwLabel')
+    assert.equal(card.description(), 'btwGuide')
+    assert.equal(typeof card.icon, 'function', 'the icon is a component, as the shipped cards pass')
+    assert.equal(stubbed.SideGuideIcon({ size: 26 }).props.width, 26, 'and it draws at the card glyph size')
+
     const pane = slotEntries.find(entry => entry.name === 'sidebar.right.pane.tab')
     assert.equal(pane.options.key, BTW_TAB_ID, 'the tab type id keys the entry')
     assert.deepEqual(
@@ -1553,6 +1608,112 @@ function fakeRemote(options = {}) {
     const panel = slotEntries.find(entry => entry.name === 'edh.btw.chat')
     assert.equal(panel.component, BtwConversationPanel, 'and the child renders the conversation')
     assert.equal(BTW_CHAT_SLOT, 'edh.btw.chat')
+    const guideEntry = slotEntries.find(entry => entry.name === 'sidebar.right.tab.guide.entry')
+    assert.equal(guideEntry.options.key, BTW_TAB_ID, 'the card body is keyed by the tab type id, as the shipped ones are')
+    assert.equal(guideEntry.options.locale, undefined, 'copy comes from the plugin dictionary, not a package namespace')
+
+    // The row is the switch: off withdraws the card and the address claim, on
+    // puts both back, and nothing else is disturbed either way.
+    setRow(false)
+    assert.deepEqual(tabTypes, [], 'a row that is off leaves no card in the launcher')
+    assert.equal(slotEntries.length >= 3, true, 'and the pane, panel and card body are still registered')
+    setRow(true)
+    assert.equal(tabTypes.length, 1, 'turning it back on restores the card')
+    assert.equal(watchers.length, 1, 'one subscription, owned by the tab-type effect')
+  }
+
+  // The launcher card: the shipped markup, and the very runner the two commands
+  // carry — clicking it is the flow, with the card's own tab to take the place of.
+  {
+    runCalls.length = 0
+    storage.length = 0
+    const SideGuideEntry = stubbed.createSideGuideEntry(t, { run: runSpy })
+    const card = SideGuideEntry({ sessionId: 'parent', useTabInfo: () => ({ tab: { id: 'tab-7' } }) })
+    assert.equal(card.type, 'button', 'the shipped card is a button')
+    assert.equal(card.props.className, 'edh-btw-guide')
+    assert.equal(card.props['data-sidebar-right-guide-entry'], BTW_TAB_KIND, 'the shipped marker, so the guide can style it')
+
+    const [iconWell, text] = card.props.children
+    assert.equal(iconWell.props.className, 'edh-btw-guideIcon')
+    const glyph = iconWell.props.children[0]
+    assert.equal(glyph.type, 'svg')
+    assert.equal(glyph.props.width, 26, 'the shipped card draws its glyph at 26 while a description shows')
+    assert.equal(glyph.props.viewBox, '0 0 16 16')
+    assert.equal(glyph.props.children.length, ICON_SIDE.length, 'two branches and two nodes, as the glyph is drawn')
+    assert.deepEqual(
+      {
+        type: glyph.props.children[2].type,
+        cx: glyph.props.children[2].props.cx,
+        cy: glyph.props.children[2].props.cy,
+        r: glyph.props.children[2].props.r,
+      },
+      { type: 'circle', cx: 12.4502, cy: 3.3079, r: 1.56962 },
+      'a node is a circle, not a rewritten path',
+    )
+    assert.equal(text.props.className, 'edh-btw-guideText')
+    const [title, description] = text.props.children
+    assert.equal(title.props.children, 'btwLabel', 'the card reads the dictionary')
+    assert.equal(description.props.children, 'btwGuide')
+
+    card.props.onClick()
+    assert.deepEqual(phases(), ['guide-click'], 'the click is recorded before the shared flow speaks')
+    assert.equal(crumbs()[0].sessionId, 'parent', 'from the on-screen Session the card was rendered in')
+    assert.deepEqual(runCalls, [{
+      session: { sessionId: 'parent' },
+      options: { replaceTab: 'tab-7' },
+    }], 'the card runs the shared runner, handing it its own tab to replace')
+  }
+
+  // A card in a build whose command surface never mounted: recorded, not thrown.
+  {
+    storage.length = 0
+    const inert = stubbed.createSideGuideEntry(t, { run: undefined })({ sessionId: 'parent' })
+    inert.props.onClick()
+    assert.deepEqual(phases(), ['guide-click', 'failed'])
+    assert.equal(crumbs()[1].step, 'guide')
+  }
+
+  // That runner is the flow: fork, name, then open the pane at the child's
+  // address, replacing the card's tab so the launcher does not linger beside it.
+  {
+    storage.length = 0
+    const calls = []
+    const runner = createSideChatRunner(t, {
+      sessions: {
+        list: { getSnapshot: () => ({ byId: {} }) },
+        async fork(options) {
+          calls.push('fork')
+          options.onCreated('child-12')
+          return 'child-12'
+        },
+        async using(target, options, operation) {
+          calls.push('using')
+          return await operation({})
+        },
+        async rename() {
+          calls.push('rename')
+          return { ok: true, value: { title: 'Side chat', seq: 3 } }
+        },
+      },
+      uiWorkspace: stillHere,
+      pane: {
+        current: {
+          openResource(address, options) {
+            calls.push({ openResource: { address, options } })
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+    runner({ sessionId: 'parent' }, { replaceTab: 'tab-7' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(calls, [
+      'fork',
+      'using',
+      'rename',
+      { openResource: { address: btwAddress('child-12'), options: { kind: BTW_TAB_KIND, replaceTab: 'tab-7' } } },
+    ], 'the card and the commands run one flow; only the tab replacement differs')
+    assert.deepEqual(phases(), ['click', 'forked', 'named', 'pane-opened'])
   }
 
   // The provider: retain for the tab's lifetime, release in `finally`.

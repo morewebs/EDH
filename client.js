@@ -63,6 +63,7 @@ window.__ModuleLoader__.load({
       btwLabel: 'Side chat',
       btwDescription: 'Open a side chat that carries this conversation. It takes no arguments.',
       btwTitle: 'Side: {title}',
+      btwGuide: 'Ask something tangential without leaving this conversation.',
       mcpNav: 'MCP servers',
       mcpTitle: 'MCP servers',
       mcpIntro: 'Connect a server once and every session can use its tools.',
@@ -157,6 +158,7 @@ window.__ModuleLoader__.load({
       btwLabel: '旁支对话',
       btwDescription: '打开一个携带当前对话的旁支对话。它不接受参数。',
       btwTitle: '旁支：{title}',
+      btwGuide: '问点题外的话，不必离开当前对话。',
       mcpNav: 'MCP 服务器',
       mcpTitle: 'MCP 服务器',
       mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
@@ -1370,16 +1372,47 @@ window.__ModuleLoader__.load({
     ]
 
     /**
-     * One shipped glyph, at the size the Plugin Manager's action row draws them.
+     * `IconBranchOutlineRegular`, from the same shipped set.
+     *
+     * One trunk splitting into two nodes — the mark the sidebar's own Fork row
+     * wears, which is literally what a side chat is. It is the only glyph of the
+     * three that draws circles as well as paths, which is why `icon` accepts
+     * shape objects and not just path data.
+     */
+    const ICON_SIDE = [
+      'M1.01503 8.0001L5.6964 8.0001C6.41913 8.0001 6.78049 8.0001 7.12115 7.91951C7.4232 7.84804 7.71233 7.73014 7.97821 7.57C8.27809 7.38939 8.5364 7.13669 9.05303 6.63129L11.3281 4.40564',
+      'M1.01221 7.9999L5.6964 7.9999C6.41913 7.9999 6.78049 7.9999 7.12115 8.08049C7.4232 8.15196 7.71233 8.26986 7.97821 8.43C8.27809 8.61061 8.5364 8.86331 9.05303 9.36871L11.3281 11.5944',
+      { circle: [12.4502, 3.3079, 1.56962] },
+      { circle: [12.4502, 12.6921, 1.56962] },
+    ]
+
+    /** The side-chat glyph as a component, for seats that take an icon type. */
+    function SideGuideIcon(props) {
+      return icon(ICON_SIDE, props?.size ?? 26)
+    }
+
+    /**
+     * One shipped glyph, at the size the calling surface draws it.
      *
      * The geometry stays in its own 16 unit box and only the rendered box
-     * changes, which is how the shipped components are reused at 13 and 14px
-     * beside their own buttons. Decorative by construction: the button's label
-     * is the accessible name, so the glyph is hidden from assistive technology.
-     * @param paths - the glyph's path data, in its 16 by 16 space.
+     * changes, which is how the shipped components are reused at 13, 14, 22 and
+     * 26px beside their own controls. Decorative by construction: the label of
+     * whatever it sits in is the accessible name, so it is hidden from assistive
+     * technology.
+     * @param shapes - the glyph's geometry, in its 16 by 16 space: path data
+     *   strings, and `{ circle: [cx, cy, r] }` for the glyphs that draw a node.
      * @param size - the rendered box in pixels.
      */
-    function icon(paths, size = 14) {
+    function icon(shapes, size = 14) {
+      const drawn = shapes.map(shape => (typeof shape === 'string'
+        ? h('path', { key: shape, d: shape, stroke: 'currentColor' })
+        : h('circle', {
+          key: `circle:${shape.circle.join(',')}`,
+          cx: shape.circle[0],
+          cy: shape.circle[1],
+          r: shape.circle[2],
+          stroke: 'currentColor',
+        })))
       return h('svg', {
         width: size,
         height: size,
@@ -1388,7 +1421,7 @@ window.__ModuleLoader__.load({
         strokeWidth: 1,
         'aria-hidden': 'true',
         focusable: 'false',
-      }, ...paths.map(d => h('path', { key: d, d, stroke: 'currentColor' })))
+      }, ...drawn)
     }
 
     /**
@@ -2701,7 +2734,7 @@ window.__ModuleLoader__.load({
      * @param options - the dictionary, the services the fork, the rename, and the
      *   pane need, and the Session the command was typed in.
      */
-    async function openSideChat({ t, sessions, uiWorkspace, pane, session }) {
+    async function openSideChat({ t, sessions, uiWorkspace, pane, replaceTab, session }) {
       const sessionId = session?.sessionId
       btwWrite({ phase: 'click', sessionId: String(sessionId ?? '') })
       if (typeof sessionId !== 'string' || sessionId === '') {
@@ -2776,7 +2809,10 @@ window.__ModuleLoader__.load({
         if (typeof pane?.openResource !== 'function') {
           btwWrite({ phase: 'pane-failed', childId, reason: 'no-right-column' })
         } else {
-          await pane.openResource(btwAddress(childId), { kind: BTW_TAB_KIND })
+          await pane.openResource(btwAddress(childId), {
+            kind: BTW_TAB_KIND,
+            ...(replaceTab === undefined ? {} : { replaceTab }),
+          })
           btwWrite({ phase: 'pane-opened', childId })
         }
       } catch (error) {
@@ -2808,6 +2844,32 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The one way into a side chat, for both commands and the launcher card.
+     *
+     * `ui.run` is called un-awaited and uncatchable, so this never returns a
+     * promise anything can forget to handle; the flow behind it catches for
+     * itself. The optional second argument carries the card's own tab, which the
+     * side chat takes the place of — a command has no tab, so it passes nothing.
+     * @param t - the dictionary's translate function.
+     * @param services - the `sessions` and `uiWorkspace` faces, and the holder the
+     *   optional right column fills.
+     */
+    function createSideChatRunner(t, services) {
+      return (session, options = {}) => {
+        void openSideChat({
+          t,
+          sessions: services.sessions,
+          uiWorkspace: services.uiWorkspace,
+          // The holder is read per click, so a right column that mounts later
+          // (or never) is honoured without re-registering anything.
+          pane: services.pane?.current,
+          replaceTab: options.replaceTab,
+          session,
+        })
+      }
+    }
+
+    /**
      * The contributions for both spellings, sharing one handler.
      *
      * `available` is the row's own enablement — a plain predicate, no aggregate
@@ -2815,22 +2877,12 @@ window.__ModuleLoader__.load({
      * spot, and a profile whose patch predates the row never offers them.
      * @param t - the dictionary's translate function.
      * @param controller - the switch controller holding the row states.
-     * @param services - the `sessions` face, the `uiWorkspace` fork-in-place, and
-     *   the holder the optional right column fills when it exists.
+     * @param services - holds the runner; the launcher card shares this reference.
      */
     function sideCommands(t, controller, services) {
-      /** One handler for both names: the two commands must not drift apart. */
-      const run = session => {
-        void openSideChat({
-          t,
-          sessions: services.sessions,
-          uiWorkspace: services.uiWorkspace,
-          // The holder is read per click, so a right column that mounts later
-          // (or never) is honoured without re-registering the commands.
-          pane: services.pane?.current,
-          session,
-        })
-      }
+      // One handler for both names, and for the launcher card: the three doors
+      // must not drift apart.
+      const run = services.run
       // Each contribution states its own copy as a thunk: the menu reads `label`
       // and `description` on every candidate pass, so a locale switch lands
       // without re-registering anything.
@@ -2876,6 +2928,12 @@ window.__ModuleLoader__.load({
     const BTW_CHAT_SLOT = 'edh.btw.chat'
     /** The retain source, so a leaked reference is traceable to this feature. */
     const BTW_RETAIN_SOURCE = 'edhSideChat'
+    /**
+     * The launcher card's seat among the shipped doors: Workspace files 10, New
+     * terminal 20, Browser 30. A side chat starts from the conversation you are
+     * in rather than from something the column holds, so it reads last.
+     */
+    const BTW_GUIDE_ORDER = 40
 
     /**
      * The address one side chat is opened at.
@@ -2992,29 +3050,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Register everything the pane needs.
+     * The side chat's tab type: its addresses, its chip title, and its card in
+     * the right column's launcher.
      *
-     * Four registrations, each in its own effect and its own `try`: a build that
-     * refuses one of these seats still gets the others, and each failure is
-     * recorded instead of thrown, because this runs while the plugin mounts and a
-     * throw here would take the whole control surface with it. Each effect owns
-     * its own disposal, so the scope going away removes them all.
+     * The `guide` entry is what puts "Side chat" among the shipped doors
+     * (Workspace files 10, New terminal 20, Browser 30). Ours is 40 — after
+     * every shipped card, because a side chat starts from the conversation you
+     * are in rather than from a thing the column holds, so it reads last.
      * @param t - the dictionary's translate function.
-     * @param scope - the optional scope carrying the right column, its tab
-     *   registry, the resource registry, and the slot registry.
+     * @param sessions - the `sessions` service, read for the chip title.
      */
-    function registerSideChatPane(t, scope) {
-      /** Run one registration and record which part refused, if any. */
-      const install = (part, effect) => {
-        try {
-          scope.effect(effect, `edh: side chat ${part}`)
-        } catch (error) {
-          btwWrite({ phase: 'register-failed', part, message: messageOf(error) })
-        }
-      }
-
-      install('resources', () => scope.resources.register(btwResourceProvider(scope.sessions)))
-      install('tab-type', () => scope.sidebarRightTabs.register({
+    function sideChatTabType(t, sessions) {
+      return {
         id: BTW_TAB_ID,
         kind: BTW_TAB_KIND,
         patterns: [`${BTW_ADDRESS}**`],
@@ -3026,13 +3073,86 @@ window.__ModuleLoader__.load({
           const childId = parseBtwAddress(address)
           if (childId === undefined) return t('btwLabel')
           try {
-            const title = scope.sessions.list.getSnapshot().byId[childId]?.title
+            const title = sessions.list.getSnapshot().byId[childId]?.title
             return typeof title === 'string' && title.trim() !== '' ? title : t('btwLabel')
           } catch (error) {
             return t('btwLabel')
           }
         },
-      }))
+        guide: [{
+          id: 'side',
+          order: BTW_GUIDE_ORDER,
+          title: () => t('btwLabel'),
+          description: () => t('btwGuide'),
+          icon: SideGuideIcon,
+        }],
+      }
+    }
+
+    /**
+     * The launcher card: "Side chat", drawn like the shipped doors around it.
+     *
+     * The shipped card is `EntryBox`, and picking one opens its type *as a page*
+     * in the card's own tab. That does not fit a side chat — its tab needs a
+     * child Session address that only exists after a fork — so this paints the
+     * same card and runs the same flow the `/btw` command runs instead. Markup
+     * and every rule mirror `GuideBody`'s `EntryBox` / `GuideBody.module.css`.
+     * @param t - the dictionary's translate function.
+     * @param services - holds the runner the command surface fills.
+     */
+    function createSideGuideEntry(t, services) {
+      return function SideGuideEntry({ sessionId, useTabInfo }) {
+        const tab = useTabInfo === undefined ? undefined : useTabInfo().tab
+        return h('button', {
+          type: 'button',
+          className: 'edh-btw-guide',
+          'data-sidebar-right-guide-entry': BTW_TAB_KIND,
+          onClick: () => {
+            btwWrite({ phase: 'guide-click', sessionId: String(sessionId ?? '') })
+            const run = services?.run
+            if (typeof run !== 'function') {
+              // The command surface never mounted, so there is no flow to run.
+              btwWrite({ phase: 'failed', step: 'guide', message: 'no side-chat runner' })
+              return
+            }
+            // The card is a door, not a page: the side chat takes this tab's
+            // place, exactly as a shipped card opens its type in its own tab.
+            run({ sessionId }, { replaceTab: tab?.id })
+          },
+        },
+          h('span', { className: 'edh-btw-guideIcon' }, icon(ICON_SIDE, 26)),
+          h('span', { className: 'edh-btw-guideText' },
+            h('span', { className: 'edh-btw-guideTitle' }, t('btwLabel')),
+            h('span', { className: 'edh-btw-guideDescription' }, t('btwGuide'))))
+      }
+    }
+
+    /**
+     * Register everything the pane needs.
+     *
+     * Each registration has its own effect and its own `try`: a build that
+     * refuses one of these seats still gets the others, and each failure is
+     * recorded instead of thrown, because this runs while the plugin mounts and a
+     * throw here would take the whole control surface with it. Each effect owns
+     * its own disposal, so the scope going away removes them all.
+     * @param t - the dictionary's translate function.
+     * @param scope - the optional scope carrying the right column, its tab
+     *   registry, the resource registry, and the slot registry.
+     * @param controller - the switch controller holding the row states.
+     * @param services - holds the runner the command surface fills.
+     */
+    function registerSideChatPane(t, scope, controller, services) {
+      /** Run one registration and record which part refused, if any. */
+      const install = (part, effect) => {
+        try {
+          scope.effect(effect, `edh: side chat ${part}`)
+        } catch (error) {
+          btwWrite({ phase: 'register-failed', part, message: messageOf(error) })
+        }
+      }
+
+      install('resources', () => scope.resources.register(btwResourceProvider(scope.sessions)))
+      install('styles', () => installBtwStyles())
       install('pane', () => scope.slots.inject('sidebar.right.pane.tab', () => scope.slots.register({
         name: 'sidebar.right.pane.tab',
         key: BTW_TAB_ID,
@@ -3041,6 +3161,78 @@ window.__ModuleLoader__.load({
       install('panel', () => scope.slots.inject(BTW_CHAT_SLOT, () => scope.slots.register({
         name: BTW_CHAT_SLOT,
       }, BtwConversationPanel)))
+      install('guide', () => scope.slots.inject('sidebar.right.tab.guide.entry', () => scope.slots.register({
+        name: 'sidebar.right.tab.guide.entry',
+        key: BTW_TAB_ID,
+      }, createSideGuideEntry(t, services))))
+
+      // The tab type carries the launcher card, so it is the one seat that has to
+      // follow the row: while `edh-btw` is off there is no card to click and no
+      // address this plugin claims. It is registered from the controller's own
+      // state and re-synced on every change, the same way the MCP nav cell is.
+      install('tab-type', () => {
+        let dispose
+        let installed = false
+        /** Register, dispose, or leave alone, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), BTW_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = scope.sidebarRightTabs.register(sideChatTabType(t, scope.sessions))
+            installed = true
+          } catch (error) {
+            // This runs from the controller's own listener, so a throw would
+            // surface as a failed row read and take the switch with it.
+            installed = false
+            btwWrite({ phase: 'register-failed', part: 'tab-type', message: messageOf(error) })
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          dispose?.()
+          dispose = undefined
+        }
+      })
+    }
+
+    /**
+     * The launcher card's look, copied from the shipped `GuideBody.module.css`.
+     *
+     * The column owns the guide's frame, so there is nothing to draw but the card
+     * itself: the same 380px door, the same 26px glyph well, the same 14/11px
+     * title and description. Only the class prefix is ours.
+     */
+    const BTW_CSS = [
+      '.edh-btw-guide{box-sizing:border-box;width:380px;max-width:100%;min-height:56px;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-xl);cursor:pointer;align-items:center;gap:14px;padding:14px 20px;display:flex}',
+      '.edh-btw-guide:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-btw-guideIcon{width:26px;height:26px;color:var(--dsw-alias-label-secondary);flex:none;justify-content:center;align-items:center;display:flex}',
+      '.edh-btw-guideText{flex-direction:column;flex:1;gap:3px;min-width:0;display:flex}',
+      '.edh-btw-guideTitle{white-space:nowrap;text-overflow:ellipsis;font-size:14px;line-height:1.4;overflow:hidden}',
+      '.edh-btw-guideDescription{color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;font-size:11px;line-height:1.4;overflow:hidden}',
+    ].join('')
+
+    /** Install the card's stylesheet once, and answer its disposer. */
+    function installBtwStyles() {
+      const selector = 'style[data-edh-css="btw"]'
+      if (typeof document === 'undefined') return () => {}
+      const existing = document.querySelector(selector)
+      if (existing !== null) return () => {}
+      const tag = document.createElement('style')
+      tag.dataset.edhCss = 'btw'
+      tag.dataset.plugin = '@moreweb/edh'
+      tag.textContent = BTW_CSS
+      document.head.appendChild(tag)
+      return () => {
+        if (tag.parentNode !== null) tag.parentNode.removeChild(tag)
+      }
     }
 
     /** Required services: slot registry, locale, and the Plugin Manager Remote face. */
@@ -3222,13 +3414,16 @@ window.__ModuleLoader__.load({
       // scope, removes both names together.
       /** Filled by the optional right-column scope; absent when the build has none. */
       const sidePane = { current: undefined }
+      /** Filled here: the single flow both commands and the launcher card run. */
+      const sideChat = { run: undefined }
       ctx.inject(['commandUi', 'sessions', 'uiWorkspace'], scope => {
         scope.effect(() => {
-          const contributions = sideCommands(t, controller, {
+          sideChat.run = createSideChatRunner(t, {
             sessions: scope.sessions,
             uiWorkspace: scope.uiWorkspace,
             pane: sidePane,
           })
+          const contributions = sideCommands(t, controller, { run: sideChat.run })
           const disposers = []
           try {
             for (const contribution of contributions) disposers.push(scope.commandUi.register(contribution))
@@ -3240,6 +3435,7 @@ window.__ModuleLoader__.load({
           }
           return () => {
             for (const dispose of disposers) dispose()
+            sideChat.run = undefined
           }
         }, 'edh: side chat commands')
       })
@@ -3262,7 +3458,7 @@ window.__ModuleLoader__.load({
         } catch (error) {
           btwWrite({ phase: 'register-failed', part: 'pane-face', message: String(error?.message ?? error) })
         }
-        registerSideChatPane(t, scope)
+        registerSideChatPane(t, scope, controller, sideChat)
       })
 
       // edit — replace the `user` Chat renderer so a user message gains an Edit
@@ -3358,6 +3554,14 @@ window.__ModuleLoader__.load({
       sessionTitle,
       openSideChat,
       renameSideChat,
+      createSideChatRunner,
+      sideChatTabType,
+      createSideGuideEntry,
+      installBtwStyles,
+      BTW_CSS,
+      SideGuideIcon,
+      ICON_SIDE,
+      BTW_GUIDE_ORDER,
       SIDE_COMMAND_NAMES,
       registerSideChatPane,
       btwAddress,

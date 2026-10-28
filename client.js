@@ -156,6 +156,59 @@ window.__ModuleLoader__.load({
       remoteNoSessions: 'No phone signed in',
       remoteActionFailed: 'That change did not save. Try again, and check the port.',
       remoteSignedOut: 'Every phone was signed out.',
+      usageNav: 'Usage',
+      usageTitle: 'Usage',
+      usageIntro: 'Token usage across every session, bucketed by day in {zone}.',
+      usageIntroPlain: 'Token usage across every session.',
+      usageZoneUnknown: 'the local time zone',
+      usageLoading: 'Reading usage…',
+      usageLoadFailed: 'The usage data could not be read.',
+      usageRetry: 'Retry',
+      usageOff: 'Usage is off. Turn it on with the EDH switch.',
+      usageUnavailable: 'This profile has no usage services, so there is nothing to count here.',
+      usageEmpty: 'No token usage has been recorded yet.',
+      usageEmptyRange: 'No usage in this range.',
+      usageRebuild: 'Read history again',
+      usageStatTotal: 'Total tokens',
+      usageStatTotalNote: '{messages} messages in {sessions} sessions',
+      usageStatPeak: 'Peak day',
+      usageStatPeakNote: 'No peak day yet',
+      usageStatLongest: 'Longest session',
+      usageStatLongestNote: 'No session recorded yet',
+      usageStatStreak: 'Current streak',
+      usageStatLongestStreak: 'Longest streak',
+      usageDays: '{count} days',
+      usageDaysOne: '1 day',
+      usageDaysNone: '0 days',
+      usageTrendTitle: 'Daily token trend',
+      usageModelsTitle: 'Model usage',
+      usageTokens: 'tokens',
+      usageRangeNote: 'Daily buckets by calendar day. Weekly sums each week from Monday. Cumulative adds every day up to that point.',
+      usageRangeLabel: 'Range',
+      usageRangeDaily: 'Daily',
+      usageRangeWeekly: 'Weekly',
+      usageRangeCumulative: 'Cumulative',
+      usageScopeLabel: 'Sessions',
+      usageScopeAll: 'All sessions',
+      usageScopeMain: 'Main sessions only',
+      usageScopeNote: 'The Host counts every session together and sends no main and subagent split, so this filter cannot narrow the numbers yet.',
+      usageRefresh: 'Refresh',
+      usageRefreshing: 'Refreshing…',
+      usageBackfill: 'Reading history… {done} of {total}',
+      usageUpdated: 'Updated {time}',
+      usageOther: 'Other',
+      usageChartLabel: '{range} token trend, {from} to {to}, {models}.',
+      usageChartLabelOne: 'one model',
+      usageChartLabelMany: '{count} models',
+      usageDonutLabel: 'Model share, {models}. {total} tokens in total.',
+      usageDonutCentre: 'tokens',
+      usageDurationZero: '0m',
+      usageDurationMinutes: '{minutes}m',
+      usageDurationHours: '{hours}h {minutes}m',
+      usageUnitSmall: 'K',
+      usageUnitMid: 'M',
+      usageUnitBig: 'B',
+      usageActionFailed: 'That change did not save. Try again.',
     }
     const zh = {
       label: 'EDH',
@@ -294,6 +347,59 @@ window.__ModuleLoader__.load({
       remoteNoSessions: '没有手机登录',
       remoteActionFailed: '改动未保存。请重试，并检查端口。',
       remoteSignedOut: '所有设备已退出。',
+      usageNav: '用量',
+      usageTitle: '用量',
+      usageIntro: '每个会话的 token 用量，按 {zone} 分区按天统计。',
+      usageIntroPlain: '每个会话的 token 用量。',
+      usageZoneUnknown: '本地时区',
+      usageLoading: '正在读取用量…',
+      usageLoadFailed: '无法读取用量数据。',
+      usageRetry: '重试',
+      usageOff: '用量已关闭，请用 EDH 开关打开。',
+      usageUnavailable: '当前配置没有用量服务，这里没有可统计的内容。',
+      usageEmpty: '还没有记录到 token 用量。',
+      usageEmptyRange: '这个范围内没有用量。',
+      usageRebuild: '重新读取历史',
+      usageStatTotal: '总 token',
+      usageStatTotalNote: '{sessions} 个会话，{messages} 条消息',
+      usageStatPeak: '峰值日',
+      usageStatPeakNote: '还没有峰值日',
+      usageStatLongest: '最长会话',
+      usageStatLongestNote: '还没有记录会话',
+      usageStatStreak: '当前连续天数',
+      usageStatLongestStreak: '最长连续天数',
+      usageDays: '{count} 天',
+      usageDaysOne: '1 天',
+      usageDaysNone: '0 天',
+      usageTrendTitle: '每日 token 趋势',
+      usageModelsTitle: '模型用量',
+      usageTokens: 'token',
+      usageRangeNote: '按天是自然日；按周从周一开始汇总；累计是从头加到当天。',
+      usageRangeLabel: '范围',
+      usageRangeDaily: '按天',
+      usageRangeWeekly: '按周',
+      usageRangeCumulative: '累计',
+      usageScopeLabel: '会话',
+      usageScopeAll: '全部会话',
+      usageScopeMain: '仅主会话',
+      usageScopeNote: '宿主把全部会话统计在一起，也没有给出主会话与子代理的拆分，所以这个筛选暂时无法收窄数字。',
+      usageRefresh: '刷新',
+      usageRefreshing: '正在刷新…',
+      usageBackfill: '正在读取历史… {done}/{total}',
+      usageUpdated: '更新于 {time}',
+      usageOther: '其他',
+      usageChartLabel: '{range} token 趋势，{from} 至 {to}，{models}。',
+      usageChartLabelOne: '1 个模型',
+      usageChartLabelMany: '{count} 个模型',
+      usageDonutLabel: '模型占比，{models}。共 {total} token。',
+      usageDonutCentre: 'token',
+      usageDurationZero: '0 分钟',
+      usageDurationMinutes: '{minutes} 分钟',
+      usageDurationHours: '{hours} 小时 {minutes} 分',
+      usageUnitSmall: '万',
+      usageUnitMid: '亿',
+      usageUnitBig: '万亿',
+      usageActionFailed: '改动未保存，请重试。',
     }
 
     /**
@@ -333,6 +439,8 @@ window.__ModuleLoader__.load({
     const MCP_DEBUG_KEY = 'edh:mcp'
     /** Separate breadcrumb for the remote-access page. */
     const REMOTE_DEBUG_KEY = 'edh:remote'
+    /** Separate breadcrumb for the usage page. */
+    const USAGE_DEBUG_KEY = 'edh:usage'
     /** Separate breadcrumb for the side-chat commands. */
     const BTW_DEBUG_KEY = 'edh:btw'
 
@@ -366,6 +474,10 @@ window.__ModuleLoader__.load({
 
     function remoteWrite(payload) {
       writeBreadcrumb(REMOTE_DEBUG_KEY, payload)
+    }
+
+    function usageWrite(payload) {
+      writeBreadcrumb(USAGE_DEBUG_KEY, payload)
     }
 
     function btwWrite(payload) {
@@ -3735,6 +3847,1356 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------------------------------------------------------------------
+    // Usage
+    //
+    // Token usage across every session: the totals, one line per model per day,
+    // and the share each model holds. The Host counts tokens; this page only
+    // formats them, groups them, and draws them — every number on screen is a
+    // number the Host sent, and every share is recomputed from the series that
+    // are actually drawn, so the legend, the chart and the list cannot disagree.
+    // ---------------------------------------------------------------------
+
+    /** The Host route that reads the numbers (`GET`) and re-reads history (`POST`). */
+    const USAGE_ROUTE = 'api/edh.usage'
+
+    /** The row that owns the route; the page is useless without it. */
+    const USAGE_MODULE = '@moreweb/edh/usage'
+
+    /** The Settings seat: one page in the Settings navigation. */
+    const USAGE_SECTION_SLOT = 'settings.section'
+
+    /**
+     * Where that page sits. MCP is 16 and Remote is 17, so this is the third
+     * seat: the three EDH pages stay contiguous after the shipped sections.
+     */
+    const USAGE_SECTION_ORDER = 18
+
+    /** Every action the route accepts besides reading. */
+    const USAGE_ACTIONS = ['refresh', 'rebuild']
+
+    /** The three ways the page can bucket the same days. */
+    const USAGE_RANGES = ['daily', 'weekly', 'cumulative']
+
+    /** The two session scopes the page offers. */
+    const USAGE_SCOPES = ['all', 'main']
+
+    /**
+     * How many models are drawn on their own. The rest are folded into `Other`
+     * so the palette means something: six colours, and every one of them is a
+     * legend entry a person can point at.
+     */
+    const USAGE_SERIES_MAX = 5
+
+    /**
+     * The categorical palette, as literal values rather than theme tokens.
+     *
+     * Every hue sits at the same relative luminance (about 0.20), which is the
+     * band that clears 3:1 contrast against a white *and* a near-black surface —
+     * so one palette reads in both themes without a second definition, and the
+     * theme switch needs no branch here. `Other` is a neutral grey of the same
+     * luminance, and the interactive accent is never a data colour.
+     */
+    const USAGE_PALETTE = ['#287cdc', '#c06210', '#1e8d59', '#d1478c', '#9860d7', '#118896']
+
+    /** The neutral that carries the folded remainder. */
+    const USAGE_NEUTRAL = '#787c84'
+
+    /**
+     * The model id of the folded remainder. A marker, never copy: the page
+     * renders it through the dictionary, so a Chinese reader sees 其他.
+     */
+    const USAGE_OTHER = 'other'
+
+    /** The reasons that mean the feature is not on this profile at all. */
+    const USAGE_MISSING = ['unavailable', 'no-services', 'missing']
+
+    /** The trend chart's box, in SVG units. */
+    const USAGE_CHART = { width: 720, height: 240, left: 56, right: 14, top: 16, bottom: 30 }
+
+    /** The donut's box and stroke. */
+    const USAGE_DONUT = { size: 168, radius: 62, width: 18 }
+
+    /** One count, read without trusting the Host: a whole, non-negative number. */
+    function count(value) {
+      const number = Number(value)
+      return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0
+    }
+
+    /**
+     * One token total, with the components kept apart.
+     *
+     * `total` is what the Host counted, because the whole point of the page is
+     * that it reports the Host's arithmetic rather than inventing its own; the
+     * four components stand in only when a total is missing, so a partial answer
+     * still draws something true instead of a column of zeros.
+     */
+    function usageTotals(raw) {
+      const source = raw !== null && typeof raw === 'object' ? raw : {}
+      const input = count(source.input)
+      const output = count(source.output)
+      const cacheRead = count(source.cacheRead)
+      const cacheWrite = count(source.cacheWrite)
+      const stated = count(source.total)
+      return {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        total: stated > 0 ? stated : input + output + cacheRead + cacheWrite,
+        messages: count(source.messages),
+        sessions: count(source.sessions),
+      }
+    }
+
+    /** One model's totals, from a `byModel` entry. */
+    function usageModel(raw) {
+      if (raw === null || typeof raw !== 'object') return undefined
+      const model = typeof raw.model === 'string' ? raw.model.trim() : ''
+      if (model === '') return undefined
+      return {
+        model,
+        provider: typeof raw.provider === 'string' ? raw.provider.trim() : '',
+        ...usageTotals(raw),
+      }
+    }
+
+    /** One day's totals, from a `byDay` entry. A model key's value is its total. */
+    function usageDay(raw) {
+      if (raw === null || typeof raw !== 'object') return undefined
+      const date = typeof raw.date === 'string' ? raw.date.trim() : ''
+      if (date === '') return undefined
+      const byModel = {}
+      const source = raw.byModel !== null && typeof raw.byModel === 'object' ? raw.byModel : {}
+      for (const [name, value] of Object.entries(source)) {
+        const model = String(name).trim()
+        if (model !== '') byModel[model] = count(value)
+      }
+      return { date, byModel, total: count(raw.total) }
+    }
+
+    /** One timestamp, from a number or an ISO string. */
+    function usageStamp(value) {
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.trunc(value)
+      if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Date.parse(value)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      return 0
+    }
+
+    /**
+     * Optional per-scope numbers.
+     *
+     * The contract in force answers one set of numbers over every session, which
+     * is what the user asked to count. A Host that can separate subagents may add
+     * `scopes: { main: { totals, byModel, byDay } }`; until it does, the page
+     * says the split cannot be shown rather than pretending the toggle narrowed
+     * something.
+     */
+    function usageScopes(raw) {
+      if (raw === null || typeof raw !== 'object') return undefined
+      const main = raw.main
+      if (main === null || typeof main !== 'object') return undefined
+      const byModel = []
+      for (const entry of Array.isArray(main.byModel) ? main.byModel : []) {
+        const record = usageModel(entry)
+        if (record !== undefined) byModel.push(record)
+      }
+      const byDay = []
+      for (const entry of Array.isArray(main.byDay) ? main.byDay : []) {
+        const day = usageDay(entry)
+        if (day !== undefined) byDay.push(day)
+      }
+      return { main: { totals: usageTotals(main.totals), byModel, byDay } }
+    }
+
+    /**
+     * The usage view, read without trusting the Host's shape.
+     *
+     * A day list is sorted once here so every consumer — chart, table, footer —
+     * draws the same order, and a model or day without a usable id is dropped
+     * rather than rendered as an empty series.
+     * @param payload - one route answer.
+     * @returns the view, or `undefined` when the answer carries none.
+     */
+    function usageView(payload) {
+      if (payload === null || typeof payload !== 'object') return undefined
+      const known = ['totals', 'byModel', 'byDay', 'days', 'stats', 'backfill', 'updatedAt', 'timeZone', 'notes']
+      let present = false
+      for (const field of known) {
+        if (Object.prototype.hasOwnProperty.call(payload, field)) present = true
+      }
+      if (!present) return undefined
+      const byModel = []
+      for (const entry of Array.isArray(payload.byModel) ? payload.byModel : []) {
+        const record = usageModel(entry)
+        if (record !== undefined) byModel.push(record)
+      }
+      const byDay = []
+      for (const entry of Array.isArray(payload.byDay) ? payload.byDay : []) {
+        const day = usageDay(entry)
+        if (day !== undefined) byDay.push(day)
+      }
+      byDay.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      const notes = []
+      for (const entry of Array.isArray(payload.notes) ? payload.notes : []) {
+        if (typeof entry === 'string' && entry.trim() !== '') notes.push(entry.trim())
+      }
+      const stats = payload.stats !== null && typeof payload.stats === 'object' ? payload.stats : {}
+      const peak = stats.peakDay !== null && typeof stats.peakDay === 'object' ? stats.peakDay : {}
+      const longest = stats.longestSession !== null && typeof stats.longestSession === 'object' ? stats.longestSession : {}
+      const backfill = payload.backfill !== null && typeof payload.backfill === 'object' ? payload.backfill : {}
+      return {
+        available: payload.available !== false,
+        timeZone: typeof payload.timeZone === 'string' ? payload.timeZone.trim() : '',
+        totals: usageTotals(payload.totals),
+        byModel,
+        byDay,
+        scopes: usageScopes(payload.scopes),
+        stats: {
+          peakDay: {
+            date: typeof peak.date === 'string' ? peak.date.trim() : '',
+            total: count(peak.total),
+          },
+          longestSession: {
+            id: typeof longest.id === 'string' ? longest.id : '',
+            title: typeof longest.title === 'string' ? longest.title.trim() : '',
+            durationMs: count(longest.durationMs),
+            startedAt: count(longest.startedAt),
+          },
+          currentStreakDays: count(stats.currentStreakDays),
+          longestStreakDays: count(stats.longestStreakDays),
+          firstDay: typeof stats.firstDay === 'string' ? stats.firstDay.trim() : '',
+          lastDay: typeof stats.lastDay === 'string' ? stats.lastDay.trim() : '',
+        },
+        backfill: {
+          state: typeof backfill.state === 'string' ? backfill.state.trim().toLowerCase() : '',
+          sessionsDone: count(backfill.sessionsDone),
+          sessionsTotal: count(backfill.sessionsTotal),
+        },
+        updatedAt: usageStamp(payload.updatedAt),
+        notes,
+        // Only the error-ish fields: a successful answer's `message` is not a failure.
+        failure: failureText({ lastError: payload.lastError, error: payload.error, detail: payload.detail }),
+      }
+    }
+
+    /** One action's outcome, read from the route's `report`. */
+    function usageReport(value) {
+      if (value === null || typeof value !== 'object') return undefined
+      return {
+        ok: value.ok === true,
+        action: typeof value.action === 'string' ? value.action : '',
+        reason: typeof value.reason === 'string' ? value.reason : '',
+        message: typeof value.message === 'string' ? value.message.trim() : '',
+      }
+    }
+
+    /**
+     * The view one route answer describes.
+     *
+     * A `GET` answers the numbers; either `POST` answers the same numbers plus a
+     * report, and the view in *that* answer is the one to adopt — the page never
+     * re-reads to find out what its own action did.
+     */
+    function readUsageView(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const view = usageView(answer)
+      const report = usageReport(answer.report)
+      let failure = ''
+      if (report !== undefined && report.ok !== true && report.message !== '') failure = report.message
+      if (failure === '' && answer.ok === false) failure = failureText(answer)
+      return {
+        ok: view !== undefined,
+        view,
+        report,
+        failure,
+        reason: typeof answer.reason === 'string' ? answer.reason : '',
+      }
+    }
+
+    /** Whether one read says the feature is absent from this profile. */
+    function usageMissing(read) {
+      if (read === null || typeof read !== 'object') return false
+      if (read.view !== undefined && read.view !== null && read.view.available === false) return true
+      return USAGE_MISSING.includes(String(read.reason ?? ''))
+    }
+
+    /**
+     * Whether the page has nothing to chart.
+     *
+     * An empty answer is a state of its own: a chart drawn over no data would
+     * have to invent an axis, and a zero line is not the same claim as "there is
+     * nothing yet".
+     */
+    function usageEmpty(view) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      return usageTotals(data.totals).total === 0
+    }
+
+    /**
+     * The numbers one scope contributes.
+     *
+     * `Main sessions only` can only narrow when the Host sent a split; without
+     * one the page stays on every session and says why.
+     * @param view - a `usageView` result.
+     * @param scope - `all` or `main`.
+     */
+    function usageScope(view, scope) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      const split = data.scopes !== null && typeof data.scopes === 'object' ? data.scopes : undefined
+      const main = scope === 'main' && split !== undefined && split.main !== undefined ? split.main : undefined
+      const chosen = main !== undefined ? main : data
+      return {
+        supported: split !== undefined && split.main !== undefined,
+        selected: main !== undefined ? 'main' : 'all',
+        totals: usageTotals(chosen.totals),
+        byModel: Array.isArray(chosen.byModel) ? chosen.byModel : [],
+        byDay: Array.isArray(chosen.byDay) ? chosen.byDay : [],
+      }
+    }
+
+    /** One `YYYY-MM-DD` as `{ year, month, day }`, or nothing when it is not a day. */
+    function parseDay(date) {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(String(date ?? ''))
+      if (match === null) return undefined
+      return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) }
+    }
+
+    /** One UTC date as `YYYY-MM-DD`. */
+    function isoDay(date) {
+      const year = date.getUTCFullYear()
+      const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+      const day = String(date.getUTCDate()).padStart(2, '0')
+      return `${year}-${month}-${day}`
+    }
+
+    /**
+     * The Monday that starts one day's week, as `YYYY-MM-DD`.
+     *
+     * Computed in UTC from the calendar fields so the answer cannot depend on the
+     * reader's clock; the Host already bucketed the days in its own zone, and the
+     * page only groups those labels.
+     */
+    function weekStart(date) {
+      const parsed = parseDay(date)
+      if (parsed === undefined) return String(date ?? '')
+      const utc = Date.UTC(parsed.year, parsed.month - 1, parsed.day)
+      const weekday = new Date(utc).getUTCDay()
+      const back = (weekday + 6) % 7
+      return isoDay(new Date(utc - back * 86_400_000))
+    }
+
+    /** One bucket, with its per-model totals and the sum of them. */
+    function finishBucket(bucket) {
+      const values = {}
+      let total = 0
+      const source = bucket.values !== null && typeof bucket.values === 'object' ? bucket.values : {}
+      for (const [model, value] of Object.entries(source)) {
+        const amount = count(value)
+        if (amount > 0) {
+          values[model] = amount
+          total += amount
+        }
+      }
+      const key = String(bucket.key ?? '')
+      return { key, label: key.length >= 10 ? key.slice(5) : key, values, total }
+    }
+
+    /**
+     * The days, grouped the way the range control asks for.
+     *
+     * Daily is one bucket per day the Host sent, zeros included — a day with no
+     * tokens is a real zero, not a gap. Weekly sums each week from Monday.
+     * Cumulative adds every day up to that point, so the last bucket equals the
+     * window's total. Nothing is smoothed and no bucket is interpolated.
+     * @param data - a `usageScope` result.
+     * @param range - `daily`, `weekly`, or `cumulative`.
+     */
+    function usageBuckets(data, range) {
+      const days = data !== null && typeof data === 'object' && Array.isArray(data.byDay) ? data.byDay : []
+      const mode = USAGE_RANGES.includes(range) ? range : 'daily'
+      if (mode === 'weekly') {
+        const weeks = new Map()
+        for (const day of days) {
+          const key = weekStart(day.date)
+          const bucket = weeks.get(key) ?? { key, values: {} }
+          for (const [model, value] of Object.entries(day.byModel)) {
+            bucket.values[model] = (bucket.values[model] ?? 0) + count(value)
+          }
+          weeks.set(key, bucket)
+        }
+        return [...weeks.values()]
+          .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+          .map(finishBucket)
+      }
+      if (mode === 'cumulative') {
+        const running = {}
+        const buckets = []
+        for (const day of days) {
+          for (const [model, value] of Object.entries(day.byModel)) {
+            running[model] = (running[model] ?? 0) + count(value)
+          }
+          buckets.push(finishBucket({ key: day.date, values: running }))
+        }
+        return buckets
+      }
+      return days.map(day => finishBucket({ key: day.date, values: day.byModel }))
+    }
+
+    /**
+     * One colour per model, assigned by name.
+     *
+     * Assignment is in name order, never in rank order: a model that suddenly
+     * grows should not repaint itself, and the same set of models always gets the
+     * same colours whatever their totals are.
+     * @param models - the drawn model names.
+     * @returns a map of model name to a CSS colour reference.
+     */
+    function usagePalette(models) {
+      const names = [...new Set((Array.isArray(models) ? models : [])
+        .filter(name => typeof name === 'string' && name !== '' && name !== USAGE_OTHER))]
+      names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      const colours = new Map()
+      names.forEach((name, index) => {
+        colours.set(name, `var(--edh-usage-${(index % USAGE_PALETTE.length) + 1})`)
+      })
+      return colours
+    }
+
+    /**
+     * The series the charts draw: the biggest models, and the rest folded up.
+     *
+     * Both charts are built from this one list, so the legend, the lines and the
+     * donut are guaranteed to be talking about the same models. `share` is
+     * recomputed from these totals — the Host's own `share` is not read, because
+     * a share of a different denominator is exactly how a donut starts lying.
+     * @param buckets - a `usageBuckets` result.
+     */
+    function usageSeries(buckets) {
+      const list = Array.isArray(buckets) ? buckets : []
+      const totals = new Map()
+      for (const bucket of list) {
+        for (const [model, value] of Object.entries(bucket.values)) {
+          totals.set(model, (totals.get(model) ?? 0) + count(value))
+        }
+      }
+      const ranked = [...totals.entries()]
+        .filter(([, total]) => total > 0)
+        .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      const drawn = ranked.slice(0, USAGE_SERIES_MAX)
+      const folded = ranked.slice(USAGE_SERIES_MAX)
+      const colours = usagePalette(drawn.map(([model]) => model))
+      const grand = ranked.reduce((sum, [, total]) => sum + total, 0)
+      const series = drawn.map(([model, total]) => ({
+        model,
+        other: false,
+        total,
+        share: grand === 0 ? 0 : total / grand,
+        colour: colours.get(model) ?? 'var(--edh-usage-other)',
+        values: list.map(bucket => count(bucket.values[model])),
+      }))
+      if (folded.length > 0) {
+        const total = folded.reduce((sum, [, value]) => sum + value, 0)
+        series.push({
+          model: USAGE_OTHER,
+          other: true,
+          total,
+          share: grand === 0 ? 0 : total / grand,
+          colour: 'var(--edh-usage-other)',
+          values: list.map(bucket => folded.reduce((sum, [model]) => sum + count(bucket.values[model]), 0)),
+        })
+      }
+      return series
+    }
+
+    /**
+     * The unit ladder for one language.
+     *
+     * The factors are arithmetic, so they live here; only the suffixes are copy.
+     * Chinese counts by 万 and 亿, so swapping English's K/M/B would produce the
+     * wrong number, not just the wrong word.
+     * @param language - the active locale id, e.g. `en` or `zh`.
+     * @param t - the dictionary's translate function.
+     */
+    function usageUnits(language, t) {
+      const chinese = String(language ?? '').toLowerCase().startsWith('zh')
+      const ladder = chinese
+        ? [
+          { factor: 1e12, key: 'usageUnitBig' },
+          { factor: 1e8, key: 'usageUnitMid' },
+          { factor: 1e4, key: 'usageUnitSmall' },
+        ]
+        : [
+          { factor: 1e9, key: 'usageUnitBig' },
+          { factor: 1e6, key: 'usageUnitMid' },
+          { factor: 1e3, key: 'usageUnitSmall' },
+        ]
+      return ladder.map(unit => ({ factor: unit.factor, label: t(unit.key) }))
+    }
+
+    /**
+     * One token count in the reader's units: 999, 12.4K, 120.2M, 1.6B.
+     *
+     * One decimal, then a bare integer when it is whole — so 120.2M keeps its
+     * tenth while 1.6B does not become 1.60B. A value that rounds *up* into the
+     * next unit is moved there rather than printed as `1000K`.
+     * @param value - raw tokens.
+     * @param units - a `usageUnits` ladder, largest factor first.
+     */
+    function formatTokens(value, units) {
+      const whole = Math.round(Number(value))
+      if (!Number.isFinite(whole) || whole <= 0) return '0'
+      if (whole < 1000) return String(whole)
+      const ordered = (Array.isArray(units) ? units : [])
+        .filter(unit => unit !== null && typeof unit === 'object' && Number(unit.factor) > 0)
+        .sort((left, right) => Number(right.factor) - Number(left.factor))
+      if (ordered.length === 0) return String(whole)
+      let index = ordered.findIndex(unit => whole >= Number(unit.factor))
+      if (index < 0) index = ordered.length - 1
+      let unit = ordered[index]
+      let shown = Number((whole / Number(unit.factor)).toFixed(1))
+      while (index > 0 && shown * Number(unit.factor) >= Number(ordered[index - 1].factor)) {
+        index -= 1
+        unit = ordered[index]
+        shown = Number((whole / Number(unit.factor)).toFixed(1))
+      }
+      return `${String(shown)}${unit.label}`
+    }
+
+    /** One share as a percentage: `34.2%`, `50%`. */
+    function formatPercent(share) {
+      const value = Number(share)
+      if (!Number.isFinite(value) || value <= 0) return '0%'
+      return `${(value * 100).toFixed(1).replace(/\.0$/u, '')}%`
+    }
+
+    /** One session length: `2h 14m`, `14m`, `0m`. */
+    function formatDuration(milliseconds, t) {
+      const value = Number(milliseconds)
+      if (!Number.isFinite(value) || value <= 0) return t('usageDurationZero')
+      const minutes = Math.max(Math.round(value / 60_000), 1)
+      const hours = Math.floor(minutes / 60)
+      if (hours === 0) return t('usageDurationMinutes', { minutes })
+      return t('usageDurationHours', { hours, minutes: minutes % 60 })
+    }
+
+    /** One streak, in days, as a sentence. */
+    function usageDaysText(t, value) {
+      const days = count(value)
+      if (days === 0) return t('usageDaysNone')
+      return days === 1 ? t('usageDaysOne') : t('usageDays', { count: days })
+    }
+
+    /**
+     * The y-axis for one chart: a round step, and the ticks that step produces.
+     *
+     * The scale comes from the tallest drawn series, and only from it. An
+     * all-zero window is its own case: no invented maximum, one tick at zero, and
+     * every point on the baseline.
+     */
+    function usageScale(highest) {
+      const max = count(highest)
+      if (max <= 0) return { max: 0, ticks: [0] }
+      const rough = max / 4
+      const magnitude = 10 ** Math.floor(Math.log10(rough))
+      const steps = [1, 2, 2.5, 5, 10].map(share => share * magnitude)
+      const step = steps.find(candidate => candidate >= rough) ?? 10 * magnitude
+      const top = Math.ceil(max / step) * step
+      const ticks = []
+      for (let value = 0; value <= top + step / 4; value += step) ticks.push(Math.round(value))
+      return { max: Math.round(top), ticks }
+    }
+
+    /** The plot box and the x position of every bucket. */
+    function usageGeometry(bucketCount) {
+      const total = count(bucketCount)
+      const { width, height, left, right, top, bottom } = USAGE_CHART
+      const x0 = left
+      const x1 = width - right
+      const y0 = top
+      const y1 = height - bottom
+      const xs = total <= 0
+        ? []
+        : total === 1
+          ? [(x0 + x1) / 2]
+          : Array.from({ length: total }, (_, index) => x0 + (index * (x1 - x0)) / (total - 1))
+      return { width, height, x0, x1, y0, y1, xs }
+    }
+
+    /** One series' points, in chart pixels, from the buckets it belongs to. */
+    function usagePoints(values, geometry, scale) {
+      const list = Array.isArray(values) ? values : []
+      const span = scale !== null && typeof scale === 'object' ? count(scale.max) : 0
+      return list.map((value, index) => {
+        const x = geometry.xs[index] ?? geometry.xs[geometry.xs.length - 1] ?? geometry.x0
+        const y = span > 0
+          ? geometry.y1 - (count(value) / span) * (geometry.y1 - geometry.y0)
+          : geometry.y1
+        return { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100 }
+      })
+    }
+
+    /**
+     * One polyline path through the points.
+     *
+     * Straight segments only: no smoothing, because a curve between two days is a
+     * number the Host never counted. A single point returns an empty string — the
+     * caller draws a dot instead of a degenerate path.
+     */
+    function usagePath(points) {
+      const list = Array.isArray(points) ? points : []
+      if (list.length < 2) return ''
+      return list
+        .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x} ${point.y}`)
+        .join(' ')
+    }
+
+    /** The dot to draw instead of a path, when the window holds a single bucket. */
+    function usageDot(points) {
+      const list = Array.isArray(points) ? points : []
+      return list.length === 1 ? list[0] : undefined
+    }
+
+    /**
+     * The donut's slices, as stroke dashes on one circle.
+     *
+     * Lengths are proportional to the same totals the list prints, so a slice and
+     * its row always add up. A single model is one full circle; no series is no
+     * ring at all.
+     */
+    function donutSlices(series) {
+      const list = Array.isArray(series) ? series : []
+      const circumference = 2 * Math.PI * USAGE_DONUT.radius
+      const total = list.reduce((sum, entry) => sum + count(entry.total), 0)
+      if (total === 0) return []
+      let offset = 0
+      const slices = []
+      for (const entry of list) {
+        const value = count(entry.total)
+        if (value === 0) continue
+        const share = value / total
+        const length = share * circumference
+        slices.push({
+          model: entry.model,
+          other: entry.other === true,
+          colour: entry.colour,
+          total: value,
+          share,
+          length,
+          offset: -offset,
+        })
+        offset += length
+      }
+      return slices
+    }
+
+    /**
+     * The quiet line under the charts: a history read in progress, or when the
+     * numbers were last updated.
+     */
+    function usageFooter(view, t) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      const backfill = data.backfill !== null && typeof data.backfill === 'object' ? data.backfill : {}
+      const done = count(backfill.sessionsDone)
+      const total = count(backfill.sessionsTotal)
+      const settled = ['done', 'complete', 'completed', 'finished', 'idle'].includes(String(backfill.state ?? ''))
+      if (total > 0 && done < total && !settled) {
+        return { kind: 'backfill', text: t('usageBackfill', { done, total }) }
+      }
+      const updatedAt = count(data.updatedAt)
+      if (updatedAt > 0) {
+        const time = formatClock(updatedAt)
+        return { kind: 'updated', text: time === '' ? '' : t('usageUpdated', { time }) }
+      }
+      return { kind: '', text: '' }
+    }
+
+    /**
+     * The page, rendered from one explicit state.
+     *
+     * Kept apart from the component for the same reason the Remote page is: with
+     * no browser in the loop, this is the only way to see what a state actually
+     * paints — and "the empty state draws no chart" is a claim about markup.
+     * @param t - the dictionary's translate function.
+     * @param state - the component's state plus the handlers it wired.
+     */
+    function usagePage(t, state) {
+      const source = state !== null && typeof state === 'object' ? state : {}
+      const view = source.view !== null && typeof source.view === 'object' ? source.view : {}
+      const status = typeof view.status === 'string' ? view.status : 'loading'
+      const data = view.data !== null && typeof view.data === 'object' ? view.data : undefined
+      const units = Array.isArray(source.units) ? source.units : []
+      const actions = source.actions !== null && typeof source.actions === 'object' ? source.actions : {}
+      const hidden = source.hidden !== null && typeof source.hidden === 'object' ? source.hidden : {}
+      const scope = source.scope === 'main' ? 'main' : 'all'
+      const range = USAGE_RANGES.includes(source.range) ? source.range : 'daily'
+      const busy = typeof source.busy === 'string' ? source.busy : ''
+      const notice = source.notice !== null && typeof source.notice === 'object'
+        ? source.notice
+        : { text: '', tone: 'bad' }
+      const call = (name, ...parameters) => {
+        const handler = actions[name]
+        if (typeof handler === 'function') handler(...parameters)
+      }
+      const numberText = value => formatTokens(value, units)
+
+      const frame = (...children) => h('div', { className: 'edh-usage' },
+        h('h2', { className: 'edh-usage-title' }, t('usageTitle')),
+        h('p', { className: 'edh-usage-intro' }, data === undefined
+          ? t('usageIntroPlain')
+          : t('usageIntro', {
+            zone: data.timeZone === '' ? t('usageZoneUnknown') : data.timeZone,
+          })),
+        ...children,
+      )
+
+      if (source.enabled === false) {
+        return frame(h('p', { className: 'edh-usage-status' }, t('usageOff')))
+      }
+
+      const noticeNode = notice.text === ''
+        ? []
+        : [h('p', {
+          className: 'edh-usage-notice',
+          'data-tone': notice.tone === 'ok' ? 'ok' : 'bad',
+          role: notice.tone === 'ok' ? 'status' : 'alert',
+        }, notice.text)]
+
+      if (status === 'loading') {
+        return frame(...noticeNode, h('p', { className: 'edh-usage-status', role: 'status' }, t('usageLoading')))
+      }
+
+      if (status === 'error') {
+        return frame(...noticeNode, h('div', { className: 'edh-usage-error', role: 'alert' },
+          h('p', { className: 'edh-usage-status' }, t('usageLoadFailed')),
+          typeof view.failure === 'string' && view.failure !== ''
+            ? h('p', { className: 'edh-usage-failure' }, view.failure)
+            : null,
+          h('button', {
+            type: 'button',
+            className: 'edh-usage-button edh-usage-buttonPrimary',
+            onClick: () => {
+              call('retry')
+            },
+          }, t('usageRetry')),
+        ))
+      }
+
+      if (status !== 'ready' || data === undefined) {
+        // `unavailable` lands here: one sentence, and nothing to press.
+        return frame(...noticeNode, h('p', { className: 'edh-usage-status' }, t('usageUnavailable')))
+      }
+
+      const footer = usageFooter(data, t)
+      const statusText = busy === 'rebuild'
+        ? t('usageRebuilding')
+        : busy === 'refresh'
+          ? t('usageRefreshing')
+          : footer.text
+      const footerNode = h('div', { className: 'edh-usage-footer' },
+        h('p', { className: 'edh-usage-hint', role: 'status' }, statusText),
+        h('div', { className: 'edh-usage-footerActions' },
+          h('button', {
+            type: 'button',
+            className: 'edh-usage-button',
+            disabled: busy !== '',
+            'aria-busy': busy !== '' || undefined,
+            onClick: () => {
+              call('refresh', 'refresh')
+            },
+          }, t('usageRefresh')),
+        ),
+      )
+
+      if (usageEmpty(data)) {
+        return frame(...noticeNode,
+          h('p', { className: 'edh-usage-status' }, t('usageEmpty')),
+          h('div', { className: 'edh-usage-footer' },
+            h('p', { className: 'edh-usage-hint', role: 'status' }, statusText),
+            h('div', { className: 'edh-usage-footerActions' },
+              h('button', {
+                type: 'button',
+                className: 'edh-usage-button',
+                disabled: busy !== '',
+                'aria-busy': busy !== '' || undefined,
+                onClick: () => {
+                  call('refresh', 'rebuild')
+                },
+              }, t('usageRebuild')),
+            ),
+          ),
+        )
+      }
+
+      const scoped = usageScope(data, scope)
+      const buckets = usageBuckets(scoped, range)
+      const series = usageSeries(buckets)
+      const geometry = usageGeometry(buckets.length)
+      const shown = series.filter(entry => hidden[entry.model] !== true)
+      const highest = shown.reduce((max, entry) => Math.max(max, ...entry.values, 0), 0)
+      const scale = usageScale(highest)
+      const yOf = value => (scale.max > 0
+        ? geometry.y1 - (value / scale.max) * (geometry.y1 - geometry.y0)
+        : geometry.y1)
+
+      const stats = data.stats !== null && typeof data.stats === 'object' ? data.stats : {}
+      const peak = stats.peakDay !== null && typeof stats.peakDay === 'object' ? stats.peakDay : {}
+      const longest = stats.longestSession !== null && typeof stats.longestSession === 'object' ? stats.longestSession : {}
+      const cells = [
+        {
+          key: 'total',
+          label: t('usageStatTotal'),
+          figure: numberText(data.totals.total),
+          note: t('usageStatTotalNote', {
+            messages: data.totals.messages,
+            sessions: data.totals.sessions,
+          }),
+        },
+        {
+          key: 'peak',
+          label: t('usageStatPeak'),
+          figure: count(peak.total) > 0 ? numberText(peak.total) : '—',
+          note: typeof peak.date === 'string' && peak.date !== '' ? peak.date : t('usageStatPeakNote'),
+        },
+        {
+          key: 'longest',
+          label: t('usageStatLongest'),
+          figure: count(longest.durationMs) > 0 ? formatDuration(longest.durationMs, t) : '—',
+          note: typeof longest.title === 'string' && longest.title !== ''
+            ? longest.title
+            : t('usageStatLongestNote'),
+        },
+        {
+          key: 'streak',
+          label: t('usageStatStreak'),
+          figure: usageDaysText(t, stats.currentStreakDays),
+          note: '',
+        },
+        {
+          key: 'longest-streak',
+          label: t('usageStatLongestStreak'),
+          figure: usageDaysText(t, stats.longestStreakDays),
+          note: '',
+        },
+      ]
+
+      const statRow = h('div', { className: 'edh-usage-stats' }, cells.map(cell => h('div', {
+        key: cell.key,
+        className: 'edh-usage-stat',
+      },
+        h('span', { className: 'edh-usage-statFigure' }, cell.figure),
+        h('span', { className: 'edh-usage-statLabel' }, cell.label),
+        cell.note === '' ? null : h('span', { className: 'edh-usage-statNote', title: cell.note }, cell.note),
+      )))
+
+      if (buckets.length === 0) {
+        return frame(...noticeNode, statRow, h('p', { className: 'edh-usage-status' }, t('usageEmptyRange')), footerNode)
+      }
+
+      const chartLabel = t('usageChartLabel', {
+        range: t(`usageRange${range.charAt(0).toUpperCase()}${range.slice(1)}`),
+        from: buckets[0].key,
+        to: buckets[buckets.length - 1].key,
+        models: series.length === 1 ? t('usageChartLabelOne') : t('usageChartLabelMany', { count: series.length }),
+      })
+
+      /** The name one series is shown under: a model id, or the folded remainder. */
+      const seriesLabel = entry => (entry.other === true ? t('usageOther') : entry.model)
+
+      const legend = h('div', { className: 'edh-usage-legend', role: 'group', 'aria-label': t('usageTrendTitle') },
+        series.map(entry => h('button', {
+          key: entry.model,
+          type: 'button',
+          className: 'edh-usage-legendItem',
+          'aria-pressed': hidden[entry.model] !== true,
+          onClick: () => {
+            call('toggle', entry.model)
+          },
+        },
+          h('span', { className: 'edh-usage-chip', style: { background: entry.colour }, 'aria-hidden': true }),
+          h('span', null, seriesLabel(entry)),
+        )))
+
+      const labelEvery = buckets.length <= 6 ? 1 : Math.ceil(buckets.length / 6)
+      const chart = h('svg', {
+        className: 'edh-usage-chart',
+        viewBox: `0 0 ${geometry.width} ${geometry.height}`,
+        preserveAspectRatio: 'xMidYMid meet',
+        role: 'img',
+        'aria-label': chartLabel,
+      },
+        scale.ticks.map(tick => h('g', { key: `tick-${tick}` },
+          h('line', {
+            className: 'edh-usage-grid',
+            x1: geometry.x0,
+            x2: geometry.x1,
+            y1: yOf(tick),
+            y2: yOf(tick),
+          }),
+          h('text', {
+            className: 'edh-usage-axis',
+            x: geometry.x0 - 8,
+            y: yOf(tick) + 3,
+            textAnchor: 'end',
+          }, numberText(tick)),
+        )),
+        buckets.map((bucket, index) => (index % labelEvery === 0 || index === buckets.length - 1
+          ? h('text', {
+            key: `day-${bucket.key}`,
+            className: 'edh-usage-axis',
+            x: geometry.xs[index],
+            y: geometry.y1 + 16,
+            textAnchor: 'middle',
+          }, bucket.label)
+          : null)),
+        h('line', {
+          className: 'edh-usage-baseline',
+          x1: geometry.x0,
+          x2: geometry.x1,
+          y1: geometry.y1,
+          y2: geometry.y1,
+        }),
+        shown.map(entry => {
+          const points = usagePoints(entry.values, geometry, scale)
+          const dot = usageDot(points)
+          const path = usagePath(points)
+          return h('g', { key: entry.model },
+            path === ''
+              ? null
+              : h('path', {
+                d: path,
+                fill: 'none',
+                stroke: entry.colour,
+                strokeWidth: 2,
+                strokeLinejoin: 'round',
+                strokeLinecap: 'round',
+              }),
+            dot === undefined
+              ? null
+              : h('circle', { cx: dot.x, cy: dot.y, r: 3, fill: entry.colour }),
+          )
+        }),
+      )
+
+      // The same numbers, for a reader who cannot see the lines.
+      const chartTable = h('table', { className: 'edh-usage-sr' },
+        h('caption', null, chartLabel),
+        h('thead', null, h('tr', null,
+          h('th', { scope: 'col' }, t('usageTrendTitle')),
+          shown.map(entry => h('th', { key: entry.model, scope: 'col' }, seriesLabel(entry))),
+        )),
+        h('tbody', null, buckets.map((bucket, index) => h('tr', { key: bucket.key },
+          h('th', { scope: 'row' }, bucket.key),
+          shown.map(entry => h('td', { key: entry.model }, numberText(entry.values[index] ?? 0))),
+        ))),
+      )
+
+      const slices = donutSlices(series)
+      const circumference = 2 * Math.PI * USAGE_DONUT.radius
+      const centre = USAGE_DONUT.size / 2
+      const donutLabel = t('usageDonutLabel', {
+        models: series.map(entry => seriesLabel(entry)).join(', '),
+        total: numberText(data.totals.total),
+      })
+      const donut = h('svg', {
+        className: 'edh-usage-donut',
+        viewBox: `0 0 ${USAGE_DONUT.size} ${USAGE_DONUT.size}`,
+        role: 'img',
+        'aria-label': donutLabel,
+      },
+        h('circle', {
+          className: 'edh-usage-donutTrack',
+          cx: centre,
+          cy: centre,
+          r: USAGE_DONUT.radius,
+          fill: 'none',
+          strokeWidth: USAGE_DONUT.width,
+        }),
+        slices.map(slice => h('circle', {
+          key: slice.model,
+          cx: centre,
+          cy: centre,
+          r: USAGE_DONUT.radius,
+          fill: 'none',
+          stroke: slice.colour,
+          strokeWidth: USAGE_DONUT.width,
+          strokeDasharray: `${slice.length} ${circumference - slice.length}`,
+          strokeDashoffset: slice.offset,
+          transform: `rotate(-90 ${centre} ${centre})`,
+        })),
+        h('text', {
+          className: 'edh-usage-donutTotal',
+          x: centre,
+          y: centre + 2,
+          textAnchor: 'middle',
+        }, numberText(data.totals.total)),
+        h('text', {
+          className: 'edh-usage-donutUnit',
+          x: centre,
+          y: centre + 18,
+          textAnchor: 'middle',
+        }, t('usageDonutCentre')),
+      )
+
+      const modelList = h('ul', { className: 'edh-usage-models' }, series.map(entry => h('li', {
+        key: entry.model,
+        className: 'edh-usage-model',
+        'data-other': entry.other ? 'true' : undefined,
+      },
+        h('span', { className: 'edh-usage-chip', style: { background: entry.colour }, 'aria-hidden': true }),
+        h('span', { className: 'edh-usage-modelText' },
+          h('span', { className: 'edh-usage-modelName', title: seriesLabel(entry) }, seriesLabel(entry)),
+          h('span', { className: 'edh-usage-modelTokens' }, `${numberText(entry.total)} ${t('usageTokens')}`),
+        ),
+        h('span', { className: 'edh-usage-modelShare' }, formatPercent(entry.share)),
+      )))
+
+      const group = (label, key, options) => h('div', { className: 'edh-usage-group', role: 'group', 'aria-label': label },
+        h('span', { className: 'edh-usage-groupLabel' }, label),
+        options.map(option => h('button', {
+          key: option.value,
+          type: 'button',
+          className: 'edh-usage-option',
+          'aria-pressed': option.selected,
+          disabled: option.disabled === true,
+          onClick: () => {
+            call(key, option.value)
+          },
+        }, option.label)),
+      )
+
+      const filters = h('div', { className: 'edh-usage-filters' },
+        group(t('usageScopeLabel'), 'scope', USAGE_SCOPES.map(value => ({
+          value,
+          label: value === 'main' ? t('usageScopeMain') : t('usageScopeAll'),
+          selected: scoped.selected === value,
+          disabled: value === 'main' && !scoped.supported,
+        }))),
+        group(t('usageRangeLabel'), 'range', USAGE_RANGES.map(value => ({
+          value,
+          label: t(`usageRange${value.charAt(0).toUpperCase()}${value.slice(1)}`),
+          selected: range === value,
+          disabled: false,
+        }))),
+      )
+
+      return frame(...noticeNode,
+        statRow,
+        h('section', { className: 'edh-usage-block' },
+          h('h3', { className: 'edh-usage-blockTitle' }, t('usageTrendTitle')),
+          legend,
+          chart,
+          chartTable,
+        ),
+        h('section', { className: 'edh-usage-block' },
+          h('h3', { className: 'edh-usage-blockTitle' }, t('usageModelsTitle')),
+          h('div', { className: 'edh-usage-donutWrap' }, donut, modelList),
+        ),
+        filters,
+        h('p', { className: 'edh-usage-hint' }, t('usageRangeNote')),
+        scoped.supported ? null : h('p', { className: 'edh-usage-hint' }, t('usageScopeNote')),
+        data.notes.map((note, index) => h('p', { key: `note-${index}`, className: 'edh-usage-note' }, note)),
+        footerNode,
+      )
+    }
+
+    /**
+     * The usage page: the numbers, two charts, the filters, and one refresh.
+     *
+     * It reads the `usage` row's own enablement rather than the aggregate: the
+     * row is what mounts the route behind it. The nav entry is gated the same way
+     * where it is registered; this is the answer for the case registration cannot
+     * cover, a row switched off while the page is open.
+     * @param t - the dictionary's translate function.
+     * @param controller - the switch controller holding the row states.
+     * @param locale - the locale service, read for the number ladder; optional.
+     */
+    function createUsagePage(t, controller, locale) {
+      const useUsageEnabled = createFeatureHook(controller, USAGE_MODULE, rowEnabled)
+
+      return function EdhUsagePage() {
+        const enabled = useUsageEnabled()
+        const [view, setView] = React.useState(() => ({ status: 'loading', data: undefined, failure: '' }))
+        const [attempt, setAttempt] = React.useState(0)
+        const [scope, setScope] = React.useState('all')
+        const [range, setRange] = React.useState('daily')
+        const [hidden, setHidden] = React.useState({})
+        const [busy, setBusy] = React.useState('')
+        const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
+
+        const language = locale !== undefined && typeof locale?.getSnapshot === 'function'
+          ? locale.getSnapshot().active
+          : ''
+        const units = usageUnits(language, t)
+
+        // Read once on mount and once per retry. A refresh is a write, and its
+        // answer carries the new numbers, so the page never polls.
+        React.useEffect(() => {
+          if (!enabled) return undefined
+          let current = true
+          setView(previous => ({ status: 'loading', data: previous.data, failure: '' }))
+          void (async () => {
+            let answer
+            try {
+              answer = await requestUsage('GET')
+            } catch (error) {
+              if (!current) return
+              const missing = error?.status === 404 || error?.status === 405
+              usageWrite({
+                phase: 'failed',
+                action: 'read',
+                reason: missing ? 'route-missing' : 'error',
+                message: messageOf(error),
+              })
+              setView({
+                status: missing ? 'unavailable' : 'error',
+                data: undefined,
+                failure: missing ? '' : messageOf(error),
+              })
+              return
+            }
+            if (!current) return
+            const read = readUsageView(answer)
+            if (!read.ok || (read.view !== undefined && read.view.available === false)) {
+              const missing = usageMissing(read)
+              usageWrite({
+                phase: 'failed',
+                action: 'read',
+                reason: missing ? 'unavailable' : String(read.reason || 'error'),
+                message: read.failure,
+              })
+              setView({ status: missing ? 'unavailable' : 'error', data: undefined, failure: read.failure })
+              return
+            }
+            usageWrite({
+              phase: 'loaded',
+              total: read.view.totals.total,
+              models: read.view.byModel.length,
+              days: read.view.byDay.length,
+              sessions: read.view.totals.sessions,
+            })
+            setView({
+              status: 'ready',
+              data: read.failure === '' ? read.view : { ...read.view, failure: read.failure },
+              failure: read.failure,
+            })
+          })()
+          return () => {
+            current = false
+          }
+        }, [enabled, attempt])
+
+        /**
+         * One action on the route. The answer's view replaces the one on screen;
+         * there is no second read afterwards.
+         * @returns the adopted read, or `undefined` when no answer arrived.
+         */
+        const send = React.useCallback(async action => {
+          setBusy(action)
+          setNotice({ text: '', tone: 'bad' })
+          let answer
+          try {
+            answer = await requestUsage('POST', { action })
+          } catch (error) {
+            usageWrite({ phase: 'failed', action, reason: 'error', message: messageOf(error) })
+            setBusy('')
+            setNotice({ text: messageOf(error), tone: 'bad' })
+            return undefined
+          }
+          setBusy('')
+          const read = readUsageView(answer)
+          if (read.ok) {
+            setView({
+              status: 'ready',
+              data: read.failure === '' ? read.view : { ...read.view, failure: read.failure },
+              failure: read.failure,
+            })
+          }
+          const rejected = read.report !== undefined && read.report.ok !== true
+          if (rejected || !read.ok) {
+            const text = read.failure !== ''
+              ? read.failure
+              : t('usageActionFailed')
+            setNotice({ text, tone: 'bad' })
+            usageWrite({
+              phase: 'failed',
+              action,
+              reason: String(read.report?.reason ?? read.reason ?? 'error'),
+              message: text,
+            })
+            return { read, ok: false }
+          }
+          usageWrite({ phase: 'refreshed', action, total: read.view.totals.total })
+          return { read, ok: true }
+        }, [t])
+
+        const onRetry = React.useCallback(() => {
+          setAttempt(value => value + 1)
+        }, [])
+
+        const onRefresh = React.useCallback(action => {
+          void send(action === 'rebuild' ? 'rebuild' : 'refresh')
+        }, [send])
+
+        const onScope = React.useCallback(value => {
+          setScope(value === 'main' ? 'main' : 'all')
+        }, [])
+
+        const onRange = React.useCallback(value => {
+          setRange(USAGE_RANGES.includes(value) ? value : 'daily')
+        }, [])
+
+        const onToggle = React.useCallback(model => {
+          setHidden(previous => {
+            const next = { ...previous }
+            if (next[model] === true) delete next[model]
+            else next[model] = true
+            return next
+          })
+        }, [])
+
+        return usagePage(t, {
+          enabled,
+          view,
+          scope,
+          range,
+          hidden,
+          busy,
+          notice,
+          units,
+          actions: {
+            retry: onRetry,
+            refresh: onRefresh,
+            scope: onScope,
+            range: onRange,
+            toggle: onToggle,
+          },
+        })
+      }
+    }
+
+    /**
+     * The page's stylesheet.
+     *
+     * Rows and hairlines again, not cards: a dashboard is a set of figures and
+     * two charts, and the only fill is the one the segmented control already
+     * uses. The palette variables are declared here, on the page root, so a
+     * series colour and its chip are always the same value.
+     */
+    const USAGE_CSS = [
+      `.edh-usage{${[
+        `--edh-usage-other:${USAGE_NEUTRAL}`,
+        ...USAGE_PALETTE.map((colour, index) => `--edh-usage-${index + 1}:${colour}`),
+      ].join(';')};color:var(--dsw-alias-label-primary);flex-direction:column;gap:14px;max-width:880px;display:flex}`,
+      '.edh-usage-title{margin:0;font-size:16px;font-weight:500;line-height:24px}',
+      '.edh-usage-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}',
+      '.edh-usage-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
+      '.edh-usage-error{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
+      '.edh-usage-failure{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-usage-notice{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-usage-notice[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-usage-notice[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-usage-stats{border-top:.5px solid var(--dsw-alias-border-l2);border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:repeat(5,minmax(0,1fr));display:grid}',
+      '.edh-usage-stat{border-left:.5px solid var(--dsw-alias-border-l2);flex-direction:column;gap:2px;min-width:0;padding:12px 16px;display:flex}',
+      '.edh-usage-stat:first-child{border-left:none;padding-left:0}',
+      '.edh-usage-stat:last-child{padding-right:0}',
+      '.edh-usage-statFigure{font-size:22px;font-weight:500;line-height:28px;font-variant-numeric:tabular-nums;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}',
+      '.edh-usage-statLabel{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
+      '.edh-usage-statNote{color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-size:11px;line-height:16px}',
+      '.edh-usage-block{flex-direction:column;gap:8px;display:flex}',
+      '.edh-usage-blockTitle{color:var(--dsw-alias-label-primary);margin:0;font-size:13px;font-weight:500;line-height:20px}',
+      '.edh-usage-legend{flex-wrap:wrap;align-items:center;gap:4px 6px;display:flex}',
+      '.edh-usage-legendItem{color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);align-items:center;gap:6px;height:24px;padding:0 8px;font:inherit;font-size:12px;line-height:18px;display:inline-flex}',
+      '.edh-usage-legendItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-usage-legendItem[aria-pressed=false]{opacity:.45}',
+      '.edh-usage-legendItem[aria-pressed=false]:hover{opacity:.7}',
+      '.edh-usage-chip{border-radius:2px;flex:none;width:8px;height:8px;display:inline-block}',
+      '.edh-usage-chart{width:100%;height:auto;display:block}',
+      '.edh-usage-grid{stroke:var(--dsw-alias-border-l2);stroke-width:1}',
+      '.edh-usage-baseline{stroke:var(--dsw-alias-border-l3);stroke-width:1}',
+      '.edh-usage-axis{fill:var(--dsw-alias-label-tertiary);font-size:10px;font-variant-numeric:tabular-nums}',
+      '.edh-usage-donutWrap{align-items:center;gap:24px;display:flex}',
+      '.edh-usage-donut{flex:none;width:168px;height:168px}',
+      '.edh-usage-donutTrack{stroke:var(--dsw-alias-bg-layer-2)}',
+      '.edh-usage-donutTotal{fill:var(--dsw-alias-label-primary);font-size:17px;font-weight:500;font-variant-numeric:tabular-nums}',
+      '.edh-usage-donutUnit{fill:var(--dsw-alias-label-tertiary);font-size:10px}',
+      '.edh-usage-models{flex-direction:column;flex:1;gap:0;min-width:0;margin:0;padding:0;list-style:none;display:flex}',
+      '.edh-usage-model{border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:8px minmax(0,1fr) max-content;align-items:center;gap:0 10px;padding:7px 0;display:grid}',
+      '.edh-usage-model:last-child{border-bottom:none}',
+      '.edh-usage-modelText{flex-direction:column;min-width:0;display:flex}',
+      '.edh-usage-modelName{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-size:13px;line-height:19px}',
+      '.edh-usage-modelTokens{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}',
+      '.edh-usage-modelShare{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:19px;font-variant-numeric:tabular-nums}',
+      '.edh-usage-filters{flex-wrap:wrap;align-items:center;gap:8px 20px;display:flex}',
+      '.edh-usage-group{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-sm);align-items:center;gap:2px;padding:2px;display:inline-flex}',
+      '.edh-usage-groupLabel{color:var(--dsw-alias-label-tertiary);padding:0 6px;font-size:12px;line-height:18px}',
+      '.edh-usage-option{color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-xs);height:24px;padding:0 10px;font:inherit;font-size:12px;line-height:18px}',
+      '.edh-usage-option[aria-pressed=true]{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1)}',
+      '.edh-usage-option:disabled{cursor:not-allowed;opacity:.4}',
+      '.edh-usage-hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-usage-note{color:var(--dsw-alias-label-tertiary);margin:0;font-size:11px;line-height:17px}',
+      '.edh-usage-footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:12px;padding-top:10px;display:flex}',
+      '.edh-usage-footerActions{justify-content:flex-end;align-items:center;gap:8px;display:flex}',
+      '.edh-usage-button{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);justify-content:center;align-items:center;gap:4px;height:28px;padding:0 10px;font:inherit;font-size:12px;line-height:18px;white-space:nowrap;display:inline-flex}',
+      '.edh-usage-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-usage-button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.edh-usage-button:disabled{cursor:not-allowed;opacity:.4}',
+      '.edh-usage-buttonPrimary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}',
+      '.edh-usage-buttonPrimary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.edh-usage-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;white-space:nowrap;border:0;clip:rect(0 0 0 0)}',
+      '.edh-usage :is(button,input,textarea,a):focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+    ].join('')
+
+    /** Install the usage page stylesheet once and take it back out on dispose. */
+    function installUsageStyles() {
+      if (typeof document === 'undefined') return () => {}
+      const selector = 'style[data-edh-css="usage"]'
+      if (document.querySelector(selector) === null) {
+        const tag = document.createElement('style')
+        tag.dataset.edhCss = 'usage'
+        tag.dataset.plugin = '@moreweb/edh'
+        tag.textContent = USAGE_CSS
+        document.head.appendChild(tag)
+        return () => {
+          if (tag.parentNode !== null) tag.parentNode.removeChild(tag)
+        }
+      }
+      return () => {
+        const existing = document.querySelector(selector)
+        if (existing !== null && existing.parentNode !== null) existing.parentNode.removeChild(existing)
+      }
+    }
+
+    /**
+     * One request on the usage route.
+     *
+     * A rejected action answers a non-200 status with the same JSON body, so the
+     * body decides; only a reply without one is a route failure, and it carries
+     * the status because a missing route means the feature is not on this profile.
+     */
+    async function requestUsage(method, body) {
+      const response = await fetch(USAGE_ROUTE, {
+        method,
+        headers: body === undefined
+          ? { accept: 'application/json' }
+          : { accept: 'application/json', 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+      if (response === null || response === undefined) throw new Error(`${USAGE_ROUTE} answered nothing`)
+      let answer
+      try {
+        answer = await response.json()
+      } catch (error) {
+        answer = undefined
+      }
+      if (answer !== null && typeof answer === 'object') return answer
+      const failure = new Error(`${USAGE_ROUTE} answered ${response.status}`)
+      failure.status = response.status
+      throw failure
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -4566,6 +6028,51 @@ window.__ModuleLoader__.load({
         }
       })
 
+      // usage — its own page in the Settings navigation, third in the row and
+      // gated the same way. The numbers behind it are counted by a feature row,
+      // so the cell is withdrawn while that row is missing or off rather than
+      // opening a page that can only say it has nothing.
+      const UsagePage = createUsagePage(t, controller, ctx.locale)
+      ctx.effect(() => installUsageStyles(), 'edh: usage styles')
+      ctx.slots.inject(USAGE_SECTION_SLOT, () => {
+        let dispose
+        let installed = false
+        /** Register, dispose, or leave alone, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), USAGE_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({
+              name: USAGE_SECTION_SLOT,
+              id: 'usage',
+              order: USAGE_SECTION_ORDER,
+              locale: NS,
+              label: () => t('usageNav'),
+            }, UsagePage)
+            installed = true
+          } catch (error) {
+            // This runs from the controller's own listener, so a throw would
+            // surface as a failed row read and take the switch with it. Record
+            // it and stay uninstalled: no nav cell, nothing half-mounted.
+            installed = false
+            usageWrite({ phase: 'register-failed', part: 'section', message: messageOf(error) })
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          dispose?.()
+          dispose = undefined
+        }
+      })
+
       // The reload face is optional: without `modules` both controls still check
       // and apply, and the Reload button is simply not offered rather than
       // present-and-failing. The face is shared because the update control's
@@ -4790,6 +6297,55 @@ window.__ModuleLoader__.load({
       REMOTE_PORT_MIN,
       REMOTE_PORT_MAX,
       REMOTE_DEBUG_KEY,
+      usageTotals,
+      usageModel,
+      usageDay,
+      usageStamp,
+      usageScopes,
+      usageView,
+      usageReport,
+      readUsageView,
+      usageMissing,
+      usageEmpty,
+      usageScope,
+      parseDay,
+      isoDay,
+      weekStart,
+      finishBucket,
+      usageBuckets,
+      usagePalette,
+      usageSeries,
+      usageUnits,
+      formatTokens,
+      formatPercent,
+      formatDuration,
+      usageDaysText,
+      usageScale,
+      usageGeometry,
+      usagePoints,
+      usagePath,
+      usageDot,
+      donutSlices,
+      usageFooter,
+      usagePage,
+      createUsagePage,
+      installUsageStyles,
+      requestUsage,
+      USAGE_CSS,
+      USAGE_ROUTE,
+      USAGE_MODULE,
+      USAGE_SECTION_SLOT,
+      USAGE_SECTION_ORDER,
+      USAGE_ACTIONS,
+      USAGE_RANGES,
+      USAGE_SCOPES,
+      USAGE_SERIES_MAX,
+      USAGE_PALETTE,
+      USAGE_NEUTRAL,
+      USAGE_CHART,
+      USAGE_DONUT,
+      USAGE_OTHER,
+      USAGE_DEBUG_KEY,
       // The two dictionaries, so a suite can prove they are symmetric.
       en,
       zh,

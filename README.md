@@ -13,6 +13,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `update` | Updates EDH itself from its published repo, from EDH's page in Plugin Manager, and reloads the new browser half in place |
 | `mcp` | Connects MCP servers from a settings page — no Cordis config — and gives their tools to the model as it goes |
 | `remote` | Opens the same Web GUI on a phone over the LAN, behind a login page and a username and password you set |
+| `usage` | Shows where your tokens went: totals, per model and per day across every Session, with streaks and peaks |
 
 A switch in the conversation header turns them all on or off together.
 

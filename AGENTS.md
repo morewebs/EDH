@@ -82,6 +82,61 @@ to the shell row.
 - The Session's title is a `session/title` event (`data.title`, newest wins), not a header
   field. The header carries no title at all.
 
+## Usage
+
+`usage.js` folds token usage out of every Session log. The facts that cost the most to
+rediscover:
+
+- **Count the four buckets, never `totalTokens`.** Σ(input + output + cacheRead + cacheWrite)
+  differs from Σ`totalTokens` on 928 events in this profile — the field is the provider's own
+  arithmetic. `cacheReadTokens` / `cacheWriteTokens` are optional; absent means zero.
+- **Usage rides `assistant/message` as `data.usage`**, with the model at
+  `data.message.source = {kind: 'model', provider, model}`. `turn/end` carries no rollup.
+  `assistant/attempt` can also report a sample in its stream, and it names no route, so
+  those tokens land under `unknown` unless a message for the same step replaces them.
+- **One sample per `(turn, step)`, last wins.** The shipped `tokenUsage` projection keeps a
+  single slot and *replaces* it (`addReplacing`), and `llm/retry-started` clears the slot so
+  a retried attempt adds. Copy that rule or a retry double counts — and remember it is one
+  slot, so a replay of an older step after a newer one adds rather than replaces.
+- **Coverage is not everything.** Title generation, compaction summaries and web search
+  record no usage at all, and the only assistant messages without usage are
+  `interrupted: true`. The view says so instead of implying the total is complete.
+- **`time` is epoch milliseconds, UTC, with no zone stored.** Days are this machine's local
+  dates, keyed with `Intl.DateTimeFormat` in `resolvedOptions().timeZone`; a cache written
+  under a different zone is discarded rather than mixed.
+- **A log is Zstandard with one frame per append** (magic `28 B5 2F FD`), and
+  `zlib.zstdDecompressSync` on the whole file returns only the FIRST frame. Split
+  structurally — frame header, then block headers to the last-block bit, then the checksum
+  — exactly as the shipped `scanZstdFrames` does. Searching for the magic bytes is wrong:
+  they occur inside compressed blocks.
+- **Frames are independent and the file is append-only, so a byte offset on a frame boundary
+  stays valid forever.** That is what makes the incremental read legitimate: keep the
+  offset, read only the tail, decode the new frames. Each frame's plaintext ends with a
+  newline (one batch = `lines.join('\n') + '\n'`), so a frame without one is an append that
+  never finished and its bytes are left for the next pass.
+- **`ctx.sessionPersistence.list()` is the cheap enumerator** (header frames only, 153 ms
+  for 200 Sessions) and `snapshot.sizeBytes` is the artifact size. The artifact path comes
+  from the backend's own `locate({ id, cwd })` diagnostics hook, duck-typed — a handle read
+  (`open(id, 'read')` + `read(0)` → `{events}`) is the slow fallback. `handle.read` is
+  indexed by *event*, not by byte, so it cannot do the incremental read.
+- **`sessionProjectionCache.cachedSnapshot(header, keys)` is a zero-I/O read, but it holds
+  no model and no per-day data**, so it is only a cross-check, never the source of the
+  series. It does carry `timeContext.lastMessageTime`, the fallback when a log is
+  unreadable.
+- **A full fold is ~15 s** (200 logs, 189 MB compressed, 761 MB plaintext, 247,805 events;
+  this build folds them in about 7.5 s). Never block the Host on it: cache per Session under
+  `<profile>/.edh/usage.json`, backfill two Sessions per tick behind `setImmediate`-style
+  scheduling, and persist after each batch. The warm delta over every log is under a second.
+- **Live folds only after a pass has caught up with a Session.** `ctx.on('session/event', …,
+  { global: true })` is the post-commit feed for every Session including subagents, but
+  dropping `seq <= lastSeq` is exact only when every lower `seq` is already folded — so an
+  event for an unfolded Session schedules a pass instead of folding out of order.
+- **The main/subagent split is the header's `origin`, and nothing else.** A delegated child
+  records `origin: 'subagent'`; a main Session records no `origin` at all, and a *fork* keeps
+  `parentSession` with no origin — so the parent link must not be read as "subagent". The
+  view sends `scopes: { main, subagent }` beside the headline, and the two halves must add
+  up to it exactly (the suite asserts totals, every model row and every day).
+
 ## Services
 
 Put optional contracts on their own `ctx.inject([...], scope => …)` — a missing service
@@ -213,6 +268,8 @@ node test/client.mjs
 node test/export.mjs
 node test/update.mjs
 node test/remote.mjs
+node test/mcp.mjs
+node test/usage.mjs
 ```
 
 `test/remote.mjs` opens no socket on purpose: the listener, the proxy and the
@@ -229,7 +286,7 @@ both Plugin Manager controls — update (`mounted` / `checked` / `update-started
 for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
 and `edh:btw` for the side-chat commands and its launcher card (`click` / `guide-click` /
 `forked` / `named` / `pane-opened` / `pane-failed` / `register-failed` / `failed` with the
-step that failed), and `edh:remote` for the Remote page (`loaded` / `saved` / `started` / `stopped` / `failed` / `register-failed`).
+step that failed), and `edh:remote` for the Remote page (`loaded` / `saved` / `started` / `stopped` / `failed` / `register-failed`), and `edh:usage` for the Usage page (`loaded` / `refreshed` / `failed` / `register-failed`).
 Read them off disk while the app is closed or running:
 
 ```

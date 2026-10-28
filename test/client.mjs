@@ -142,6 +142,55 @@ const {
   en,
   zh,
 } = mod.__test
+const {
+  usageTotals,
+  usageModel,
+  usageDay,
+  usageStamp,
+  usageScopes,
+  usageView,
+  usageReport,
+  readUsageView,
+  usageMissing,
+  usageEmpty,
+  usageScope,
+  parseDay,
+  isoDay,
+  weekStart,
+  finishBucket,
+  usageBuckets,
+  usagePalette,
+  usageSeries,
+  usageUnits,
+  formatTokens,
+  formatPercent,
+  formatDuration,
+  usageDaysText,
+  usageScale,
+  usageGeometry,
+  usagePoints,
+  usagePath,
+  usageDot,
+  donutSlices,
+  usageFooter,
+  usagePage,
+  createUsagePage,
+  USAGE_ROUTE,
+  USAGE_MODULE,
+  USAGE_SECTION_SLOT,
+  USAGE_SECTION_ORDER,
+  USAGE_ACTIONS,
+  USAGE_RANGES,
+  USAGE_SCOPES,
+  USAGE_SERIES_MAX,
+  USAGE_PALETTE,
+  USAGE_NEUTRAL,
+  USAGE_CSS,
+  USAGE_CHART,
+  USAGE_DONUT,
+  USAGE_OTHER,
+  USAGE_DEBUG_KEY,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -2018,6 +2067,11 @@ function treeText(tree) {
   return text
 }
 
+/** Whether any visible string contains this phrase. */
+function hasText(tree, phrase) {
+  return treeText(tree).some(line => line.includes(phrase))
+}
+
 /** Every button's visible label. */
 function treeButtons(tree) {
   return treeByType(tree, 'button').map(button => button.props.children
@@ -2792,10 +2846,825 @@ function treeButtons(tree) {
   assert.match(zh.remotePlainHttp, /明文/u)
 }
 
+/**
+ * The dictionary bound the way the locale service binds it: a template with
+ * `{name}` placeholders, resolved against one language table.
+ */
+function dictionaryOf(language) {
+  const table = language === 'zh' ? zh : en
+  return (key, params) => {
+    const template = typeof table[key] === 'string' ? table[key] : key
+    if (params === undefined) return template
+    return template.replace(/\{(\w+)\}/gu, (match, name) => (name in params ? String(params[name]) : match))
+  }
+}
+
+/** A small, complete usage answer with three days, two weeks and three models. */
+function sampleUsagePayload() {
+  return {
+    ok: true,
+    timeZone: 'Europe/London',
+    totals: {
+      input: 60_000_000,
+      output: 40_000_000,
+      cacheRead: 20_000_000,
+      cacheWrite: 200_000,
+      total: 120_200_000,
+      messages: 412,
+      sessions: 17,
+    },
+    byModel: [
+      { model: 'deepseek-v4', provider: 'deepseek', input: 55_000_000, output: 36_000_000, cacheRead: 18_000_000, cacheWrite: 120_000, total: 109_120_000, messages: 380, share: 0.9 },
+      { model: 'claude-sonnet', provider: 'anthropic', input: 4_000_000, output: 3_500_000, cacheRead: 1_800_000, cacheWrite: 60_000, total: 9_360_000, messages: 26, share: 0.07 },
+      { model: 'gpt-small', provider: 'openai', input: 1_000_000, output: 500_000, cacheRead: 200_000, cacheWrite: 20_000, total: 1_720_000, messages: 6, share: 0.01 },
+    ],
+    byDay: [
+      { date: '2026-03-16', byModel: { 'deepseek-v4': 40, 'gpt-small': 10 }, total: 50, input: 40, output: 10, cacheRead: 0, cacheWrite: 0 },
+      { date: '2026-03-10', byModel: { 'deepseek-v4': 60 }, total: 60, input: 50, output: 10, cacheRead: 0, cacheWrite: 0 },
+      { date: '2026-03-09', byModel: { 'deepseek-v4': 100, 'claude-sonnet': 50 }, total: 150, input: 120, output: 30, cacheRead: 0, cacheWrite: 0 },
+    ],
+    stats: {
+      peakDay: { date: '2026-03-09', total: 150 },
+      longestSession: { id: 's1', title: 'Refactor the parser', durationMs: 8_040_000, startedAt: 1_770_000_000_000 },
+      currentStreakDays: 3,
+      longestStreakDays: 11,
+      firstDay: '2026-03-09',
+      lastDay: '2026-03-16',
+    },
+    backfill: { state: 'running', sessionsDone: 42, sessionsTotal: 200 },
+    updatedAt: 1_770_000_000_000,
+    notes: [
+      'Title generation and search calls are not counted.',
+      '  ',
+      'Usage for subagents is attributed to the day it was spent.',
+    ],
+  }
+}
+
+/** The view a `sampleUsagePayload` read produces. */
+function sampleUsageView() {
+  return readUsageView(sampleUsagePayload()).view
+}
+
+// 35 — the usage seat: one settings section, right after Remote, gated on its row.
+{
+  /** A fake ctx with the surfaces `apply` touches, recording every slot entry. */
+  function fakeSectionCtx(rows) {
+    const entries = []
+    const handlers = new Map()
+    const ctx = {
+      locale: {
+        bind: () => (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`),
+        register: () => () => {},
+        subscribe: () => () => {},
+        getSnapshot: () => ({ active: 'en', locales: ['en', 'zh'], revision: 0 }),
+      },
+      effect: fn => fn(),
+      slots: {
+        inject: (_name, callback) => callback(),
+        register: (options, component) => {
+          const entry = { options, component }
+          entries.push(entry)
+          return () => {
+            const at = entries.indexOf(entry)
+            if (at >= 0) entries.splice(at, 1)
+          }
+        },
+      },
+      remote: {
+        pluginManager: {
+          async listPlugins() {
+            return { ok: true, value: rows.map(row => ({ ...row })) }
+          },
+          async setPluginEnabled(entryId, enabled) {
+            const row = rows.find(candidate => candidate.entryId === entryId)
+            if (row !== undefined) row.enabled = enabled
+            return { ok: true, value: { application: 'applied', target: entryId } }
+          },
+        },
+        $on: (event, handler) => {
+          handlers.set(event, handler)
+          return () => handlers.delete(event)
+        },
+        on: () => () => {},
+      },
+      inject: () => undefined,
+      get: () => undefined,
+      logger: { warn() {}, error() {}, info() {} },
+    }
+    const sections = () => entries.filter(entry => entry.options.name === USAGE_SECTION_SLOT)
+    return {
+      ctx,
+      entries,
+      sections,
+      section: id => sections().find(entry => entry.options.id === id),
+      /** Change a row the way the Host would, then let the switch re-read. */
+      async setRow(entryId, enabled) {
+        const row = rows.find(candidate => candidate.entryId === entryId)
+        row.enabled = enabled
+        handlers.get('plugin-manager/changed')()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      },
+    }
+  }
+
+  assert.equal(USAGE_ROUTE, 'api/edh.usage', 'document-relative, like the other EDH routes')
+  assert.equal(USAGE_MODULE, '@moreweb/edh/usage', 'the row that owns the route')
+  assert.equal(USAGE_SECTION_SLOT, 'settings.section', 'a page of its own in the Settings nav')
+  assert.equal(USAGE_SECTION_ORDER, 18, 'the third seat')
+  assert.equal(USAGE_SECTION_ORDER, REMOTE_SECTION_ORDER + 1, 'MCP 16, Remote 17, Usage 18, in a row')
+  assert.deepEqual(USAGE_ACTIONS, ['refresh', 'rebuild'], 'both actions the route accepts')
+  assert.deepEqual(USAGE_RANGES, ['daily', 'weekly', 'cumulative'], 'the three ways to bucket the same days')
+  assert.deepEqual(USAGE_SCOPES, ['all', 'main'], 'every session, or the main ones')
+  assert.equal(USAGE_DEBUG_KEY, 'edh:usage', 'its own breadcrumb')
+  assert.equal(rowEnabled({ status: 'ready', moduleStates: { [USAGE_MODULE]: true } }, USAGE_MODULE), true)
+  assert.equal(rowEnabled({ status: 'ready', moduleStates: { [REMOTE_MODULE]: true } }, USAGE_MODULE), false, 'Remote is not this row')
+  assert.equal(rowEnabled({ status: 'loading', moduleStates: { [USAGE_MODULE]: true } }, USAGE_MODULE), false)
+
+  const shell = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
+  const mcpRow = { entryId: 'include:edh-mcp', moduleName: MCP_MODULE, enabled: true, fiberPhase: 'active' }
+  const remoteRow = { entryId: 'include:edh-remote', moduleName: REMOTE_MODULE, enabled: true, fiberPhase: 'active' }
+  const usageRow = { entryId: 'include:edh-usage', moduleName: USAGE_MODULE, enabled: true, fiberPhase: 'active' }
+  const harness = fakeSectionCtx([shell, { ...mcpRow }, { ...remoteRow }, { ...usageRow }])
+  mod.apply(harness.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(
+    harness.sections().map(entry => entry.options.id),
+    ['mcp', 'remote', 'usage'],
+    'one page per feature, in nav order',
+  )
+  const page = harness.section('usage')
+  assert.ok(page, 'the page registers once its row is known to be there')
+  assert.equal(page.options.order, USAGE_SECTION_ORDER, 'and sits where the constant says')
+  assert.equal(page.options.label(), 'usageNav', 'the nav reads the localized name')
+  assert.equal(page.options.locale, 'edh', 'its copy comes from the plugin dictionary')
+  assert.equal(page.options.children, undefined, 'a section page owns no child slots')
+  assert.equal(typeof page.component, 'function')
+
+  // The row is the switch: off withdraws the entry, on puts it back, and the two
+  // pages beside it are untouched either way.
+  await harness.setRow('include:edh-usage', false)
+  assert.equal(harness.section('usage'), undefined, 'a row that is off leaves no nav cell')
+  assert.ok(harness.section('mcp'), 'and does not take the pages next to it')
+  assert.ok(harness.section('remote'))
+  await harness.setRow('include:edh-usage', true)
+  assert.ok(harness.section('usage'), 'turning it back on restores the page')
+
+  const patchless = fakeSectionCtx([shell, { ...remoteRow }])
+  mod.apply(patchless.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(patchless.section('usage'), undefined, 'no row in this profile means no page to open')
+}
+
+// 36 — the answer is the view: totals, days, stats, and both actions adopted.
+{
+  assert.deepEqual(usageTotals({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }), {
+    input: 1,
+    output: 2,
+    cacheRead: 3,
+    cacheWrite: 4,
+    total: 10,
+    messages: 0,
+    sessions: 0,
+  }, 'a total is the sum of its parts when the Host does not state one')
+  assert.equal(usageTotals({ total: 999, input: 1 }).total, 999, 'a stated total is the Host counting, not the page')
+  assert.equal(usageTotals({ input: -5, output: '12.9', cacheRead: 'nonsense' }).total, 12, 'only whole non-negative counts')
+  assert.equal(usageTotals(undefined).total, 0)
+
+  assert.deepEqual(usageModel({ model: '  deepseek-v4  ', provider: ' deepseek ', total: 5 }), {
+    model: 'deepseek-v4',
+    provider: 'deepseek',
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 5,
+    messages: 0,
+    sessions: 0,
+  })
+  for (const absent of [undefined, null, {}, { model: '' }, { model: '   ' }]) {
+    assert.equal(usageModel(absent), undefined, `no model in ${JSON.stringify(absent)}`)
+  }
+
+  assert.deepEqual(usageDay({ date: '2026-03-09', byModel: { a: 3, '': 4, b: 'x' }, total: 3 }), {
+    date: '2026-03-09',
+    byModel: { a: 3, b: 0 },
+    total: 3,
+  })
+  assert.equal(usageDay({ byModel: {} }), undefined, 'a day without a date is not a day')
+
+  assert.equal(usageStamp(1_770_000_000_000), 1_770_000_000_000)
+  assert.equal(usageStamp('2026-03-09T12:00:00.000Z'), Date.parse('2026-03-09T12:00:00.000Z'))
+  assert.equal(usageStamp('not a date'), 0)
+  assert.equal(usageStamp(undefined), 0)
+
+  const view = sampleUsageView()
+  assert.deepEqual(view.byDay.map(day => day.date), ['2026-03-09', '2026-03-10', '2026-03-16'], 'days are sorted once, here')
+  assert.deepEqual(view.notes, [
+    'Title generation and search calls are not counted.',
+    'Usage for subagents is attributed to the day it was spent.',
+  ], 'blank notes are dropped')
+  assert.equal(view.stats.peakDay.total, 150)
+  assert.equal(view.stats.longestSession.durationMs, 8_040_000)
+  assert.equal(view.stats.currentStreakDays, 3)
+  assert.equal(view.backfill.state, 'running')
+  assert.equal(view.timeZone, 'Europe/London')
+  assert.equal(view.available, true)
+  assert.equal(view.failure, '')
+
+  // A failure sentence is a listener/read error, never a successful answer's message.
+  assert.equal(usageView({ totals: {}, message: 'All good' }).failure, '', 'a 200 message is not a failure')
+  assert.equal(usageView({ totals: {}, lastError: 'the store could not be read' }).failure, 'the store could not be read')
+  for (const absent of [undefined, null, 7, 'nope', {}, { ok: false }]) {
+    assert.equal(usageView(absent), undefined, `no view in ${JSON.stringify(absent)}`)
+  }
+  assert.equal(usageView({ totals: {} }).available, true, 'a view is available unless it says otherwise')
+
+  // GSET adoption, and the same adoption for either POST: the answer carries the
+  // numbers, so there is never a second read after a write.
+  const getRead = readUsageView(sampleUsagePayload())
+  assert.equal(getRead.ok, true)
+  assert.equal(getRead.report, undefined)
+  assert.equal(getRead.view.totals.total, 120_200_000)
+  for (const action of USAGE_ACTIONS) {
+    const answered = readUsageView({
+      ...sampleUsagePayload(),
+      report: { ok: true, action },
+    })
+    assert.equal(answered.ok, true, `${action} answers a view`)
+    assert.equal(answered.view.totals.total, 120_200_000, `and ${action}'s numbers are adoptable`)
+    assert.deepEqual(answered.report, { ok: true, action, reason: '', message: '' })
+  }
+
+  // A 400 answers the same body shape, so it still updates the page.
+  const refused = readUsageView({
+    ...sampleUsagePayload(),
+    ok: false,
+    report: { ok: false, action: 'rebuild', reason: 'busy', message: 'A rebuild is already running' },
+  })
+  assert.equal(refused.ok, true, 'the body is still a view')
+  assert.equal(refused.failure, 'A rebuild is already running', 'the Host words the refusal')
+
+  const absent = readUsageView({ ok: false, reason: 'error', message: 'api/edh.usage answered 500' })
+  assert.equal(absent.ok, false)
+  assert.equal(absent.view, undefined)
+  assert.equal(absent.failure, 'api/edh.usage answered 500')
+
+  assert.equal(usageMissing({ view: { available: false } }), true)
+  for (const reason of ['unavailable', 'no-services', 'missing']) {
+    assert.equal(usageMissing({ reason }), true, `${reason} means the services are missing`)
+  }
+  assert.equal(usageMissing({ reason: 'error' }), false)
+  assert.equal(usageMissing(undefined), false)
+
+  assert.equal(usageEmpty({ totals: { total: 0 } }), true)
+  assert.equal(usageEmpty({ totals: { total: 1 } }), false)
+  assert.equal(usageEmpty(undefined), true)
+
+  // One read on mount, one write path, and no blind re-fetch after a write.
+  assert.equal(source.split("requestUsage('GET'").length - 1, 1, 'one read')
+  assert.equal(source.split("requestUsage('POST'").length - 1, 1, 'one write path')
+}
+
+// 37 — numbers in the reader's units, in both languages.
+{
+  const tEn = dictionaryOf('en')
+  const tZh = dictionaryOf('zh')
+  const enUnits = usageUnits('en', tEn)
+  const zhUnits = usageUnits('zh', tZh)
+
+  assert.deepEqual(enUnits.map(unit => unit.factor), [1e9, 1e6, 1e3], 'English counts by thousand')
+  assert.deepEqual(zhUnits.map(unit => unit.factor), [1e12, 1e8, 1e4], 'Chinese counts by 万 and 亿')
+
+  assert.equal(formatTokens(999, enUnits), '999', 'under a thousand is itself')
+  assert.equal(formatTokens(12_400, enUnits), '12.4K')
+  assert.equal(formatTokens(120_200_000, enUnits), '120.2M', 'the tenth survives a three-digit mantissa')
+  assert.equal(formatTokens(1_600_000_000, enUnits), '1.6B')
+  assert.equal(formatTokens(1000, enUnits), '1K', 'a whole number drops its decimal')
+  assert.equal(formatTokens(999_999, enUnits), '1M', 'a value that rounds up moves up a unit')
+  assert.equal(formatTokens(12_345_678, enUnits), '12.3M')
+  for (const empty of [0, -5, undefined, null, Number.NaN, 'nonsense']) {
+    assert.equal(formatTokens(empty, enUnits), '0', `${String(empty)} is zero tokens`)
+  }
+
+  assert.equal(formatTokens(999, zhUnits), '999')
+  assert.equal(formatTokens(12_400, zhUnits), '1.2万')
+  assert.equal(formatTokens(120_200_000, zhUnits), '1.2亿')
+  assert.equal(formatTokens(1_600_000_000, zhUnits), '16亿')
+  assert.equal(formatTokens(999_999, zhUnits), '100万', 'rounded to the 万 place, not promoted')
+
+  assert.equal(formatPercent(0.342), '34.2%')
+  assert.equal(formatPercent(0.5), '50%', 'a whole percentage drops its decimal')
+  assert.equal(formatPercent(0.0123), '1.2%')
+  assert.equal(formatPercent(0), '0%')
+  assert.equal(formatPercent(undefined), '0%')
+
+  assert.equal(formatDuration(8_040_000, tEn), '2h 14m')
+  assert.equal(formatDuration(840_000, tEn), '14m')
+  assert.equal(formatDuration(0, tEn), '0m')
+  assert.equal(formatDuration(30_000, tEn), '1m', 'half a minute is still a minute')
+  assert.equal(formatDuration(7_200_000, tZh), '2 小时 0 分')
+
+  assert.equal(usageDaysText(tEn, 0), '0 days')
+  assert.equal(usageDaysText(tEn, 1), '1 day')
+  assert.equal(usageDaysText(tEn, 3), '3 days')
+  assert.equal(usageDaysText(tZh, 3), '3 天')
+}
+
+// 38 — the page buckets the same days three ways, and never invents one.
+{
+  const view = sampleUsageView()
+  const scoped = usageScope(view, 'all')
+
+  const daily = usageBuckets(scoped, 'daily')
+  assert.deepEqual(daily.map(bucket => bucket.key), ['2026-03-09', '2026-03-10', '2026-03-16'])
+  assert.deepEqual(daily.map(bucket => bucket.label), ['03-09', '03-10', '03-16'], 'a day label is the month and day')
+  assert.deepEqual(daily[0].values, { 'deepseek-v4': 100, 'claude-sonnet': 50 })
+  assert.equal(daily[1].total, 60, 'a day with one model is still a day')
+  assert.deepEqual(daily[2].values, { 'deepseek-v4': 40, 'gpt-small': 10 })
+
+  const weekly = usageBuckets(scoped, 'weekly')
+  assert.deepEqual(weekly.map(bucket => bucket.key), ['2026-03-09', '2026-03-16'], 'one bucket per week, keyed by its Monday')
+  assert.deepEqual(weekly[0].values, { 'deepseek-v4': 160, 'claude-sonnet': 50 }, 'the week sums its days')
+  assert.equal(weekly[0].total, 210)
+  assert.deepEqual(weekly[1].values, { 'deepseek-v4': 40, 'gpt-small': 10 })
+
+  const cumulative = usageBuckets(scoped, 'cumulative')
+  assert.deepEqual(cumulative.map(bucket => bucket.values['deepseek-v4']), [100, 160, 200], 'cumulative only ever adds')
+  assert.deepEqual(cumulative.map(bucket => bucket.values['claude-sonnet']), [50, 50, 50], 'a model silent on a day keeps its running total')
+  // A model that has not appeared yet is absent from the bucket, and its series
+  // reads that absence as the zero it is.
+  assert.deepEqual(cumulative.map(bucket => bucket.values['gpt-small'] ?? 0), [0, 0, 10])
+  assert.deepEqual(usageSeries(cumulative).find(entry => entry.model === 'gpt-small').values, [0, 0, 10])
+  assert.equal(cumulative[2].total, 260)
+  assert.equal(view.totals.total, 120_200_000, 'the sample total is the Host counting, not the day sums')
+
+  // A zero day is a real zero: it stays in the daily list and its total is zero.
+  const zeroDay = usageBuckets({ byDay: [{ date: '2026-04-01', byModel: {} }, { date: '2026-04-02', byModel: { a: 5 } }] }, 'daily')
+  assert.deepEqual(zeroDay.map(bucket => bucket.total), [0, 5], 'an empty day is not a gap')
+  assert.deepEqual(zeroDay[0].values, {})
+
+  // Weeks start on Monday, in UTC calendar fields.
+  assert.equal(weekStart('2026-03-09'), '2026-03-09', 'a Monday is its own week start')
+  assert.equal(weekStart('2026-03-15'), '2026-03-09', 'a Sunday belongs to the Monday before it')
+  assert.equal(weekStart('2026-03-16'), '2026-03-16')
+  assert.equal(weekStart('not a day'), 'not a day')
+  assert.deepEqual(parseDay('2026-03-09'), { year: 2026, month: 3, day: 9 })
+  assert.equal(parseDay('2026-3-9'), undefined)
+  assert.equal(isoDay(new Date(Date.UTC(2026, 2, 9))), '2026-03-09')
+
+  assert.deepEqual(usageBuckets(scoped, 'nonsense').map(bucket => bucket.key), daily.map(bucket => bucket.key), 'an unknown range is the default one')
+  assert.deepEqual(usageBuckets({ byDay: [] }, 'daily'), [])
+  assert.deepEqual(usageBuckets(undefined, 'daily'), [])
+  assert.deepEqual(
+    finishBucket({ key: '2026-03-09', values: { a: 0, b: 3 } }).values,
+    { b: 3 },
+    'a model with nothing to show is not a series',
+  )
+}
+
+// 39 — the series: biggest models, the rest folded, shares from what is drawn.
+{
+  const buckets = usageBuckets(usageScope(sampleUsageView(), 'all'), 'daily')
+  const series = usageSeries(buckets)
+  assert.deepEqual(series.map(entry => entry.model), ['deepseek-v4', 'claude-sonnet', 'gpt-small'], 'ranked by total')
+  assert.deepEqual(series.map(entry => entry.total), [200, 50, 10])
+  assert.deepEqual(series.map(entry => entry.values), [[100, 60, 40], [50, 0, 0], [0, 0, 10]], 'a silent day is a zero, per series')
+  const shareSum = series.reduce((sum, entry) => sum + entry.share, 0)
+  assert.ok(Math.abs(shareSum - 1) < 1e-9, 'shares are of the drawn total and add up to one')
+  assert.equal(series[0].share, 200 / 260, 'the Host\'s own share field is not consulted')
+
+  // More models than colours: the tail folds into one neutral series.
+  const many = {
+    byDay: [
+      { date: '2026-01-01', byModel: { a: 60, b: 50, c: 40, d: 30, e: 20, f: 10, g: 5 } },
+    ],
+  }
+  const folded = usageSeries(usageBuckets(many, 'daily'))
+  assert.equal(folded.length, USAGE_SERIES_MAX + 1, 'five models, then everything else')
+  assert.deepEqual(folded.slice(0, USAGE_SERIES_MAX).map(entry => entry.model), ['a', 'b', 'c', 'd', 'e'])
+  const other = folded[folded.length - 1]
+  assert.equal(other.model, USAGE_OTHER)
+  assert.equal(other.other, true)
+  assert.equal(other.total, 15, 'the remainder is the sum of what was folded')
+  assert.equal(other.colour, 'var(--edh-usage-other)', 'Other is the neutral, never a categorical hue')
+  assert.ok(Math.abs(folded.reduce((sum, entry) => sum + entry.share, 0) - 1) < 1e-9, 'folding never loses a token')
+
+  // Colour is by name, so a model keeps it when its numbers move.
+  const one = usagePalette(['b', 'a'])
+  const two = usagePalette(['a', 'b'])
+  assert.equal(one.get('a'), two.get('a'), 'the same model, the same colour')
+  assert.equal(one.get('b'), two.get('b'))
+  assert.equal(usagePalette(['zz', 'aa']).get('aa'), usagePalette(['aa']).get('aa'), 'a model that stays keeps its colour')
+  assert.equal(new Set([...one.values()]).size, 2, 'two models never share a colour')
+
+  // The palette is ours, and never the interactive accent.
+  assert.equal(USAGE_PALETTE.length, 6)
+  for (const colour of USAGE_PALETTE) {
+    assert.match(colour, /^#[0-9a-f]{6}$/u, `${colour} is a literal colour`)
+    assert.notEqual(colour.toLowerCase(), 'var(--dsw-alias-brand-primary)')
+  }
+  for (const entry of series) {
+    assert.equal(entry.colour.includes('--dsw-alias-brand-primary'), false, 'data is never painted with the accent')
+    assert.match(entry.colour, /^var\(--edh-usage-[a-z0-9]+\)$/u, `${entry.colour} is one of our palette variables`)
+  }
+  assert.equal(USAGE_NEUTRAL, '#787c84', 'the neutral Other is drawn in')
+
+  // The stylesheet declares exactly those values, so a chip and a line cannot
+  // drift from the palette array the tests pin.
+  for (const [index, colour] of USAGE_PALETTE.entries()) {
+    assert.ok(USAGE_CSS.includes(`--edh-usage-${index + 1}:${colour}`), `the stylesheet declares --edh-usage-${index + 1}`)
+  }
+  assert.ok(USAGE_CSS.includes(`--edh-usage-other:${USAGE_NEUTRAL}`), 'and the neutral with it')
+  assert.equal(USAGE_CSS.includes('--dsw-alias-brand-primary:' + USAGE_PALETTE[0]), false)
+}
+
+// 40 — the chart's maths: a scale from the data, and a dot instead of a path of one.
+{
+  assert.deepEqual(usageScale(0), { max: 0, ticks: [0] }, 'no data means no invented maximum')
+  assert.deepEqual(usageScale(undefined), { max: 0, ticks: [0] })
+  const hundred = usageScale(100)
+  assert.equal(hundred.max, 100)
+  assert.deepEqual(hundred.ticks, [0, 25, 50, 75, 100], 'a round step that covers the tallest point')
+  assert.equal(usageScale(97).max, 100, 'the axis is rounded up, not truncated to the data')
+  assert.ok(usageScale(97).max >= 97)
+  assert.equal(usageScale(4).ticks[0], 0, 'every axis starts at zero')
+  for (const sample of [1, 7, 99, 1000, 123_456, 120_200_000]) {
+    const scale = usageScale(sample)
+    assert.ok(scale.max >= sample, `${sample} fits under ${scale.max}`)
+    assert.deepEqual(scale.ticks, [...scale.ticks].sort((a, b) => a - b), 'ticks are ordered')
+    for (const tick of scale.ticks) assert.equal(Number.isFinite(tick), true)
+  }
+
+  const none = usageGeometry(0)
+  assert.deepEqual(none.xs, [], 'no days, no x positions')
+  const one = usageGeometry(1)
+  assert.equal(one.xs.length, 1)
+  assert.equal(one.xs[0], (one.x0 + one.x1) / 2, 'a single day sits in the middle')
+  const many = usageGeometry(4)
+  assert.equal(many.xs.length, 4)
+  assert.equal(many.xs[0], many.x0)
+  assert.equal(many.xs[3], many.x1)
+  assert.deepEqual(many.xs, [...many.xs].sort((a, b) => a - b), 'days run left to right')
+
+  // One point: a dot, never a degenerate path.
+  const singlePoint = usagePoints([5], one, usageScale(5))
+  assert.equal(singlePoint.length, 1, 'one day is one point')
+  assert.equal(usagePath(singlePoint), '', 'a single point is not a path')
+  assert.deepEqual(usageDot(singlePoint), singlePoint[0], 'it is drawn as a dot')
+  assert.equal(usageDot([]), undefined)
+  assert.equal(usageDot([{ x: 1, y: 2 }, { x: 3, y: 4 }]), undefined, 'two points are a line')
+
+  // Many points: straight segments, one per gap.
+  const points = usagePoints([0, 5, 2.5, 5], many, usageScale(5))
+  const path = usagePath(points)
+  assert.equal((path.match(/L/gu) ?? []).length, 3, 'three segments for four days')
+  assert.ok(path.startsWith('M'), 'a path starts at the first day')
+  assert.equal(path.includes('C'), false, 'no curve ever invents a value between days')
+  for (const point of points) {
+    assert.equal(Number.isFinite(point.x), true)
+    assert.equal(Number.isFinite(point.y), true)
+  }
+  assert.equal(points[0].y, many.y1, 'zero sits on the baseline')
+  assert.ok(points[1].y < points[0].y, 'a bigger number is higher on the screen')
+  assert.equal(points[1].y > many.y0, true, 'the axis is rounded up, so data never touches the frame')
+  const topOfAxis = usagePoints([usageScale(5).max], one, usageScale(5))[0]
+  assert.equal(topOfAxis.y, one.y0, 'the axis maximum is the top of the plot')
+  for (const point of points) {
+    assert.ok(point.y >= many.y0 && point.y <= many.y1, 'every point stays inside the plot')
+  }
+
+  // An all-zero day: everything on the baseline, and no arithmetic that divides by zero.
+  const zeros = usagePoints([0, 0, 0], usageGeometry(3), usageScale(0))
+  assert.equal(zeros.every(point => point.y === usageGeometry(3).y1), true, 'every zero is the baseline')
+  assert.equal(usagePath(zeros).includes('NaN'), false, 'no NaN coordinates')
+  assert.equal(usagePath(zeros).includes('Infinity'), false)
+}
+
+// 41 — the donut: proportional slices of the same totals the list prints.
+{
+  const series = usageSeries(usageBuckets(usageScope(sampleUsageView(), 'all'), 'daily'))
+  const circumference = 2 * Math.PI * USAGE_DONUT.radius
+  const slices = donutSlices(series)
+  assert.equal(slices.length, 3)
+  assert.ok(Math.abs(slices.reduce((sum, slice) => sum + slice.length, 0) - circumference) < 1e-6, 'the slices close the ring')
+  assert.ok(Math.abs(slices[0].share - 200 / 260) < 1e-9)
+  assert.equal(slices[0].offset, -0, 'the first slice starts at the top')
+  assert.ok(Math.abs(slices[1].offset + slices[0].length) < 1e-9, 'each slice starts where the last ended')
+
+  const single = donutSlices([{ model: 'only', total: 10, colour: 'var(--edh-usage-1)', other: false }])
+  assert.equal(single.length, 1)
+  assert.ok(Math.abs(single[0].length - circumference) < 1e-9, 'one model is a full ring')
+  assert.equal(single[0].share, 1)
+
+  assert.deepEqual(donutSlices([]), [], 'no series, no ring')
+  assert.deepEqual(donutSlices([{ model: 'x', total: 0, colour: 'var(--edh-usage-1)' }]), [])
+  assert.equal(slices[2].other, false)
+  const folded = donutSlices(usageSeries(usageBuckets({
+    byDay: [{ date: '2026-01-01', byModel: { a: 6, b: 5, c: 4, d: 3, e: 2, f: 1 } }],
+  }, 'daily')))
+  assert.equal(folded[folded.length - 1].other, true, 'the folded remainder is one neutral slice')
+  assert.equal(folded[folded.length - 1].colour, 'var(--edh-usage-other)')
+}
+
+
+// 42 — the page: figures, two charts, a legend that filters, and filters that say
+// what they mean.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const units = usageUnits('en', t)
+  const calls = []
+  const actions = {
+    retry: () => calls.push('retry'),
+    refresh: action => calls.push(`refresh:${action}`),
+    scope: value => calls.push(`scope:${value}`),
+    range: value => calls.push(`range:${value}`),
+    toggle: model => calls.push(`toggle:${model}`),
+  }
+  const base = {
+    enabled: true,
+    view: { status: 'ready', data: sampleUsageView(), failure: '' },
+    scope: 'all',
+    range: 'daily',
+    hidden: {},
+    busy: '',
+    notice: { text: '', tone: 'bad' },
+    units,
+    actions,
+  }
+  const page = (overrides = {}) => stub.usagePage(t, { ...base, ...overrides })
+  const ready = page()
+  const text = treeText(ready)
+
+  assert.deepEqual(treeByType(ready, 'h2').map(node => node.props.children[0]), ['Usage'], 'one heading')
+  assert.ok(hasText(ready, 'Europe/London'), 'the intro names the zone the days are bucketed in')
+
+  // The stat row: five figures over their labels, hairlines between.
+  const stats = treeByType(ready, 'div').find(node => node.props.className === 'edh-usage-stats')
+  const cells = treeByType(stats, 'div').filter(node => node !== stats).map(cell => {
+    const spans = treeByType(cell, 'span')
+    const byClass = name => spans.find(span => span.props.className === name)
+    return {
+      figure: byClass('edh-usage-statFigure').props.children[0],
+      label: byClass('edh-usage-statLabel').props.children[0],
+      note: byClass('edh-usage-statNote') === undefined
+        ? ''
+        : byClass('edh-usage-statNote').props.children[0],
+    }
+  })
+  assert.equal(cells.length, 5, 'five figures')
+  assert.deepEqual(cells.map(cell => cell.label), [
+    'Total tokens',
+    'Peak day',
+    'Longest session',
+    'Current streak',
+    'Longest streak',
+  ])
+  assert.equal(cells[0].figure, '120.2M', 'the total in the reader\'s units')
+  assert.equal(cells[0].note, '412 messages in 17 sessions')
+  assert.equal(cells[1].figure, '150', 'the peak day is its own total')
+  assert.equal(cells[1].note, '2026-03-09')
+  assert.equal(cells[2].figure, '2h 14m', 'the longest session is a length')
+  assert.equal(cells[2].note, 'Refactor the parser')
+  assert.equal(cells[3].figure, '3 days')
+  assert.equal(cells[4].figure, '11 days')
+
+  // The trend chart: an accessible name that names the range and the models.
+  const chart = treeByType(ready, 'svg').find(node => node.props.className === 'edh-usage-chart')
+  assert.ok(chart, 'the trend is hand-built SVG')
+  assert.equal(chart.props.role, 'img', 'and it has a role')
+  assert.match(chart.props['aria-label'], /Daily token trend/u)
+  assert.match(chart.props['aria-label'], /2026-03-09 to 2026-03-16/u, 'the label carries the range')
+  assert.match(chart.props['aria-label'], /3 models/u)
+  assert.equal(chart.props.viewBox, `0 0 ${USAGE_CHART.width} ${USAGE_CHART.height}`)
+  assert.equal(treeByType(chart, 'path').length, 3, 'one line per drawn model')
+  for (const path of treeByType(chart, 'path')) {
+    assert.equal(path.props.fill, 'none', 'lines, not areas')
+    assert.match(path.props.stroke, /^var\(--edh-usage-\d\)$/u, 'a line is painted from the palette')
+    assert.equal(path.props.d.includes('C'), false, 'no smoothing')
+  }
+
+  // The legend: buttons, pressed while their series is drawn.
+  const legend = treeByType(ready, 'div').find(node => node.props.className === 'edh-usage-legend')
+  const legendButtons = treeByType(legend, 'button')
+  assert.deepEqual(legendButtons.map(button => button.props.children[1].props.children[0]), [
+    'deepseek-v4',
+    'claude-sonnet',
+    'gpt-small',
+  ])
+  assert.deepEqual(legendButtons.map(button => button.props['aria-pressed']), [true, true, true], 'all drawn to begin with')
+  legendButtons[0].props.onClick()
+  assert.deepEqual(calls, ['toggle:deepseek-v4'])
+  calls.length = 0
+
+  const filtered = page({ hidden: { 'deepseek-v4': true } })
+  const filteredChart = treeByType(filtered, 'svg').find(node => node.props.className === 'edh-usage-chart')
+  assert.equal(treeByType(filteredChart, 'path').length, 2, 'hiding a legend entry hides its line')
+  assert.deepEqual(
+    treeByType(treeByType(filtered, 'div').find(node => node.props.className === 'edh-usage-legend'), 'button')
+      .map(button => button.props['aria-pressed']),
+    [false, true, true],
+    'and its button says so',
+  )
+
+  // The donut: the total in the middle, and a list that is real text.
+  const donut = treeByType(ready, 'svg').find(node => node.props.className === 'edh-usage-donut')
+  assert.ok(donut, 'the share is SVG too')
+  assert.equal(donut.props.role, 'img')
+  assert.match(donut.props['aria-label'], /deepseek-v4, claude-sonnet, gpt-small/u)
+  assert.match(donut.props['aria-label'], /120\.2M tokens/u)
+  const circleText = treeByType(donut, 'text').map(node => node.props.children[0])
+  assert.deepEqual(circleText, ['120.2M', 'tokens'], 'the figure in the middle, with its unit')
+  const slices = treeByType(donut, 'circle').filter(node => typeof node.props.stroke === 'string')
+  assert.equal(slices.length, 3, 'one arc per model')
+
+  const list = treeByType(ready, 'ul').find(node => node.props.className === 'edh-usage-models')
+  const rows = treeByType(list, 'li')
+  assert.equal(rows.length, 3, 'one row per model')
+  assert.deepEqual(rows.map(row => treeByType(row, 'span')
+    .find(span => span.props.className === 'edh-usage-modelShare').props.children[0]), ['76.9%', '19.2%', '3.8%'])
+  assert.ok(treeText(rows[0]).includes('deepseek-v4'))
+  assert.ok(treeText(rows[0]).includes('200 tokens'), 'the count sits beneath the name')
+
+  // The filters: two groups, pressed states, and a sentence per range meaning.
+  const groups = treeByType(ready, 'div').filter(node => node.props.className === 'edh-usage-group')
+  assert.equal(groups.length, 2, 'scope and range')
+  assert.deepEqual(treeByType(groups[0], 'button').map(button => button.props['aria-pressed']), [true, false])
+  assert.deepEqual(treeByType(groups[1], 'button').map(button => button.props['aria-pressed']), [true, false, false])
+  assert.equal(treeByType(groups[0], 'button')[1].props.disabled, true, 'no split in this answer, so the option cannot lie')
+  assert.ok(hasText(ready, 'The Host counts every session together'))
+  assert.ok(hasText(ready, 'Daily buckets by calendar day. Weekly sums each week from Monday. Cumulative adds every day up to that point.'))
+
+  treeByType(groups[1], 'button')[2].props.onClick()
+  assert.deepEqual(calls, ['range:cumulative'])
+  calls.length = 0
+  treeByType(groups[0], 'button')[0].props.onClick()
+  assert.deepEqual(calls, ['scope:all'])
+  calls.length = 0
+
+  // A split, when the Host sends one, makes the option live and narrows the page.
+  const splitView = { ...sampleUsageView() }
+  splitView.scopes = {
+    main: {
+      totals: { input: 10, output: 10, total: 20, messages: 2, sessions: 1 },
+      byModel: [{ model: 'deepseek-v4', total: 20 }],
+      byDay: [{ date: '2026-03-09', byModel: { 'deepseek-v4': 20 }, total: 20 }],
+    },
+  }
+  assert.equal(usageScope(splitView, 'all').supported, true)
+  assert.equal(usageScope(splitView, 'main').totals.total, 20, 'main sessions only really narrows')
+  assert.equal(usageScope(splitView, 'main').selected, 'main')
+  assert.equal(usageScope(sampleUsageView(), 'main').selected, 'all', 'without a split, choosing main stays on every session')
+  const mainPage = page({ view: { status: 'ready', data: splitView, failure: '' }, scope: 'main' })
+  const mainGroups = treeByType(mainPage, 'div').filter(node => node.props.className === 'edh-usage-group')
+  assert.equal(treeByType(mainGroups[0], 'button')[1].props.disabled, false, 'a split makes the option live')
+  assert.deepEqual(treeByType(mainGroups[0], 'button').map(button => button.props['aria-pressed']), [false, true])
+  assert.equal(hasText(mainPage, 'The Host counts every session together'), false, 'and the caveat goes away')
+
+  // The quiet footer: history being read, or when the numbers were last updated.
+  assert.ok(text.includes('Reading history… 42 of 200'), 'backfill progress while history is being read')
+  const fresh = page({
+    view: {
+      status: 'ready',
+      data: { ...sampleUsageView(), backfill: { state: 'done', sessionsDone: 200, sessionsTotal: 200 } },
+      failure: '',
+    },
+  })
+  assert.match(treeText(fresh).find(line => line.startsWith('Updated ')) ?? '', /^Updated /u)
+  assert.equal(treeText(fresh).some(line => line.startsWith('Reading history…')), false, 'a finished read says when, not how far')
+
+  // The notes: the Host's caveats, in its own words, as quiet lines.
+  assert.ok(hasText(ready, 'Title generation and search calls are not counted.'))
+  assert.ok(hasText(ready, 'Usage for subagents is attributed to the day it was spent.'))
+  assert.equal(treeByType(ready, 'p').filter(node => node.props.className === 'edh-usage-note').length, 2)
+
+  // Refresh is one control with one name.
+  const refresh = treeByType(ready, 'button').find(button => button.props.children.includes('Refresh'))
+  assert.ok(refresh)
+  refresh.props.onClick()
+  assert.deepEqual(calls, ['refresh:refresh'])
+  calls.length = 0
+  const busy = page({ busy: 'refresh' })
+  assert.ok(treeText(busy).includes('Refreshing…'))
+  assert.equal(
+    treeByType(busy, 'button').find(button => button.props.children.includes('Refresh')).props.disabled,
+    true,
+    'the button keeps its name while it works',
+  )
+
+  // The hidden text alternative carries the same numbers the lines do.
+  const table = treeByType(ready, 'table').find(node => node.props.className === 'edh-usage-sr')
+  assert.ok(table, 'the chart has a text alternative')
+  const header = treeByType(table, 'th').map(node => node.props.children[0])
+  assert.deepEqual(header, ['Daily token trend', 'deepseek-v4', 'claude-sonnet', 'gpt-small', '2026-03-09', '2026-03-10', '2026-03-16'], 'every row and column is named')
+  const bodyRows = treeByType(treeByType(table, 'tbody')[0], 'tr')
+  assert.equal(bodyRows.length, 3, 'one row per day')
+  assert.deepEqual(treeByType(bodyRows[0], 'td').map(cell => cell.props.children[0]), ['100', '50', '0'], 'the same numbers, formatted the same way')
+  assert.deepEqual(treeByType(bodyRows[2], 'td').map(cell => cell.props.children[0]), ['40', '0', '10'])
+}
+
+// 43 — every state: no chart without data, no control without a service.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const units = usageUnits('en', t)
+  const actions = { retry() {}, refresh() {}, scope() {}, range() {}, toggle() {} }
+  const base = {
+    enabled: true,
+    view: { status: 'ready', data: sampleUsageView(), failure: '' },
+    scope: 'all',
+    range: 'daily',
+    hidden: {},
+    busy: '',
+    notice: { text: '', tone: 'bad' },
+    units,
+    actions,
+  }
+  const page = overrides => stub.usagePage(t, { ...base, ...overrides })
+
+  const loading = page({ view: { status: 'loading', data: undefined, failure: '' } })
+  assert.deepEqual(treeText(loading), ['Usage', 'Token usage across every session.', 'Reading usage…'])
+  assert.equal(treeByType(loading, 'svg').length, 0)
+  assert.equal(treeByType(loading, 'button').length, 0)
+
+  const failed = page({ view: { status: 'error', data: undefined, failure: 'api/edh.usage answered 500' } })
+  assert.ok(treeText(failed).includes('The usage data could not be read.'))
+  assert.ok(treeText(failed).includes('api/edh.usage answered 500'))
+  assert.deepEqual(treeButtons(failed), ['Retry'])
+
+  const unavailable = page({ view: { status: 'unavailable', data: undefined, failure: '' } })
+  assert.deepEqual(treeText(unavailable), [
+    'Usage',
+    'Token usage across every session.',
+    'This profile has no usage services, so there is nothing to count here.',
+  ])
+  assert.equal(treeByType(unavailable, 'button').length, 0, 'no dead control')
+  assert.equal(treeByType(unavailable, 'input').length, 0)
+  assert.equal(treeByType(unavailable, 'svg').length, 0, 'and no chart in front of nothing')
+
+  // The row switched off while the page is open.
+  const off = page({ enabled: false })
+  assert.deepEqual(treeText(off), [
+    'Usage',
+    'Token usage across every session, bucketed by day in Europe/London.',
+    'Usage is off. Turn it on with the EDH switch.',
+  ], 'the frame, the intro, and the one sentence')
+
+  // No usage yet: one sentence, no chart, and the one action that can help.
+  const empty = page({
+    view: {
+      status: 'ready',
+      data: {
+        ...sampleUsageView(),
+        totals: usageTotals({}),
+        byModel: [],
+        byDay: [],
+        stats: { peakDay: {}, longestSession: {}, currentStreakDays: 0, longestStreakDays: 0 },
+      },
+      failure: '',
+    },
+  })
+  assert.ok(treeText(empty).includes('No token usage has been recorded yet.'))
+  assert.equal(treeByType(empty, 'svg').length, 0, 'no chart drawn with fake axes')
+  assert.equal(treeByType(empty, 'table').length, 0)
+  assert.deepEqual(treeButtons(empty), ['Read history again'], 'the one control that can fill it')
+
+  // A Host that answers without a peak day or a longest session still gets a
+  // readable row: the figure is an honest dash and the note says why.
+  const bare = page({
+    view: {
+      status: 'ready',
+      data: {
+        ...sampleUsageView(),
+        stats: { peakDay: {}, longestSession: {}, currentStreakDays: 0, longestStreakDays: 0 },
+      },
+      failure: '',
+    },
+  })
+  const bareText = treeText(bare)
+  assert.ok(bareText.includes('No peak day yet'))
+  assert.ok(bareText.includes('No session recorded yet'))
+  assert.deepEqual(bareText.filter(line => line === '—'), ['—', '—'], 'an absent figure is a dash, not a zero')
+
+  // Days with no rows at all: the same rule, on the chart rather than the page.
+  const noDays = page({
+    view: {
+      status: 'ready',
+      data: { ...sampleUsageView(), byDay: [] },
+      failure: '',
+    },
+  })
+  assert.ok(treeText(noDays).includes('No usage in this range.'))
+  assert.equal(treeByType(noDays, 'svg').length, 0, 'an empty range does not get an axis either')
+}
+
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
 console.log('edh mcp: settings section checks passed')
 console.log('edh update: control and reload checks passed')
 console.log('edh remote: page, account, and address checks passed')
+console.log('edh usage: page, chart, and formatter checks passed')
 console.log('edh btw: side chat command checks passed')
 console.log('edh switch: all checks passed')

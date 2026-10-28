@@ -57,3 +57,10 @@
     - id: edh-remote
       name: '@moreweb/edh/remote'
       config: {}
+
+    # usage — token accounting across every stored Session: totals, per model,
+    # per local day. The row owns the route and a background scan of the
+    # Session logs, cached under the profile; the browser half draws the page.
+    - id: edh-usage
+      name: '@moreweb/edh/usage'
+      config: {}

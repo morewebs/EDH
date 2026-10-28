@@ -154,6 +154,10 @@ window.__ModuleLoader__.load({
       remoteSessions: 'Phones signed in: {count}',
       remoteSessionOne: '1 phone signed in',
       remoteNoSessions: 'No phone signed in',
+      remotePhoneHint: 'The phone must be on the same network as this computer.',
+      remoteQrShow: 'Show code',
+      remoteQrHide: 'Hide code',
+      remoteQrLabel: 'QR code for {address}',
       remoteActionFailed: 'That change did not save. Try again, and check the port.',
       remoteSignedOut: 'Every phone was signed out.',
       usageNav: 'Usage',
@@ -345,6 +349,10 @@ window.__ModuleLoader__.load({
       remoteSessions: '已登录手机：{count} 台',
       remoteSessionOne: '已登录 1 台手机',
       remoteNoSessions: '没有手机登录',
+      remotePhoneHint: '手机必须和这台电脑在同一个网络上。',
+      remoteQrShow: '显示二维码',
+      remoteQrHide: '隐藏二维码',
+      remoteQrLabel: '{address} 的二维码',
       remoteActionFailed: '改动未保存。请重试，并检查端口。',
       remoteSignedOut: '所有设备已退出。',
       usageNav: '用量',
@@ -441,6 +449,8 @@ window.__ModuleLoader__.load({
     const REMOTE_DEBUG_KEY = 'edh:remote'
     /** Separate breadcrumb for the usage page. */
     const USAGE_DEBUG_KEY = 'edh:usage'
+    /** Separate breadcrumb for the mobile layer. */
+    const MOBILE_DEBUG_KEY = 'edh:mobile'
     /** Separate breadcrumb for the side-chat commands. */
     const BTW_DEBUG_KEY = 'edh:btw'
 
@@ -478,6 +488,10 @@ window.__ModuleLoader__.load({
 
     function usageWrite(payload) {
       writeBreadcrumb(USAGE_DEBUG_KEY, payload)
+    }
+
+    function mobileWrite(payload) {
+      writeBreadcrumb(MOBILE_DEBUG_KEY, payload)
     }
 
     function btwWrite(payload) {
@@ -3315,6 +3329,12 @@ window.__ModuleLoader__.load({
       const copy = source.copy !== null && typeof source.copy === 'object'
         ? source.copy
         : { address: '', copied: false }
+      /**
+       * The address the reader asked to see as a code, not a flag: a code drawn
+       * for one address must not survive the list changing under it, so the block
+       * only renders while this still names the first line.
+       */
+      const code = typeof source.code === 'string' ? source.code : ''
       const ids = source.ids !== null && typeof source.ids === 'object' ? source.ids : {}
       const actions = source.actions !== null && typeof source.actions === 'object' ? source.actions : {}
       const busy = typeof source.busy === 'string' ? source.busy : ''
@@ -3372,6 +3392,12 @@ window.__ModuleLoader__.load({
       const stateWord = remoteState(data)
       const startable = stateWord === 'off' || stateWord === 'failed'
       const lines = remoteAddressLines(data)
+      // The code is offered for the first address; `shown` is true only while the
+      // reader's choice still names that address, which is how a code collapses
+      // by itself when the listener moves or the list is rebuilt.
+      const firstLine = lines[0] ?? ''
+      const qrOffer = firstLine === '' ? undefined : remoteQrModel(firstLine)
+      const shown = code !== '' && code === firstLine && qrOffer !== undefined
       const blocked = field => (fieldError.field === field
         ? { 'aria-invalid': true, 'aria-describedby': ids.error }
         : {})
@@ -3499,6 +3525,8 @@ window.__ModuleLoader__.load({
               ? h('p', { className: 'edh-remote-hint' }, t('remoteAddressesWaiting'))
               : [
                 h('p', { key: 'hint', className: 'edh-remote-hint' }, t('remoteAddressesHint')),
+                // The failure people actually hit is a phone on another network.
+                h('p', { key: 'phone', className: 'edh-remote-hint' }, t('remotePhoneHint')),
                 h('ul', { key: 'list', className: 'edh-remote-addresses' },
                   lines.map(line => h('li', { key: line, className: 'edh-remote-address' },
                     h('code', { className: 'edh-remote-url' }, line),
@@ -3510,6 +3538,35 @@ window.__ModuleLoader__.load({
                       },
                     }, copy.address === line && copy.copied === true ? t('copied') : t('copy')),
                   ))),
+                // The code is offered for the first address and for the address
+                // the reader asked about: when the list changes, `shown` no longer
+                // matches and the block collapses on its own.
+                qrOffer === undefined
+                  ? null
+                  : h('div', { key: 'qr', className: 'edh-remote-qrBlock' },
+                    h('button', {
+                      type: 'button',
+                      className: 'edh-remote-button edh-remote-buttonSm',
+                      'aria-expanded': shown,
+                      onClick: () => {
+                        call('code')
+                      },
+                    }, shown ? t('remoteQrHide') : t('remoteQrShow')),
+                    shown
+                      ? [
+                        remoteQrSvg(qrOffer, t('remoteQrLabel', { address: lines[0] })),
+                        h('p', { key: 'qr-address', className: 'edh-remote-qrAddress' }, lines[0]),
+                        h('button', {
+                          key: 'qr-copy',
+                          type: 'button',
+                          className: 'edh-remote-button edh-remote-buttonSm',
+                          onClick: () => {
+                            call('copy', lines[0])
+                          },
+                        }, copy.address === lines[0] && copy.copied === true ? t('copied') : t('copy')),
+                      ]
+                      : null,
+                  ),
               ],
           ),
         ),
@@ -3557,6 +3614,8 @@ window.__ModuleLoader__.load({
         const [saved, setSaved] = React.useState(false)
         const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
         const [copy, setCopy] = React.useState({ address: '', copied: false, at: 0 })
+        /** The address the QR was asked for; empty means no code is showing. */
+        const [code, setCode] = React.useState('')
         const seeded = React.useRef(false)
         const base = React.useId()
         const ids = {
@@ -3754,6 +3813,13 @@ window.__ModuleLoader__.load({
           setCopy({ address, copied, at: Date.now() })
         }, [])
 
+        // One code, for the address on screen. Nothing else about the page
+        // changes, so the code is state and not a setting.
+        const onCode = React.useCallback(() => {
+          const address = remoteAddressLines(view.data)[0] ?? ''
+          setCode(previous => (previous === address ? '' : address))
+        }, [view])
+
         return remotePage(t, {
           enabled,
           view,
@@ -3763,6 +3829,7 @@ window.__ModuleLoader__.load({
           saved,
           notice,
           copy,
+          code,
           ids,
           actions: {
             retry: onRetry,
@@ -3771,6 +3838,7 @@ window.__ModuleLoader__.load({
             toggle: onToggle,
             signOut: onSignOut,
             copy: onCopy,
+            code: onCode,
           },
         })
       }
@@ -3816,6 +3884,9 @@ window.__ModuleLoader__.load({
       '.edh-remote-address{align-items:center;gap:8px;display:flex}',
       '.edh-remote-url{color:var(--dsw-alias-label-primary);font-family:var(--dsh-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px;line-height:18px;word-break:break-all}',
       '.edh-remote-warning{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-remote-qrBlock{align-items:flex-start;flex-direction:column;gap:8px;margin-top:10px;display:flex}',
+      '.edh-remote-qr{width:200px;height:200px;border-radius:var(--dsw-radius-sm);box-shadow:0 0 0 .5px var(--dsw-alias-border-l3);background:#fff}',
+      '.edh-remote-qrAddress{color:var(--dsw-alias-label-secondary);margin:0;font-family:var(--dsh-font-mono,ui-monospace,Menlo,monospace);font-size:12px;line-height:18px;word-break:break-all}',
       '.edh-remote-button{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);justify-content:center;align-items:center;gap:4px;height:28px;padding:0 10px;font:inherit;font-size:12px;line-height:18px;white-space:nowrap;display:inline-flex}',
       '.edh-remote-buttonSm{height:24px;padding:0 8px}',
       '.edh-remote-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
@@ -5169,6 +5240,708 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------------------------------------------------------------------
+    // The mobile layer
+    //
+    // The browser half runs inside the page it is improving, so the phone
+    // experience is a head change rather than proxy surgery: a viewport that
+    // opts into the notch, the web-app metas, the manifest the Host serves, and
+    // one stylesheet. Remote proxies this same page, so a phone inherits all of
+    // it without the proxy knowing anything about it.
+    //
+    // Every change is reversible by construction: an attribute this layer set is
+    // remembered with its previous value (and whether it existed at all), a node
+    // it created is remembered by reference, and disposal puts the document back
+    // exactly as it was found. Turning the row off must leave no trace.
+    // ---------------------------------------------------------------------
+
+    /** The row that governs the whole mobile layer. */
+    const MOBILE_MODULE = '@moreweb/edh/mobile'
+
+    /** The viewport content that makes a phone lay this page out at device width. */
+    const MOBILE_VIEWPORT = 'width=device-width, initial-scale=1, viewport-fit=cover'
+
+    /** The Host's manifest, document-relative so it follows whatever origin serves the page. */
+    const MOBILE_MANIFEST = 'api/edh.mobile/manifest'
+
+    /** Every phone rule runs under this query: a desktop window never sees them. */
+    const MOBILE_QUERY = '(max-width: 860px)'
+
+    /**
+     * Two media-qualified tags, so the browser chrome follows the scheme the
+     * reader's phone is in. The dark value is the Host manifest's own dark
+     * surface, so the meta and the manifest cannot disagree about the same app.
+     */
+    const MOBILE_THEME = [['light', '#ffffff'], ['dark', '#0b0c0e']]
+
+    /** The web-app metas. All three are the shipped spelling, not a rewrite. */
+    const MOBILE_META = [
+      ['mobile-web-app-capable', 'yes'],
+      ['apple-mobile-web-app-capable', 'yes'],
+      ['apple-mobile-web-app-status-bar-style', 'black-translucent'],
+    ]
+
+    /**
+     * The phone stylesheet, in the two blocks the layer means by them.
+     *
+     * Safe: things that can only help or are ignored — text sizing, scroll
+     * chaining, tap behaviour, the 16px floor that stops iOS zooming on focus,
+     * and the notch padding. Layout: the thumb-sized targets, momentum
+     * scrolling, slim scrollbars. Every selector is a tag, an id, a role or an
+     * attribute: the shell's class names are hashed module names, and a guessed
+     * hash is a selector that breaks the day the shell rebuilds.
+     */
+    const MOBILE_CSS = [
+      `@media ${MOBILE_QUERY}{`,
+      // --- safe -------------------------------------------------------------
+      'html{-webkit-text-size-adjust:100%;text-size-adjust:100%}',
+      'body{overscroll-behavior-y:contain}',
+      '*,*:before,*:after{-webkit-tap-highlight-color:rgba(127,127,127,.18)}',
+      'input,textarea,select{font-size:max(16px,1em)}',
+      'button,a,[role=button],[role=tab],[role=menuitem],input,select,textarea{touch-action:manipulation}',
+      '#root{box-sizing:border-box;height:100dvh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}',
+      // --- layout -----------------------------------------------------------
+      'button,[role=button],[role=tab],[role=menuitem]{min-height:44px;min-width:44px}',
+      'a{min-height:44px}',
+      '#root *{-webkit-overflow-scrolling:touch}',
+      '::-webkit-scrollbar{width:6px;height:6px}',
+      '::-webkit-scrollbar-thumb{border-radius:999px}',
+      'textarea{line-height:1.5}',
+      '}',
+    ].join('')
+
+    /**
+     * The same-origin raster icon to hand iOS, when the page really has one.
+     *
+     * iOS ignores an SVG `apple-touch-icon`, so pointing the tag at one would be
+     * a promise the platform silently drops. Only a raster icon of the same
+     * origin is reused; otherwise the link is not added at all, and the phone
+     * falls back to a screenshot of the page.
+     * @param doc - the document to read.
+     * @returns the absolute href, or nothing.
+     */
+    function mobileIconHref(doc) {
+      if (doc === undefined || typeof doc.querySelectorAll !== 'function') return undefined
+      const base = (() => {
+        try {
+          return new URL(String(doc.baseURI ?? 'http://127.0.0.1/'))
+        } catch (error) {
+          return undefined
+        }
+      })()
+      for (const link of [...doc.querySelectorAll('link[rel~="icon"]')]) {
+        const href = String(link.getAttribute('href') ?? '').trim()
+        if (href === '') continue
+        const type = String(link.getAttribute('type') ?? '').toLowerCase()
+        const raster = /^image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon)/u.test(type)
+          || /\.(?:png|jpe?g|webp|ico)(?:[?#]|$)/iu.test(href)
+        if (!raster) continue
+        let resolved
+        try {
+          resolved = new URL(href, base ?? 'http://127.0.0.1/')
+        } catch (error) {
+          continue
+        }
+        if (base !== undefined && resolved.origin !== base.origin) continue
+        return resolved.href
+      }
+      return undefined
+    }
+
+    /**
+     * The mobile layer, as a small reversible change set.
+     *
+     * `apply` is idempotent: a second call while applied changes nothing, so a
+     * re-sync that fires twice cannot duplicate a tag. `withdraw` undoes exactly
+     * what this instance did — it never removes a node it did not add, and never
+     * restores an attribute it did not touch.
+     * @param doc - the document to change; injected so the suite can drive it.
+     * @returns `{ apply, withdraw, applied }`, or `undefined` without a document.
+     */
+    function createMobileLayer(doc) {
+      if (doc === undefined || doc === null || typeof doc.createElement !== 'function') return undefined
+      if (doc.head === undefined || doc.head === null) return undefined
+      /** Nodes this layer created, in creation order. */
+      const created = []
+      /** Attributes this layer changed, with what they were before. */
+      const touched = []
+      let active = false
+
+      const find = selector => (typeof doc.querySelector === 'function' ? doc.querySelector(selector) : null)
+      const make = (tag, attributes) => {
+        const element = doc.createElement(tag)
+        for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value)
+        return element
+      }
+      const add = element => {
+        doc.head.appendChild(element)
+        created.push(element)
+        return element
+      }
+      /** Set an attribute on a node that was already there, remembering its old state. */
+      const upgrade = (element, attribute, value) => {
+        touched.push({
+          element,
+          attribute,
+          present: typeof element.hasAttribute === 'function' ? element.hasAttribute(attribute) : element.getAttribute(attribute) !== null,
+          value: element.getAttribute(attribute),
+        })
+        element.setAttribute(attribute, value)
+      }
+
+      const apply = () => {
+        if (active) return false
+        active = true
+        // The viewport is upgraded in place: a page never gets a second one.
+        const viewport = find('meta[name="viewport"]')
+        if (viewport !== null) upgrade(viewport, 'content', MOBILE_VIEWPORT)
+        else add(make('meta', { name: 'viewport', content: MOBILE_VIEWPORT }))
+        for (const [scheme, colour] of MOBILE_THEME) {
+          add(make('meta', { name: 'theme-color', media: `(prefers-color-scheme: ${scheme})`, content: colour }))
+        }
+        for (const [name, content] of MOBILE_META) add(make('meta', { name, content }))
+        // The manifest is upgraded in place too: the shell ships one.
+        const manifest = find('link[rel="manifest"]')
+        if (manifest !== null) upgrade(manifest, 'href', MOBILE_MANIFEST)
+        else add(make('link', { rel: 'manifest', href: MOBILE_MANIFEST, id: 'edh-mobile-manifest' }))
+        const icon = mobileIconHref(doc)
+        if (icon !== undefined) add(make('link', { rel: 'apple-touch-icon', href: icon, id: 'edh-mobile-icon' }))
+        const style = make('style', { id: 'edh-mobile' })
+        style.textContent = MOBILE_CSS
+        add(style)
+        return true
+      }
+
+      const withdraw = () => {
+        if (!active) return false
+        active = false
+        while (created.length > 0) {
+          const node = created.pop()
+          if (node !== undefined && node.parentNode !== null && node.parentNode !== undefined) node.parentNode.removeChild(node)
+        }
+        while (touched.length > 0) {
+          const entry = touched.pop()
+          if (entry === undefined) continue
+          if (entry.present) entry.element.setAttribute(entry.attribute, entry.value)
+          else entry.element.removeAttribute(entry.attribute)
+        }
+        return true
+      }
+
+      return { apply, withdraw, applied: () => active }
+    }
+
+    /**
+     * Install the mobile layer and keep it in step with its row.
+     *
+     * One effect owns the whole layer: the first sync decides whether it is on,
+     * every controller change re-syncs, and disposal withdraws it — so turning
+     * the row off leaves the document exactly as it was found, and turning it
+     * back on applies it again.
+     * @param ctx - the browser plugin context.
+     * @param controller - the switch controller holding the row states.
+     * @param doc - the document; defaults to the real one.
+     */
+    function installMobileLayer(ctx, controller, doc = (typeof document === 'undefined' ? undefined : document)) {
+      const layer = createMobileLayer(doc)
+      if (layer === undefined) return () => {}
+      ctx.effect(() => {
+        let active = false
+        /** Apply or withdraw, so the document matches the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), MOBILE_MODULE)
+          if (wanted === active) return
+          if (wanted) {
+            if (layer.apply()) active = true
+          } else if (layer.withdraw()) {
+            active = false
+          }
+          mobileWrite({ phase: active ? 'installed' : 'withdrawn' })
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          // Disposal is the third way out, and it leaves the same breadcrumb as
+          // the row switch so a reload and a row-off read the same afterwards.
+          if (layer.withdraw()) mobileWrite({ phase: 'withdrawn', final: true })
+        }
+      }, 'edh: mobile layer')
+      return () => {
+        layer.withdraw()
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // QR codes
+    //
+    // Typing an address on a phone is the real friction in publishing this page,
+    // so the Remote page can draw the address as a QR. The encoder below is
+    // hand-written against ISO/IEC 18004: byte mode, error correction level M,
+    // version chosen from the payload, the eight masks scored by the standard
+    // penalty rules. It draws only when it can encode; an address it cannot fit
+    // is left as text rather than rendered as a graphic that might not scan.
+    // ---------------------------------------------------------------------
+
+    /** Modules of white margin required around the symbol. */
+    const REMOTE_QR_QUIET = 4
+
+    /**
+     * Level-M block structure, versions 1 to 10.
+     *
+     * `ec` is error-correction codewords per block; `blocks` lists
+     * `[blockCount, dataCodewordsPerBlock]`, shortest block first, which is the
+     * order the interleaver needs. Ten versions carry 213 bytes in byte mode —
+     * far past any LAN address — and keeping the table short keeps it auditable:
+     * each row's data and EC codewords must add up to the symbol's capacity,
+     * which the suite checks against the module geometry itself.
+     */
+    const REMOTE_QR_VERSIONS = [
+      { ec: 10, blocks: [[1, 16]] },
+      { ec: 16, blocks: [[1, 28]] },
+      { ec: 26, blocks: [[1, 44]] },
+      { ec: 18, blocks: [[2, 32]] },
+      { ec: 24, blocks: [[2, 43]] },
+      { ec: 16, blocks: [[4, 27]] },
+      { ec: 18, blocks: [[4, 31]] },
+      { ec: 22, blocks: [[2, 38], [2, 39]] },
+      { ec: 22, blocks: [[3, 36], [2, 37]] },
+      { ec: 26, blocks: [[4, 43], [1, 44]] },
+    ]
+
+    /** Alignment-pattern centres, indexed by `version - 1`. Version 1 has none. */
+    const REMOTE_QR_ALIGNMENT = [
+      [],
+      [6, 18],
+      [6, 22],
+      [6, 26],
+      [6, 30],
+      [6, 34],
+      [6, 22, 38],
+      [6, 24, 42],
+      [6, 26, 46],
+      [6, 28, 50],
+    ]
+
+    /** GF(256) exponent/log tables for the QR field: 0x11d, generator 2. */
+    const QR_FIELD = (() => {
+      const exponent = new Uint8Array(512)
+      const logarithm = new Uint8Array(256)
+      let value = 1
+      for (let index = 0; index < 255; index++) {
+        exponent[index] = value
+        logarithm[value] = index
+        value <<= 1
+        if ((value & 0x100) !== 0) value ^= 0x11d
+      }
+      for (let index = 255; index < 512; index++) exponent[index] = exponent[index - 255]
+      return { exponent, logarithm }
+    })()
+
+    /** One field product. */
+    function qrMultiply(left, right) {
+      if (left === 0 || right === 0) return 0
+      return QR_FIELD.exponent[QR_FIELD.logarithm[left] + QR_FIELD.logarithm[right]]
+    }
+
+    /** Generator polynomials, cached: the product of (x - a^i) for i < degree. */
+    const QR_GENERATORS = new Map()
+
+    /**
+     * The Reed-Solomon generator polynomial of one degree.
+     * @param degree - error-correction codewords.
+     * @returns its coefficients, highest power first; the leading one is 1.
+     */
+    function qrGenerator(degree) {
+      const cached = QR_GENERATORS.get(degree)
+      if (cached !== undefined) return cached
+      let polynomial = [1]
+      for (let index = 0; index < degree; index++) {
+        const next = new Array(polynomial.length + 1).fill(0)
+        for (let at = 0; at < polynomial.length; at++) {
+          next[at] ^= polynomial[at]
+          next[at + 1] ^= qrMultiply(polynomial[at], QR_FIELD.exponent[index])
+        }
+        polynomial = next
+      }
+      QR_GENERATORS.set(degree, polynomial)
+      return polynomial
+    }
+
+    /**
+     * The error-correction codewords for one block.
+     * @param data - the block's data codewords.
+     * @param degree - how many EC codewords to produce.
+     */
+    function qrRemainder(data, degree) {
+      const generator = qrGenerator(degree)
+      const result = new Uint8Array(degree)
+      for (const byte of data) {
+        const factor = byte ^ result[0]
+        result.copyWithin(0, 1)
+        result[degree - 1] = 0
+        for (let at = 0; at < degree; at++) result[at] ^= qrMultiply(generator[at + 1], factor)
+      }
+      return Array.from(result)
+    }
+
+    /** One string as UTF-8 bytes, without depending on `TextEncoder`. */
+    function qrBytes(text) {
+      const bytes = []
+      for (const character of String(text)) {
+        const code = character.codePointAt(0)
+        if (code < 0x80) bytes.push(code)
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f))
+        else if (code < 0x10000) {
+          bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f))
+        } else {
+          bytes.push(
+            0xf0 | (code >> 18),
+            0x80 | ((code >> 12) & 0x3f),
+            0x80 | ((code >> 6) & 0x3f),
+            0x80 | (code & 0x3f),
+          )
+        }
+      }
+      return bytes
+    }
+
+    /** One version's data capacity, in codewords. */
+    function qrDataCodewords(version) {
+      const spec = REMOTE_QR_VERSIONS[version - 1]
+      if (spec === undefined) return 0
+      return spec.blocks.reduce((sum, [count, size]) => sum + count * size, 0)
+    }
+
+    /** One version's symbol capacity, in codewords. */
+    function qrTotalCodewords(version) {
+      const spec = REMOTE_QR_VERSIONS[version - 1]
+      if (spec === undefined) return 0
+      return qrDataCodewords(version) + spec.blocks.reduce((sum, [count]) => sum + count, 0) * spec.ec
+    }
+
+    /**
+     * The smallest supported version that fits one payload.
+     * @param byteLength - payload length in bytes.
+     * @returns the version, or 0 when even the largest supported version cannot.
+     */
+    function qrVersionFor(byteLength) {
+      const length = Number(byteLength)
+      if (!Number.isFinite(length) || length <= 0) return 0
+      for (let version = 1; version <= REMOTE_QR_VERSIONS.length; version++) {
+        const headerBits = 4 + (version <= 9 ? 8 : 16)
+        if (qrDataCodewords(version) * 8 >= headerBits + length * 8) return version
+      }
+      return 0
+    }
+
+    /** One payload as data codewords, terminated and padded the standard way. */
+    function qrPayloadCodewords(bytes, version) {
+      const capacity = qrDataCodewords(version)
+      const bits = []
+      const push = (value, length) => {
+        for (let at = length - 1; at >= 0; at--) bits.push((value >> at) & 1)
+      }
+      push(0b0100, 4)
+      push(bytes.length, version <= 9 ? 8 : 16)
+      for (const byte of bytes) push(byte, 8)
+      const capacityBits = capacity * 8
+      for (let at = 0; at < 4 && bits.length < capacityBits; at++) bits.push(0)
+      while (bits.length % 8 !== 0) bits.push(0)
+      const codewords = []
+      for (let at = 0; at < bits.length; at += 8) {
+        let byte = 0
+        for (let bit = 0; bit < 8; bit++) byte = (byte << 1) | bits[at + bit]
+        codewords.push(byte)
+      }
+      const padding = [0xec, 0x11]
+      for (let index = 0; codewords.length < capacity; index++) codewords.push(padding[index % 2])
+      return codewords
+    }
+
+    /** Data and EC codewords, interleaved the way the symbol stores them. */
+    function qrCodewords(bytes, version) {
+      const spec = REMOTE_QR_VERSIONS[version - 1]
+      const data = qrPayloadCodewords(bytes, version)
+      const blocks = []
+      let offset = 0
+      for (const [count, size] of spec.blocks) {
+        for (let index = 0; index < count; index++) {
+          const block = data.slice(offset, offset + size)
+          offset += size
+          blocks.push({ data: block, ec: qrRemainder(block, spec.ec) })
+        }
+      }
+      const interleaved = []
+      const longest = Math.max(...blocks.map(block => block.data.length))
+      for (let at = 0; at < longest; at++) {
+        for (const block of blocks) if (at < block.data.length) interleaved.push(block.data[at])
+      }
+      for (let at = 0; at < spec.ec; at++) {
+        for (const block of blocks) interleaved.push(block.ec[at])
+      }
+      return interleaved
+    }
+
+    /** The eight data masks, as the standard defines them. */
+    const QR_MASKS = [
+      (row, col) => (row + col) % 2 === 0,
+      (row) => row % 2 === 0,
+      (row, col) => col % 3 === 0,
+      (row, col) => (row + col) % 3 === 0,
+      (row, col) => (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0,
+      (row, col) => ((row * col) % 2) + ((row * col) % 3) === 0,
+      (row, col) => (((row * col) % 2) + ((row * col) % 3)) % 2 === 0,
+      (row, col) => (((row + col) % 2) + ((row * col) % 3)) % 2 === 0,
+    ]
+
+    /**
+     * The 15-bit format information for level M and one mask.
+     *
+     * Five data bits (M is `00`, then the mask) with a BCH(15,5) remainder over
+     * 0x537, XORed with the standard mask 0x5412.
+     */
+    function qrFormatBits(mask) {
+      const data = (0b00 << 3) | mask
+      let remainder = data << 10
+      for (let at = 4; at >= 0; at--) {
+        if (((remainder >> (at + 10)) & 1) !== 0) remainder ^= 0x537 << at
+      }
+      return ((data << 10) | remainder) ^ 0x5412
+    }
+
+    /** The 18-bit version information, for versions 7 and up. */
+    function qrVersionBits(version) {
+      let remainder = version << 12
+      for (let at = 5; at >= 0; at--) {
+        if (((remainder >> (at + 12)) & 1) !== 0) remainder ^= 0x1f25 << at
+      }
+      return (version << 12) | remainder
+    }
+
+    /** The score the standard uses to choose a mask: lower is better. */
+    function qrPenalty(modules) {
+      const size = modules.length
+      let score = 0
+      const runs = values => {
+        let run = 1
+        for (let at = 1; at < values.length; at++) {
+          if (values[at] === values[at - 1]) {
+            run++
+            if (run === 5) score += 3
+            else if (run > 5) score += 1
+          } else {
+            run = 1
+          }
+        }
+      }
+      for (let row = 0; row < size; row++) runs(modules[row])
+      for (let col = 0; col < size; col++) runs(modules.map(line => line[col]))
+      // Adjacent 2x2 blocks of one colour.
+      for (let row = 0; row < size - 1; row++) {
+        for (let col = 0; col < size - 1; col++) {
+          const value = modules[row][col]
+          if (value === modules[row][col + 1]
+            && value === modules[row + 1][col]
+            && value === modules[row + 1][col + 1]) score += 3
+        }
+      }
+      // Finder-like runs, which confuse a scanner most.
+      const patterns = [[1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1]]
+      const matches = values => {
+        for (let at = 0; at + 11 <= values.length; at++) {
+          for (const pattern of patterns) {
+            let hit = true
+            for (let bit = 0; bit < 11; bit++) {
+              if (values[at + bit] !== pattern[bit]) {
+                hit = false
+                break
+              }
+            }
+            if (hit) score += 40
+          }
+        }
+      }
+      for (let row = 0; row < size; row++) matches(modules[row])
+      for (let col = 0; col < size; col++) matches(modules.map(line => line[col]))
+      // The dark/light balance.
+      let dark = 0
+      for (const line of modules) for (const value of line) dark += value
+      const ratio = (dark * 100) / (size * size)
+      score += Math.floor(Math.abs(ratio - 50) / 5) * 10
+      return score
+    }
+
+    /**
+     * The finished symbol for one piece of text.
+     *
+     * Function patterns are placed first and recorded as reserved; the data is
+     * laid down the standard zigzag beside them; each mask is then applied to the
+     * data modules only and scored, and the lowest score wins.
+     * @param text - the payload.
+     * @returns `{ text, version, size, mask, modules }`, or `undefined` when the
+     *   payload does not fit a supported version.
+     */
+    function remoteQrModel(text) {
+      const value = String(text ?? '')
+      if (value === '') return undefined
+      const bytes = qrBytes(value)
+      const version = qrVersionFor(bytes.length)
+      if (version === 0) return undefined
+      const size = version * 4 + 17
+      const modules = Array.from({ length: size }, () => new Uint8Array(size))
+      const reserved = Array.from({ length: size }, () => new Uint8Array(size))
+
+      const setFunction = (row, col, dark) => {
+        if (row < 0 || col < 0 || row >= size || col >= size) return
+        modules[row][col] = dark ? 1 : 0
+        reserved[row][col] = 1
+      }
+      const placeFinder = (top, left) => {
+        for (let row = -1; row <= 7; row++) {
+          for (let col = -1; col <= 7; col++) {
+            const inside = row >= 0 && row <= 6 && col >= 0 && col <= 6
+            const dark = inside && (
+              row === 0 || row === 6 || col === 0 || col === 6
+              || (row >= 2 && row <= 4 && col >= 2 && col <= 4)
+            )
+            setFunction(top + row, left + col, dark)
+          }
+        }
+      }
+      placeFinder(0, 0)
+      placeFinder(0, size - 7)
+      placeFinder(size - 7, 0)
+      // Timing patterns: alternating from the first free module after a finder.
+      for (let at = 8; at < size - 8; at++) {
+        setFunction(6, at, at % 2 === 0)
+        setFunction(at, 6, at % 2 === 0)
+      }
+      // Alignment patterns, everywhere except the three finder corners.
+      const centres = REMOTE_QR_ALIGNMENT[version - 1]
+      for (const row of centres) {
+        for (const col of centres) {
+          const corner = (row <= 8 && col <= 8)
+            || (row <= 8 && col >= size - 9)
+            || (row >= size - 9 && col <= 8)
+          if (corner) continue
+          for (let dr = -2; dr <= 2; dr++) {
+            for (let dc = -2; dc <= 2; dc++) {
+              const dark = Math.max(Math.abs(dr), Math.abs(dc)) !== 1
+              setFunction(row + dr, col + dc, dark)
+            }
+          }
+        }
+      }
+      // The dark module, and the areas the format and version bits live in.
+      setFunction(size - 8, 8, true)
+      for (let at = 0; at <= 8; at++) {
+        if (reserved[8][at] === 0) reserved[8][at] = 1
+        if (reserved[at][8] === 0) reserved[at][8] = 1
+      }
+      for (let at = 0; at < 8; at++) {
+        reserved[8][size - 1 - at] = 1
+        reserved[size - 1 - at][8] = 1
+      }
+      if (version >= 7) {
+        for (let at = 0; at < 18; at++) {
+          reserved[Math.floor(at / 3)][size - 11 + (at % 3)] = 1
+          reserved[size - 11 + (at % 3)][Math.floor(at / 3)] = 1
+        }
+      }
+
+      // The data bits, in the standard two-column zigzag, skipping function modules.
+      const codewords = qrCodewords(bytes, version)
+      const bits = []
+      for (const codeword of codewords) for (let at = 7; at >= 0; at--) bits.push((codeword >> at) & 1)
+      let cursor = 0
+      let upward = true
+      for (let right = size - 1; right > 0; right -= 2) {
+        if (right === 6) right = 5
+        for (let step = 0; step < size; step++) {
+          const row = upward ? size - 1 - step : step
+          for (let offset = 0; offset < 2; offset++) {
+            const col = right - offset
+            if (reserved[row][col] === 1) continue
+            modules[row][col] = bits[cursor] ?? 0
+            cursor++
+          }
+        }
+        upward = !upward
+      }
+
+      const placeFormat = (matrix, mask) => {
+        const bits15 = qrFormatBits(mask)
+        // Position 0 carries the most significant bit: the 15-bit format string
+        // is laid down MSB-first, in both of its copies.
+        const bit = index => (bits15 >> (14 - index)) & 1
+        for (let at = 0; at <= 5; at++) matrix[8][at] = bit(at)
+        matrix[8][7] = bit(6)
+        matrix[8][8] = bit(7)
+        matrix[7][8] = bit(8)
+        for (let at = 9; at <= 14; at++) matrix[14 - at][8] = bit(at)
+        for (let at = 0; at <= 6; at++) matrix[size - 1 - at][8] = bit(at)
+        for (let at = 7; at <= 14; at++) matrix[8][size - 15 + at] = bit(at)
+      }
+
+      let best
+      for (let mask = 0; mask < QR_MASKS.length; mask++) {
+        const candidate = modules.map(line => Array.from(line))
+        const applies = QR_MASKS[mask]
+        for (let row = 0; row < size; row++) {
+          for (let col = 0; col < size; col++) {
+            if (reserved[row][col] === 1) continue
+            if (applies(row, col)) candidate[row][col] ^= 1
+          }
+        }
+        placeFormat(candidate, mask)
+        if (version >= 7) {
+          const bits18 = qrVersionBits(version)
+          for (let at = 0; at < 18; at++) {
+            const dark = (bits18 >> at) & 1
+            candidate[Math.floor(at / 3)][size - 11 + (at % 3)] = dark
+            candidate[size - 11 + (at % 3)][Math.floor(at / 3)] = dark
+          }
+        }
+        const score = qrPenalty(candidate)
+        if (best === undefined || score < best.score) best = { mask, score, modules: candidate }
+      }
+
+      return { text: value, version, size, mask: best.mask, modules: best.modules }
+    }
+
+    /**
+     * One QR as inline SVG.
+     *
+     * The quiet zone is part of the drawing — a symbol cropped to its edge is a
+     * symbol a camera struggles to find — and both colours are fixed black on
+     * white, because a theme-coloured code is a code that can fail to scan.
+     * @param model - a `remoteQrModel` result.
+     * @param label - the accessible name.
+     */
+    function remoteQrSvg(model, label) {
+      if (model === undefined || model === null) return null
+      const quiet = REMOTE_QR_QUIET
+      const span = model.size + quiet * 2
+      const commands = []
+      for (let row = 0; row < model.size; row++) {
+        for (let col = 0; col < model.size; col++) {
+          if (model.modules[row][col] === 1) commands.push(`M${col + quiet} ${row + quiet}h1v1h-1z`)
+        }
+      }
+      return h('svg', {
+        className: 'edh-remote-qr',
+        viewBox: `0 0 ${span} ${span}`,
+        role: 'img',
+        'aria-label': label,
+        shapeRendering: 'crispEdges',
+        focusable: 'false',
+      },
+        h('rect', { x: 0, y: 0, width: span, height: span, fill: '#ffffff' }),
+        h('path', { d: commands.join(''), fill: '#000000' }),
+      )
+    }
+
     /**
      * One request on the usage route.
      *
@@ -5859,6 +6632,14 @@ window.__ModuleLoader__.load({
         }
       }, 'edh: host invalidation')
 
+      // mobile — the phone layer, in one effect and gated on its own row. It is
+      // the only EDH feature that changes the document itself rather than
+      // painting a slot: a viewport that opts into the notch, the web-app metas,
+      // the manifest and the phone stylesheet. Remote proxies this same page, so
+      // a phone inherits the layer from here; disposal puts the head back exactly
+      // as it was found, which is why turning the row off needs no restart.
+      installMobileLayer(ctx, controller)
+
       const Switch = createSwitch(t, controller)
       // The right-aligned header utilities row is the seat this build paints.
       // `conversation.header.leading` is declared but never rendered here.
@@ -6297,6 +7078,33 @@ window.__ModuleLoader__.load({
       REMOTE_PORT_MIN,
       REMOTE_PORT_MAX,
       REMOTE_DEBUG_KEY,
+      mobileIconHref,
+      createMobileLayer,
+      installMobileLayer,
+      MOBILE_MODULE,
+      MOBILE_CSS,
+      MOBILE_VIEWPORT,
+      MOBILE_MANIFEST,
+      MOBILE_QUERY,
+      MOBILE_THEME,
+      MOBILE_META,
+      MOBILE_DEBUG_KEY,
+      remoteQrModel,
+      remoteQrSvg,
+      qrBytes,
+      qrVersionFor,
+      qrDataCodewords,
+      qrTotalCodewords,
+      qrPayloadCodewords,
+      qrCodewords,
+      qrFormatBits,
+      qrVersionBits,
+      qrPenalty,
+      qrGenerator,
+      qrMultiply,
+      REMOTE_QR_VERSIONS,
+      REMOTE_QR_ALIGNMENT,
+      REMOTE_QR_QUIET,
       usageTotals,
       usageModel,
       usageDay,

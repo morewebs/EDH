@@ -191,6 +191,29 @@ const {
   USAGE_OTHER,
   USAGE_DEBUG_KEY,
 } = mod.__test
+const {
+  createMobileLayer,
+  installMobileLayer,
+  mobileIconHref,
+  MOBILE_MODULE,
+  MOBILE_CSS,
+  MOBILE_VIEWPORT,
+  MOBILE_MANIFEST,
+  MOBILE_QUERY,
+  MOBILE_THEME,
+  MOBILE_META,
+  MOBILE_DEBUG_KEY,
+  remoteQrModel,
+  remoteQrSvg,
+  qrBytes,
+  qrVersionFor,
+  qrDataCodewords,
+  qrTotalCodewords,
+  qrFormatBits,
+  REMOTE_QR_VERSIONS,
+  REMOTE_QR_ALIGNMENT,
+  REMOTE_QR_QUIET,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -2644,7 +2667,7 @@ function treeButtons(tree) {
   treeByType(ready, 'button').find(button => button.props.children.includes('remoteSignOut')).props.onClick()
   assert.deepEqual(calls, ['signOut'])
   calls.length = 0
-  const copyButtons = treeByType(ready, 'button').filter(button => button.props.className.includes('buttonSm'))
+  const copyButtons = treeByType(ready, 'button').filter(button => button.props.children.includes('copy'))
   assert.equal(copyButtons.length, 2, 'one Copy control per address')
   copyButtons[0].props.onClick()
   assert.deepEqual(calls, ['copy:http://192.168.1.20:8787'])
@@ -3660,6 +3683,628 @@ function sampleUsageView() {
   assert.equal(treeByType(noDays, 'svg').length, 0, 'an empty range does not get an axis either')
 }
 
+/**
+ * A document-shaped fake: just the elements the mobile layer reads and writes,
+ * with the attribute bookkeeping the real DOM gives them.
+ */
+function fakeDocument(options = {}) {
+  const head = {
+    children: [],
+    appendChild(node) {
+      node.parentNode = head
+      head.children.push(node)
+      return node
+    },
+    removeChild(node) {
+      const at = head.children.indexOf(node)
+      if (at >= 0) head.children.splice(at, 1)
+      node.parentNode = null
+      return node
+    },
+  }
+  const make = tag => {
+    const element = {
+      tagName: String(tag).toUpperCase(),
+      attributes: new Map(),
+      parentNode: null,
+      textContent: '',
+      setAttribute(name, value) {
+        element.attributes.set(String(name), String(value))
+      },
+      getAttribute(name) {
+        return element.attributes.has(String(name)) ? element.attributes.get(String(name)) : null
+      },
+      hasAttribute(name) {
+        return element.attributes.has(String(name))
+      },
+      removeAttribute(name) {
+        element.attributes.delete(String(name))
+      },
+    }
+    return element
+  }
+  const add = (tag, attributes) => {
+    const element = make(tag)
+    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value)
+    head.appendChild(element)
+    return element
+  }
+  if (options.viewport !== false) {
+    add('meta', { name: 'viewport', content: options.viewport ?? 'width=device-width, initial-scale=1' })
+  }
+  if (options.manifest !== false) add('link', { rel: 'manifest', href: options.manifestHref ?? './manifest.webmanifest' })
+  for (const icon of options.icons ?? []) add('link', { rel: 'icon', type: icon.type, href: icon.href })
+
+  const matches = (element, selector) => {
+    const parsed = /^([a-z]+)\[([a-z-]+)([~]?)=?"?([^"\]]*)"?\]$/u.exec(selector)
+    if (parsed === null) return false
+    const tag = parsed[1]
+    const attribute = parsed[2]
+    const operator = parsed[3]
+    const value = parsed[4]
+    if (element.tagName !== tag.toUpperCase()) return false
+    const actual = element.getAttribute(attribute)
+    if (actual === null) return false
+    return operator === '~' ? actual.split(/\s+/u).includes(value) : actual === value
+  }
+  return {
+    baseURI: options.baseURI ?? 'http://127.0.0.1:49944/',
+    head,
+    createElement: make,
+    querySelector: selector => head.children.find(element => matches(element, selector)) ?? null,
+    querySelectorAll: selector => head.children.filter(element => matches(element, selector)),
+    /** The injected style, or nothing. */
+    style: () => head.children.find(element => element.tagName === 'STYLE') ?? null,
+    /** Every meta name currently in the head. */
+    metaNames: () => head.children
+      .filter(element => element.tagName === 'META')
+      .map(element => element.getAttribute('name')),
+  }
+}
+
+/** The eight data masks, written out here so the decoder does not borrow them. */
+function qrTestMask(index, row, col) {
+  switch (index) {
+    case 0: return (row + col) % 2 === 0
+    case 1: return row % 2 === 0
+    case 2: return col % 3 === 0
+    case 3: return (row + col) % 3 === 0
+    case 4: return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0
+    case 5: return ((row * col) % 2) + ((row * col) % 3) === 0
+    case 6: return (((row * col) % 2) + ((row * col) % 3)) % 2 === 0
+    default: return (((row + col) % 2) + ((row * col) % 3)) % 2 === 0
+  }
+}
+
+/** One 15-bit format copy, read MSB first from a finished symbol. */
+function qrTestFormat(model, copy) {
+  const size = model.size
+  const bits = []
+  if (copy === 1) {
+    for (let at = 0; at <= 5; at++) bits.push(model.modules[8][at])
+    bits.push(model.modules[8][7], model.modules[8][8], model.modules[7][8])
+    for (let at = 9; at <= 14; at++) bits.push(model.modules[14 - at][8])
+  } else {
+    for (let at = 0; at <= 6; at++) bits.push(model.modules[size - 1 - at][8])
+    for (let at = 7; at <= 14; at++) bits.push(model.modules[8][size - 15 + at])
+  }
+  return bits.reduce((value, bit) => (value << 1) | bit, 0)
+}
+
+/** The function-module map, rebuilt from the standard rather than from the encoder. */
+function qrTestReserved(version) {
+  const size = version * 4 + 17
+  const reserved = Array.from({ length: size }, () => new Array(size).fill(false))
+  const mark = (row, col) => {
+    if (row >= 0 && col >= 0 && row < size && col < size) reserved[row][col] = true
+  }
+  for (const [top, left] of [[0, 0], [0, size - 7], [size - 7, 0]]) {
+    for (let row = -1; row <= 7; row++) for (let col = -1; col <= 7; col++) mark(top + row, left + col)
+  }
+  for (let at = 8; at < size - 8; at++) {
+    mark(6, at)
+    mark(at, 6)
+  }
+  const centres = REMOTE_QR_ALIGNMENT[version - 1]
+  for (const row of centres) {
+    for (const col of centres) {
+      const corner = (row <= 8 && col <= 8) || (row <= 8 && col >= size - 9) || (row >= size - 9 && col <= 8)
+      if (corner) continue
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) mark(row + dr, col + dc)
+    }
+  }
+  mark(size - 8, 8)
+  for (let at = 0; at <= 8; at++) {
+    mark(8, at)
+    mark(at, 8)
+  }
+  for (let at = 0; at < 8; at++) {
+    mark(8, size - 1 - at)
+    mark(size - 1 - at, 8)
+  }
+  if (version >= 7) {
+    for (let at = 0; at < 18; at++) {
+      mark(Math.floor(at / 3), size - 11 + (at % 3))
+      mark(size - 11 + (at % 3), Math.floor(at / 3))
+    }
+  }
+  return reserved
+}
+
+/** A field product, done by hand so it owes nothing to the encoder's log tables. */
+function qrTestMultiply(left, right) {
+  let product = 0
+  let a = left
+  let b = right
+  while (b > 0) {
+    if ((b & 1) === 1) product ^= a
+    a <<= 1
+    if ((a & 0x100) !== 0) a ^= 0x11d
+    b >>= 1
+  }
+  return product
+}
+
+/** Evaluate a codeword polynomial at one field element, Horner style. */
+function qrTestEvaluate(polynomial, at) {
+  let value = 0
+  for (const byte of polynomial) value = qrTestMultiply(value, at) ^ byte
+  return value
+}
+
+/**
+ * Read a finished symbol back the way a scanner does: format info, mask,
+ * codewords, blocks, then the payload. Nothing here trusts an intermediate
+ * result from the encoder — the mask predicates and the field arithmetic are
+ * written out independently, and every block must satisfy its Reed-Solomon
+ * syndromes before the text is read.
+ */
+function qrTestDecode(model) {
+  const size = model.size
+  const copyOne = qrTestFormat(model, 1)
+  const copyTwo = qrTestFormat(model, 2)
+  // The 15-bit format is five data bits (level, then mask) and ten BCH bits.
+  const data5 = (copyOne ^ 0x5412) >> 10
+  const level = (data5 >> 3) & 3
+  const mask = data5 & 7
+  const reserved = qrTestReserved(model.version)
+  const bits = []
+  let upward = true
+  for (let right = size - 1; right > 0; right -= 2) {
+    if (right === 6) right = 5
+    for (let step = 0; step < size; step++) {
+      const row = upward ? size - 1 - step : step
+      for (let offset = 0; offset < 2; offset++) {
+        const col = right - offset
+        if (reserved[row][col]) continue
+        bits.push(model.modules[row][col] ^ (qrTestMask(mask, row, col) ? 1 : 0))
+      }
+    }
+    upward = !upward
+  }
+  const codewords = []
+  for (let at = 0; at + 8 <= bits.length; at += 8) {
+    let byte = 0
+    for (let bit = 0; bit < 8; bit++) byte = (byte << 1) | bits[at + bit]
+    codewords.push(byte)
+  }
+  const spec = REMOTE_QR_VERSIONS[model.version - 1]
+  const sizes = []
+  for (const [count, blockSize] of spec.blocks) for (let index = 0; index < count; index++) sizes.push(blockSize)
+  const blocks = sizes.map(blockSize => ({ data: new Array(blockSize), ec: new Array(spec.ec) }))
+  let cursor = 0
+  const longest = Math.max(...sizes)
+  for (let at = 0; at < longest; at++) {
+    for (let block = 0; block < blocks.length; block++) {
+      if (at >= sizes[block]) continue
+      blocks[block].data[at] = codewords[cursor++]
+    }
+  }
+  for (let at = 0; at < spec.ec; at++) {
+    for (const block of blocks) block.ec[at] = codewords[cursor++]
+  }
+  const syndromes = []
+  for (const block of blocks) {
+    const full = [...block.data, ...block.ec]
+    const parity = []
+    for (let at = 0; at < spec.ec; at++) {
+      let root = 1
+      for (let step = 0; step < at; step++) root = qrTestMultiply(root, 2)
+      parity.push(qrTestEvaluate(full, root))
+    }
+    syndromes.push(parity)
+  }
+  const data = blocks.flatMap(block => block.data)
+  const stream = []
+  for (const byte of data) for (let at = 7; at >= 0; at--) stream.push((byte >> at) & 1)
+  const read = (at, length) => {
+    let value = 0
+    for (let index = 0; index < length; index++) value = (value << 1) | (stream[at + index] ?? 0)
+    return value
+  }
+  const countBits = model.version <= 9 ? 8 : 16
+  const mode = read(0, 4)
+  const count = read(4, countBits)
+  const bytes = []
+  for (let at = 0; at < count; at++) bytes.push(read(4 + countBits + at * 8, 8))
+  let text = ''
+  for (const byte of bytes) text += String.fromCharCode(byte)
+  return { copyOne, copyTwo, mask, level, codewords, bits, syndromes, mode, count, text }
+}
+
+// 44 — the mobile layer: every head change is reversible by construction.
+{
+  // The real head: a viewport, a manifest, and two same-origin SVG icons.
+  const doc = fakeDocument({
+    baseURI: 'http://127.0.0.1:49944/',
+    icons: [
+      { type: 'image/svg+xml', href: './favicon-dark.svg' },
+      { type: 'image/svg+xml', href: './favicon.svg' },
+    ],
+  })
+  const layer = createMobileLayer(doc)
+  assert.ok(layer, 'a document with a head is enough to install into')
+  assert.equal(layer.applied(), false)
+
+  assert.equal(layer.apply(), true)
+  assert.equal(layer.applied(), true)
+  assert.equal(doc.querySelectorAll('meta[name="viewport"]').length, 1, 'one viewport, never a second')
+  assert.equal(
+    doc.querySelector('meta[name="viewport"]').getAttribute('content'),
+    MOBILE_VIEWPORT,
+    'the shell viewport is upgraded in place, not duplicated',
+  )
+  assert.ok(MOBILE_VIEWPORT.includes('viewport-fit=cover'))
+  const names = doc.metaNames()
+  for (const [name] of MOBILE_META) assert.ok(names.includes(name), 'the ' + name + ' meta is added')
+  assert.equal(names.filter(name => name === 'theme-color').length, 2, 'one theme colour per scheme')
+  assert.deepEqual(
+    doc.querySelectorAll('meta[name="theme-color"]').map(meta => meta.getAttribute('media')),
+    ['(prefers-color-scheme: light)', '(prefers-color-scheme: dark)'],
+  )
+  assert.equal(doc.querySelectorAll('link[rel="manifest"]').length, 1, 'one manifest, upgraded')
+  assert.equal(doc.querySelector('link[rel="manifest"]').getAttribute('href'), MOBILE_MANIFEST)
+  assert.equal(MOBILE_MANIFEST, 'api/edh.mobile/manifest', 'document-relative, so it follows the origin')
+  assert.equal(doc.style().getAttribute('id'), 'edh-mobile', 'the stylesheet is named as promised')
+  assert.equal(doc.style().textContent, MOBILE_CSS)
+  // The page ships SVG icons only, and iOS ignores an SVG apple-touch-icon.
+  assert.equal(doc.querySelector('link[rel="apple-touch-icon"]'), null, 'no icon promise the platform drops')
+
+  // Idempotent: a re-sync that fires twice changes nothing.
+  const settled = doc.head.children.length
+  assert.equal(layer.apply(), false, 'a second apply is a no-op')
+  assert.equal(doc.head.children.length, settled)
+  assert.equal(doc.metaNames().filter(name => name === 'theme-color').length, 2, 'never a duplicate')
+
+  // Withdrawal restores the document, attribute for attribute.
+  assert.equal(layer.withdraw(), true)
+  assert.equal(layer.applied(), false)
+  assert.equal(doc.head.children.length, 4, 'the head is exactly what it was')
+  assert.equal(
+    doc.querySelector('meta[name="viewport"]').getAttribute('content'),
+    'width=device-width, initial-scale=1',
+    'the original viewport content is back',
+  )
+  assert.equal(
+    doc.querySelector('link[rel="manifest"]').getAttribute('href'),
+    './manifest.webmanifest',
+    'the shell manifest is back',
+  )
+  assert.equal(doc.style(), null)
+
+  // A second cycle leaves nothing behind: creation is per instance, not global.
+  assert.equal(layer.apply(), true)
+  assert.equal(layer.withdraw(), true)
+  assert.equal(doc.head.children.length, 4)
+  assert.deepEqual(doc.metaNames(), ['viewport'], 'no meta survived either cycle')
+
+  // A page with no viewport at all gets one, and gives it back on disposal.
+  const bare = fakeDocument({ viewport: false, manifest: false })
+  const bareLayer = createMobileLayer(bare)
+  bareLayer.apply()
+  assert.equal(bare.querySelectorAll('meta[name="viewport"]').length, 1, 'a viewport is created when missing')
+  assert.equal(bare.querySelector('link[rel="manifest"]').getAttribute('id'), 'edh-mobile-manifest')
+  bareLayer.withdraw()
+  assert.equal(bare.head.children.length, 0, 'and removed again')
+
+  // A real raster icon is reused, absolute and same-origin; a cross-origin one is not.
+  const raster = fakeDocument({ icons: [{ type: 'image/png', href: '/apple.png' }] })
+  createMobileLayer(raster).apply()
+  assert.equal(
+    raster.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'),
+    'http://127.0.0.1:49944/apple.png',
+    'the page\'s own icon, resolved against its origin',
+  )
+  const foreign = fakeDocument({ icons: [{ type: 'image/png', href: 'https://cdn.example.com/apple.png' }] })
+  createMobileLayer(foreign).apply()
+  assert.equal(foreign.querySelector('link[rel="apple-touch-icon"]'), null, 'a cross-origin icon is not offered')
+
+  // No document, no layer: the install is a no-op rather than a crash.
+  assert.equal(createMobileLayer(undefined), undefined)
+  assert.equal(createMobileLayer({}), undefined)
+  const inert = installMobileLayer(
+    { effect: () => () => {} },
+    { getSnapshot: () => undefined, subscribe: () => () => {} },
+    undefined,
+  )
+  assert.equal(typeof inert, 'function', 'a document-less install still answers a disposer')
+  assert.equal(inert(), undefined)
+}
+
+// 45 — the layer follows its row, and disposal puts the head back.
+{
+  const doc = fakeDocument()
+  let rowOn = false
+  const watchers = []
+  const disposers = []
+  const controller = {
+    getSnapshot: () => ({ status: 'ready', moduleStates: { [MOBILE_MODULE]: rowOn } }),
+    subscribe(listener) {
+      watchers.push(listener)
+      return () => {
+        const at = watchers.indexOf(listener)
+        if (at >= 0) watchers.splice(at, 1)
+      }
+    },
+    setRow(next) {
+      rowOn = next
+      for (const watch of [...watchers]) watch()
+    },
+  }
+  const ctx = {
+    effect(fn, label) {
+      assert.equal(label, 'edh: mobile layer', 'one effect owns the layer, under its own label')
+      const dispose = fn()
+      disposers.push(dispose)
+      return dispose
+    },
+  }
+  storage.length = 0
+  const dispose = installMobileLayer(ctx, controller, doc)
+  assert.equal(doc.style(), null, 'a row that is off at install touches nothing')
+  assert.equal(watchers.length, 1, 'one subscription, owned by the effect')
+
+  controller.setRow(true)
+  assert.ok(doc.style(), 'turning the row on installs the layer')
+  assert.equal(doc.querySelector('meta[name="viewport"]').getAttribute('content'), MOBILE_VIEWPORT)
+
+  controller.setRow(false)
+  assert.equal(doc.style(), null, 'turning it off withdraws the layer')
+  assert.equal(doc.querySelector('meta[name="viewport"]').getAttribute('content'), 'width=device-width, initial-scale=1')
+
+  controller.setRow(true)
+  assert.ok(doc.style(), 'and it comes back when the row does')
+  assert.equal(doc.querySelectorAll('meta[name="viewport"]').length, 1, 'still one viewport after a cycle')
+
+  // Disposal is the third way out, and it too leaves nothing behind.
+  disposers[0]()
+  assert.equal(doc.style(), null)
+  assert.equal(doc.head.children.length, 2)
+  assert.equal(watchers.length, 0, 'the subscription is released')
+
+  const phases = storage
+    .filter(([key]) => key === MOBILE_DEBUG_KEY)
+    .map(([, value]) => JSON.parse(value).phase)
+  assert.deepEqual(phases, ['installed', 'withdrawn', 'installed', 'withdrawn'], 'each change is recorded')
+  void dispose
+}
+
+// 46 — the stylesheet: phone-sized, two blocks, and no guessed class names.
+{
+  assert.ok(MOBILE_QUERY.startsWith('(max-width:'), 'a phone window is the whole condition')
+  assert.equal(MOBILE_CSS.startsWith('@media ' + MOBILE_QUERY + '{'), true, 'every rule sits inside the query')
+  assert.equal((MOBILE_CSS.match(/@media/gu) ?? []).length, 1, 'one media query, two blocks')
+  assert.equal(MOBILE_CSS.endsWith('}'), true, 'and it closes')
+  // The safe block.
+  assert.ok(MOBILE_CSS.includes('-webkit-text-size-adjust:100%'))
+  assert.ok(MOBILE_CSS.includes('overscroll-behavior-y:contain'))
+  assert.ok(MOBILE_CSS.includes('touch-action:manipulation'))
+  assert.ok(MOBILE_CSS.includes('-webkit-tap-highlight-color'))
+  assert.ok(MOBILE_CSS.includes('env(safe-area-inset-top)'), 'the notch')
+  assert.ok(MOBILE_CSS.includes('height:100dvh'), 'a phone-height shell')
+  assert.ok(MOBILE_CSS.includes('font-size:max(16px,1em)'), 'the rule that stops iOS zooming the page on focus')
+  assert.match(MOBILE_CSS, /input,textarea,select\{font-size:max\(16px,1em\)\}/u, 'applied to the fields that zoom')
+  // The layout block.
+  assert.ok(MOBILE_CSS.includes('min-height:44px'), 'thumb-sized targets')
+  assert.ok(MOBILE_CSS.includes('-webkit-overflow-scrolling:touch'), 'momentum scrolling')
+  assert.ok(MOBILE_CSS.includes('::-webkit-scrollbar'), 'scrollbars kept, slimmed')
+  // Selectors: tags, an id, roles and attributes only.
+  assert.equal(/[.#][A-Za-z0-9_-]*_[A-Za-z0-9]/u.test(MOBILE_CSS), false, 'no build-hashed class name is load-bearing')
+  assert.equal(/\.[A-Za-z]/u.test(MOBILE_CSS), false, 'no class selector at all')
+  assert.ok(MOBILE_CSS.includes('[role=button]'), 'roles are the stable hook')
+  assert.ok(MOBILE_CSS.includes('#root'), 'and the one id the shell guarantees')
+  assert.ok(MOBILE_CSS.length <= 1200, 'small enough to review in one screen (' + MOBILE_CSS.length + ' chars)')
+}
+
+// 47 — the QR: geometry, format information, and a full decode back to the text.
+{
+  // The drawing is built with React's createElement, so this block renders it.
+  const stub = stubPageFactory()
+  const text = 'http://192.168.1.20:8787'
+  const model = remoteQrModel(text)
+  assert.ok(model, 'a LAN address fits')
+  assert.equal(model.version, 2, 'the smallest version that holds 24 bytes at level M')
+  assert.equal(model.size, model.version * 4 + 17, 'module count follows the version')
+  const again = remoteQrModel(text)
+  assert.equal(again.mask, model.mask, 'the same input picks the same mask')
+  assert.deepEqual(again.modules, model.modules, 'and the same symbol')
+
+  // Finder patterns, three corners, with their light separators.
+  for (const [top, left] of [[0, 0], [0, model.size - 7], [model.size - 7, 0]]) {
+    for (let row = 0; row < 7; row++) {
+      for (let col = 0; col < 7; col++) {
+        const edge = row === 0 || row === 6 || col === 0 || col === 6
+        const core = row >= 2 && row <= 4 && col >= 2 && col <= 4
+        assert.equal(model.modules[top + row][left + col], edge || core ? 1 : 0, 'finder at ' + top + ',' + left)
+      }
+    }
+  }
+  for (let at = 0; at < 8; at++) {
+    assert.equal(model.modules[7][at], 0, 'separator under the top-left finder')
+    assert.equal(model.modules[at][7], 0, 'separator beside the top-left finder')
+    assert.equal(model.modules[model.size - 8][at], 0, 'separator over the bottom-left finder')
+    assert.equal(model.modules[7][model.size - 1 - at], 0, 'separator beside the top-right finder')
+  }
+  // Timing patterns alternate, starting dark on an even index.
+  for (let at = 8; at < model.size - 8; at++) {
+    assert.equal(model.modules[6][at], at % 2 === 0 ? 1 : 0, 'row timing at ' + at)
+    assert.equal(model.modules[at][6], at % 2 === 0 ? 1 : 0, 'column timing at ' + at)
+  }
+  // The dark module, and both format copies agreeing with each other and the mask.
+  assert.equal(model.modules[model.size - 8][8], 1, 'the dark module is where it must be')
+  const decoded = qrTestDecode(model)
+  assert.equal(decoded.copyOne, decoded.copyTwo, 'both format copies carry the same bits')
+  assert.equal(decoded.copyOne, qrFormatBits(model.mask), 'and they are the format for the mask used')
+  assert.equal(decoded.level, 0b00, 'error correction level M')
+  assert.equal(decoded.mask, model.mask)
+  assert.equal(decoded.mode, 0b0100, 'byte mode')
+  assert.equal(decoded.count, text.length)
+  assert.equal(decoded.text, text, 'the symbol decodes back to the address it was built from')
+
+  // The codeword stream fills the symbol exactly: whole codewords, then the
+  // version's remainder bits, which the standard pads with zeros.
+  assert.equal(decoded.codewords.length, qrTotalCodewords(model.version), 'the block table and the geometry agree')
+  const remainder = decoded.bits.length - decoded.codewords.length * 8
+  assert.ok(remainder >= 0 && remainder < 8, 'at most seven remainder bits (' + remainder + ')')
+  assert.deepEqual(
+    decoded.bits.slice(decoded.codewords.length * 8),
+    new Array(remainder).fill(0),
+    'and they are zeros, not data',
+  )
+  for (const parity of decoded.syndromes) {
+    assert.deepEqual(parity, parity.map(() => 0), 'every block is a valid Reed-Solomon codeword')
+  }
+
+  // Every supported version: full capacity decodes, one byte more moves up.
+  for (let version = 1; version <= REMOTE_QR_VERSIONS.length; version++) {
+    const countBits = version <= 9 ? 8 : 16
+    const capacity = Math.floor((qrDataCodewords(version) * 8 - 4 - countBits) / 8)
+    const payload = 'h'.repeat(capacity)
+    const filled = remoteQrModel(payload)
+    assert.equal(filled.version, version, 'a full-capacity payload picks this version')
+    const round = qrTestDecode(filled)
+    assert.equal(round.text, payload, 'and decodes at full capacity')
+    assert.equal(round.codewords.length, qrTotalCodewords(version))
+    assert.equal(qrVersionFor(capacity), version, 'capacity boundaries are exact at version ' + version)
+  }
+  assert.equal(remoteQrModel('h'.repeat(214)), undefined, 'past the largest supported version, no code is drawn')
+  assert.equal(remoteQrModel(''), undefined)
+  assert.equal(remoteQrModel(undefined), undefined)
+
+  for (const sample of ['http://x:1', 'https://my-laptop.local:8443', 'http://[fe80::1]:8787']) {
+    assert.equal(qrTestDecode(remoteQrModel(sample)).text, sample)
+  }
+
+  // Bytes beyond ASCII travel as UTF-8 and come back to the right count.
+  const accented = 'http://cafe.example:8787/é'
+  assert.equal(qrTestDecode(remoteQrModel(accented)).count, qrBytes(accented).length)
+
+  // The drawing: quiet zone included, fixed colours, one path.
+  const svg = stub.remoteQrSvg(model, 'label')
+  assert.equal(svg.type, 'svg')
+  assert.equal(svg.props.viewBox, '0 0 ' + (model.size + 8) + ' ' + (model.size + 8), 'four modules of quiet zone each side')
+  assert.equal(svg.props.role, 'img')
+  assert.equal(svg.props['aria-label'], 'label')
+  assert.equal(svg.props.shapeRendering, 'crispEdges')
+  const background = svg.props.children[0]
+  const path = svg.props.children[1]
+  assert.equal(background.type, 'rect')
+  assert.equal(background.props.fill, '#ffffff', 'the quiet zone is white in every theme')
+  assert.equal(path.props.fill, '#000000', 'modules are black in every theme')
+  const dark = model.modules.flat().filter(value => value === 1).length
+  assert.equal((path.props.d.match(/M/gu) ?? []).length, dark, 'one command per dark module')
+  assert.equal(stub.remoteQrSvg(undefined, 'label'), null)
+}
+
+// 48 — the page: the code appears on request, and follows the address it belongs to.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const actions = { code() {}, copy() {}, retry() {}, refresh() {}, scope() {}, range() {}, toggle() {}, signOut() {} }
+  const live = {
+    status: 'ready',
+    data: {
+      available: true,
+      enabled: true,
+      listening: true,
+      port: 8787,
+      username: 'owner',
+      hasPassword: true,
+      addresses: ['192.168.1.20', '192.168.1.21'],
+      warning: '',
+      sessions: 1,
+      failure: '',
+    },
+    failure: '',
+  }
+  const state = overrides => ({
+    enabled: true,
+    view: live,
+    draft: stub.remoteDraft(live.data),
+    fieldError: { field: '', text: '' },
+    busy: '',
+    saved: false,
+    notice: { text: '', tone: 'bad' },
+    copy: { address: '', copied: false },
+    code: '',
+    actions,
+    ...overrides,
+  })
+
+  // Nothing but the address list and the two hints until the reader asks.
+  const collapsed = stub.remotePage(t, state())
+  assert.equal(treeByType(collapsed, 'svg').length, 0, 'no code is drawn until it is asked for')
+  assert.ok(treeText(collapsed).includes('The phone must be on the same network as this computer.'))
+  assert.equal(
+    treeByType(collapsed, 'button').filter(button => button.props.children.includes('Show code')).length,
+    1,
+    'one control offers it',
+  )
+  assert.ok(treeText(collapsed).includes('Open one of these on your phone.'), 'the sentence still says what to do')
+
+  // Asked for the first address: the symbol is that address, printed beneath.
+  const first = remoteAddressLines(live.data)[0]
+  const shown = stub.remotePage(t, state({ code: first }))
+  const qr = treeByType(shown, 'svg').find(node => node.props.className === 'edh-remote-qr')
+  assert.ok(qr, 'the code is inline SVG')
+  assert.equal(qr.props['aria-label'], 'QR code for ' + first)
+  assert.deepEqual(
+    treeByType(qr, 'path').map(node => node.props.d),
+    [stub.remoteQrSvg(remoteQrModel(first), 'x').props.children[1].props.d],
+    'the drawing is the symbol for the address on screen',
+  )
+  assert.ok(treeText(shown).includes(first), 'the address is printed beneath it')
+  assert.equal(
+    treeByType(shown, 'button').filter(button => button.props.children.includes('Copy')).length,
+    3,
+    'the code carries its own Copy, beside the two addresses',
+  )
+  assert.equal(
+    treeByType(shown, 'button').filter(button => button.props.children.includes('Hide code')).length,
+    1,
+    'and the control now offers to hide it',
+  )
+
+  // The address list changes under the code: it collapses rather than lying.
+  const moved = stub.remotePage(t, state({
+    code: first,
+    view: { ...live, data: { ...live.data, addresses: ['192.168.1.99'] } },
+  }))
+  assert.equal(treeByType(moved, 'svg').length, 0, 'a code for an address no longer shown is not drawn')
+
+  // An address too long for a supported symbol: the list stands alone, no control.
+  const long = 'http://' + 'a'.repeat(300) + ':8787'
+  const tooLong = stub.remotePage(t, state({ view: { ...live, data: { ...live.data, addresses: [long] } } }))
+  assert.equal(treeByType(tooLong, 'svg').length, 0)
+  assert.equal(
+    treeByType(tooLong, 'button').filter(button => button.props.children.includes('Show code')).length,
+    0,
+    'no control that cannot produce a code',
+  )
+  assert.ok(treeText(tooLong).includes(long), 'the address itself is still there')
+}
+
+console.log('edh mobile: layer, stylesheet, and QR checks passed')
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
 console.log('edh mcp: settings section checks passed')

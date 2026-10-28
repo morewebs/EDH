@@ -51,6 +51,13 @@
  * - **Bodies are piped, never buffered.** The GUI uploads through
  *   `POST /api/session/uploadFileBinary`, which is a streaming route; a buffered
  *   proxy would cap it at the bridge's aggregate limit and hold it in memory.
+ * - **The harness webserver does not compress.** Its `compression` config
+ *   defaults to `none`, so every asset and every RPC JSON answer would cross the
+ *   wifi as-is. Compression therefore belongs to this proxy — the one place that
+ *   owns both the response bytes and the client's own `accept-encoding` — and it
+ *   is a transport concern only: it cannot change what the GUI renders.
+ *   Everything *visual* about mobile lives in EDH's browser half, which already
+ *   runs inside the document (see `mobile.js`).
  *
  * The store is EDH-owned JSON beside `.edh/mcp.json`:
  * `<profile>/.edh/remote.json`, holding
@@ -70,6 +77,7 @@ import { connect as netConnect } from 'node:net'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
+import { constants as zlibConstants, createBrotliCompress, createGzip } from 'node:zlib'
 
 export const name = 'edh-remote'
 
@@ -967,6 +975,256 @@ ${errorLine}      <form method="post" action="${LOGIN_PATH}">
 }
 
 // ---------------------------------------------------------------------------
+// Transport compression
+// ---------------------------------------------------------------------------
+//
+// The one thing this proxy does to the bytes besides forwarding them, and it is
+// the biggest win on a phone: `@deepseek-ai/dsh-host-webserver`'s `compression`
+// config defaults to `none`, so every asset and every RPC JSON answer leaves the
+// loopback listener uncompressed and would cross the wifi as-is.
+//
+// Compression is done here, in the proxy, because it is the only place in the
+// system that owns both the response bytes and the client's own
+// `accept-encoding` — and because it is a pure transport concern that cannot
+// change what the GUI renders. (Everything *visual* about mobile belongs to
+// EDH's browser half, which already runs inside the document.)
+//
+// The skip list is deliberately long. Corrupting the plugin event stream, a
+// WebSocket handshake or a redirect would be a far worse bug than slow assets,
+// so anything not plainly a compressible document goes out exactly as it came.
+
+/** Codecs this proxy will emit, best first. */
+export const ENCODINGS = Object.freeze(['br', 'gzip'])
+
+/**
+ * Media types worth encoding.
+ *
+ * An allowlist, never a denylist: `text/event-stream`, `image/png`, `font/woff2`
+ * and anything unknown therefore fall through untouched by construction. Fonts
+ * and images are already compressed; `wasm` is left alone because the GUI does
+ * not ship any and a wrong guess there is expensive.
+ */
+export const COMPRESSIBLE_TYPES = Object.freeze([
+  'text/html',
+  'text/css',
+  'text/plain',
+  'text/javascript',
+  'text/xml',
+  'application/javascript',
+  'application/json',
+  'application/ld+json',
+  'application/manifest+json',
+  'application/xhtml+xml',
+  'application/xml',
+  'image/svg+xml',
+])
+
+/** Statuses that carry no body and therefore must not be encoded. */
+const BODYLESS_STATUS = new Set([204, 205, 304])
+
+/**
+ * The best encoding one `accept-encoding` header permits.
+ *
+ * Quality values are honoured so `br;q=0, gzip` really means gzip: prefer Brotli,
+ * fall back to gzip, and treat `*` as gzip rather than Brotli — a wildcard asks
+ * for *some* encoding, and gzip is the one every client that sends a wildcard
+ * can actually decode. `identity` and a missing header mean no encoding at all.
+ * @param acceptEncoding - the verbatim request header.
+ * @returns `'br'`, `'gzip'`, or `undefined` when nothing is acceptable.
+ */
+export function chooseEncoding(acceptEncoding) {
+  if (typeof acceptEncoding !== 'string' || acceptEncoding.trim() === '') return undefined
+  const quality = new Map()
+  for (const part of acceptEncoding.split(',')) {
+    const [rawName, ...params] = part.split(';')
+    const name = rawName.trim().toLowerCase()
+    if (name === '') continue
+    let q = 1
+    for (const param of params) {
+      const match = /^\s*q\s*=\s*([0-9.]+)\s*$/iu.exec(param)
+      if (match !== null) q = Number(match[1])
+    }
+    if (!Number.isFinite(q) || q <= 0) q = 0
+    // A codec listed twice keeps its most permissive value.
+    quality.set(name, Math.max(quality.get(name) ?? 0, q))
+  }
+  if ((quality.get('br') ?? 0) > 0) return 'br'
+  if ((quality.get('gzip') ?? 0) > 0 || (quality.get('x-gzip') ?? 0) > 0) return 'gzip'
+  if ((quality.get('*') ?? 0) > 0) return 'gzip'
+  return undefined
+}
+
+/**
+ * Whether one response media type is worth encoding.
+ * @param contentType - the verbatim `content-type` header, when there is one.
+ * @returns true for the allowlist only.
+ */
+export function isCompressibleType(contentType) {
+  if (typeof contentType !== 'string') return false
+  const base = contentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  if (base === '') return false
+  if (base.startsWith('text/event-stream')) return false
+  return COMPRESSIBLE_TYPES.includes(base)
+}
+
+/**
+ * The encoding one response should use, or `undefined` to pass it through.
+ *
+ * Every refusal here is a correctness rule rather than a preference:
+ * a `HEAD` has no body to encode; a `204`/`304` must arrive byte-empty; an
+ * already-encoded body must never be encoded twice; `no-transform` is the
+ * origin saying so; a range request must keep its byte offsets; an empty body is
+ * not worth a header it cannot justify; and an event stream, a redirect or an
+ * unlisted type is not something this proxy has any business rewriting.
+ * @param options - the request method, the status, and both header sets as raw.
+ * @returns `'br'`, `'gzip'`, or `undefined`.
+ */
+export function shouldCompress(options = {}) {
+  const { method, status, requestHeaders, responseHeaders } = options
+  if (typeof method !== 'string' || method.toUpperCase() === 'HEAD') return undefined
+  if (!Number.isInteger(status) || status < 200 || status > 299) return undefined
+  if (BODYLESS_STATUS.has(status)) return undefined
+  const response = isRecord(responseHeaders) ? responseHeaders : {}
+  const request = isRecord(requestHeaders) ? requestHeaders : {}
+  if (headerValue(response, 'content-encoding') !== undefined) return undefined
+  if (headerValue(request, 'range') !== undefined) return undefined
+  const cacheControl = headerValue(response, 'cache-control')
+  if (typeof cacheControl === 'string' && /no-transform/iu.test(cacheControl)) return undefined
+  const length = headerValue(response, 'content-length')
+  if (typeof length === 'string' && Number(length) === 0) return undefined
+  if (!isCompressibleType(headerValue(response, 'content-type'))) return undefined
+  return chooseEncoding(headerValue(request, 'accept-encoding'))
+}
+
+/** One response header, case-insensitively, as text. */
+function headerValue(headers, name) {
+  if (!isRecord(headers)) return undefined
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== name) continue
+    return typeof value === 'string' ? value : Array.isArray(value) ? value.join(', ') : undefined
+  }
+  return undefined
+}
+
+/**
+ * The headers one encoded response carries.
+ *
+ * `content-length` is dropped because the body changed size; `content-md5` and
+ * `digest` are dropped for the same reason (they describe the bytes the origin
+ * computed, not the ones the phone receives); and `vary: accept-encoding` is
+ * merged in because the answer now genuinely depends on that request header.
+ * @param headers - the response headers about to be written.
+ * @param encoding - the codec being applied.
+ * @returns a new header object.
+ */
+export function encodedHeaders(headers, encoding) {
+  const encoded = {}
+  for (const [key, value] of Object.entries(isRecord(headers) ? headers : {})) {
+    if (value === undefined) continue
+    const lower = key.toLowerCase()
+    if (lower === 'content-length' || lower === 'content-md5' || lower === 'digest') continue
+    if (lower === 'content-encoding') continue
+    if (lower === 'vary') continue
+    encoded[lower] = value
+  }
+  encoded['content-encoding'] = encoding
+  encoded.vary = appendVary(headers, 'accept-encoding')
+  return encoded
+}
+
+/** One `vary` value with `field` merged in, without duplicating what is already there. */
+function appendVary(headers, field) {
+  const existing = headerValue(headers, 'vary')
+  if (typeof existing !== 'string' || existing.trim() === '') return field
+  const fields = existing
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '')
+  if (fields.some(entry => entry.toLowerCase() === field)) return fields.join(', ')
+  return [...fields, field].join(', ')
+}
+
+/**
+ * One zlib stream for a codec.
+ *
+ * Brotli is asked for quality 5 rather than the default 11: this is a live proxy
+ * on a desktop, the payload is a LAN hop, and the difference between 5 and 11 is
+ * a hundredfold in CPU for a few percent of bytes. gzip runs at level 6, the
+ * usual compromise.
+ * @param encoding - `'br'` or `'gzip'`.
+ * @returns the transform, or `undefined` for an unknown codec.
+ */
+export function createCompressor(encoding) {
+  if (encoding === 'br') {
+    return createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } })
+  }
+  if (encoding === 'gzip') return createGzip({ level: 6 })
+  return undefined
+}
+
+/**
+ * Stream one upstream response into the client response, encoding if asked.
+ *
+ * Nothing is buffered: the transform is fed chunk by chunk and every compressed
+ * chunk is written as it appears, with backpressure honoured in both directions
+ * (the codec pauses when the socket is full, and the source pauses when the codec
+ * is). The headers are deliberately written on the *first* output chunk rather
+ * than up front, so an empty body — a bare `200` with no bytes — goes out without
+ * `content-encoding` and without a compressed frame that decodes to the same
+ * nothing. With no encoding the response is the plain pipe the proxy always had.
+ * @param options - `source`, `sink`, `status`, `headers`, `encoding`, `logger`.
+ */
+export function streamBody(options = {}) {
+  const { source, sink, status = 200, headers = {}, encoding, logger } = options
+  if (sink === undefined || source === undefined) return
+  const codec = encoding === undefined ? undefined : createCompressor(encoding)
+  if (codec === undefined) {
+    sink.writeHead(status, headers)
+    source.pipe(sink)
+    return
+  }
+  let started = false
+  let sawInput = false
+  const begin = () => {
+    if (started) return
+    started = true
+    sink.writeHead(status, sawInput ? encodedHeaders(headers, encoding) : headers)
+  }
+  codec.on('data', chunk => {
+    // A codec always emits its own frame header, even for zero input. An empty
+    // body therefore has to be dropped here: writing it while the headers say
+    // "no content-encoding" would hand the client a few bytes of zlib.
+    if (sawInput !== true) return
+    begin()
+    if (sink.write(chunk) === false) {
+      codec.pause()
+      sink.on?.('drain', () => codec.resume())
+    }
+  })
+  codec.on('end', () => {
+    begin()
+    sink.end()
+  })
+  codec.on('error', error => {
+    logger?.warn?.('edh-remote: encoding a response failed: %s', messageOf(error))
+    if (started !== true) sink.writeHead(status, headers)
+    sink.destroy?.()
+  })
+  source.on('data', chunk => {
+    sawInput = true
+    if (codec.write(chunk) === false) {
+      source.pause?.()
+      codec.once('drain', () => source.resume?.())
+    }
+  })
+  source.on('end', () => codec.end())
+  source.on('error', () => {
+    codec.destroy()
+    sink.destroy?.()
+  })
+}
+
+// ---------------------------------------------------------------------------
 // The proxy
 // ---------------------------------------------------------------------------
 
@@ -981,7 +1239,9 @@ function textResponse(text, status = 200, headers = {}) {
  * Bodies are piped in both directions and nothing is read into memory: the GUI
  * streams file uploads, answers with a long-lived SSE stream, and keeps one
  * WebSocket open, so a buffered proxy would either cap an upload or drop a live
- * connection. No idle timeout is installed on either side.
+ * connection. No idle timeout is installed on either side. Responses may pass
+ * through a compression transform on the way out ({@link streamBody}), which is
+ * still a stream: chunk in, chunk out, no whole body held.
  *
  * Every live upstream request and socket is tracked, so disposing the row kills
  * exactly the connections this listener created and never touches the desktop's
@@ -1000,7 +1260,7 @@ export function createRemoteProxy(options = {}) {
     createUpstream = netConnect,
     logger,
   } = options
-  const stats = { requests: 0, upgrades: 0, killed: 0, errors: 0 }
+  const stats = { requests: 0, upgrades: 0, killed: 0, errors: 0, encoded: 0 }
   const pending = new Set()
   const sockets = new Set()
 
@@ -1062,8 +1322,16 @@ export function createRemoteProxy(options = {}) {
       upstream.on('response', upstreamRes => {
         // The harness answers the proxy. Its session cookie is bound to the
         // loopback authority and must never travel back out over the LAN.
-        res.writeHead(upstreamRes.statusCode ?? 502, filterResponseHeaders(upstreamRes.headers))
-        upstreamRes.pipe(res)
+        const status = upstreamRes.statusCode ?? 502
+        const headers = filterResponseHeaders(upstreamRes.headers)
+        const encoding = shouldCompress({
+          method: req.method,
+          status,
+          requestHeaders: req.headers,
+          responseHeaders: upstreamRes.headers,
+        })
+        if (encoding !== undefined) stats.encoded += 1
+        streamBody({ source: upstreamRes, sink: res, status, headers, encoding, logger })
         upstreamRes.on('error', () => res.destroy?.())
       })
       // The phone hanging up must free the upstream request, or a long poll

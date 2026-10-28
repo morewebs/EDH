@@ -64,3 +64,11 @@
     - id: edh-usage
       name: '@moreweb/edh/usage'
       config: {}
+
+    # mobile — the web app manifest, and nothing else. The visible half of mobile
+    # (metas, stylesheet, manifest link) is injected into the live document by
+    # EDH's browser half, which already runs inside the page; this row only
+    # serves the manifest a phone needs a URL for.
+    - id: edh-mobile
+      name: '@moreweb/edh/mobile'
+      config: {}

@@ -242,6 +242,41 @@ fact: **the listener is ours, and the harness only ever sees loopback.**
   inspector's `cdp` pattern: `net.connect`, a hand-written `GET … Upgrade:
   websocket` with the forwarded `sec-websocket-*` headers, then
   `socket.pipe(upstream).pipe(socket)`.
+- **Responses are re-compressed on the way out.** The harness webserver runs with
+  `compression: none`, so every asset and every RPC JSON answer would cross the
+  wifi as-is. The proxy negotiates `br`/`gzip` itself (`shouldCompress`), streams
+  it through a zlib transform and never buffers a body to do it — and refuses
+  anything that is not plainly a compressible document: `text/event-stream`, a
+  redirect, `204`/`205`/`304`, `HEAD`, an already-encoded body, a range request,
+  `no-transform`, and an empty body.
+
+## Mobile
+
+`mobile.js` is the smallest row in EDH, and the seam is the point.
+
+- **The browser half injects; the proxy does not.** `client.js` is loaded *into*
+  the live Harness document, so it can insert a real `<style>`, real `<meta>`
+  tags and a `<link rel="manifest">` through the DOM. Remote proxies that same
+  document to the phone, so the phone inherits all of it. A reverse proxy cannot
+  see a document — only bytes — and CSS written against the harness's
+  build-hashed class names (`AnXs9G_options`) breaks on every release, so
+  proxy-side HTML surgery was tried and dropped on purpose.
+- **The proxy's only mobile concern is compression** (see above): a transport
+  fact the document cannot fix for itself.
+- **One thing a page cannot do for itself is a manifest**, so this row serves
+  `GET /api/edh.mobile/manifest` as `application/manifest+json`. `display` is
+  `standalone` (not the shipped manifest's `fullscreen`: keep a status bar and a
+  way out), and `start_url`/`scope` are `"/"`, **not** `"./"` — manifest URLs
+  resolve against the manifest's own URL, so `"./"` served from
+  `/api/edh.mobile/manifest` would start the installed app inside
+  `/api/edh.mobile/` and put the document outside its own scope, which makes the
+  app non-installable.
+- **The icon is verified, or it is omitted.** A manifest that promises a 404
+  icon fails the whole install prompt. `/favicon.svg` is shipped at the origin
+  root by `@deepseek-ai/dsh-web-frontend` (`dist/favicon.svg`, linked from its
+  `index.html`) and answers `200 image/svg+xml`, so it is named — root-relative,
+  because an icon URL resolves against the manifest URL too. If that file ever
+  moves, drop the `icons` array rather than guess.
 
 ## Styling
 
@@ -268,6 +303,7 @@ node test/client.mjs
 node test/export.mjs
 node test/update.mjs
 node test/remote.mjs
+node test/mobile.mjs
 node test/mcp.mjs
 node test/usage.mjs
 ```

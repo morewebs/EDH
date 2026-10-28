@@ -2,14 +2,18 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { brotliDecompressSync, createBrotliCompress, createGzip, gunzipSync } from 'node:zlib'
 import {
   apply,
   BIND_ADDRESS,
   captureIndexCookie,
+  chooseEncoding,
   CLEAR_COOKIE,
   clientAddress,
+  COMPRESSIBLE_TYPES,
   configView,
   COOKIE_NAME,
+  createCompressor,
   createFileStore,
   createLimiter,
   createRemoteControl,
@@ -17,8 +21,11 @@ import {
   createRemoteServer,
   DEFAULT_PORT,
   defaultConfig,
+  ENCODINGS,
+  encodedHeaders,
   filterResponseHeaders,
   hashPassword,
+  isCompressibleType,
   isNavigation,
   LAN_WARNING,
   launchTokenOf,
@@ -38,7 +45,9 @@ import {
   rewriteRequestHeaders,
   safeEqualText,
   sessionCookieHeader,
+  shouldCompress,
   signSession,
+  streamBody,
   upgradeRequestText,
   verifyLogin,
   verifyPassword,
@@ -144,6 +153,14 @@ function fakeResponse() {
     text() {
       return Buffer.concat(chunks).toString('utf8')
     },
+    /** The bytes written so far, for an encoded body that must be decoded first. */
+    raw() {
+      return Buffer.concat(chunks)
+    },
+    /** How many separate `write` calls landed, so a test can see it streaming. */
+    chunkCount() {
+      return chunks.length
+    },
   }
   return response
 }
@@ -194,20 +211,89 @@ function fakeUpstream() {
       const upstreamRes = {
         statusCode,
         headers,
+        paused: 0,
+        resumed: 0,
+        pipedTo: [],
         on(event, fn) {
           const list = responseListeners.get(event) ?? []
           list.push(fn)
           responseListeners.set(event, list)
           return upstreamRes
         },
+        once(event, fn) {
+          return upstreamRes.on(event, fn)
+        },
         emit(event, ...args) {
           for (const fn of [...(responseListeners.get(event) ?? [])]) fn(...args)
         },
+        pause() {
+          upstreamRes.paused += 1
+        },
+        resume() {
+          upstreamRes.resumed += 1
+        },
         pipe(destination) {
+          upstreamRes.pipedTo.push(destination)
           for (const chunk of chunks) destination.write?.(chunk)
           destination.end?.()
           responseChunks.push(...chunks)
           return destination
+        },
+      }
+      upstream.emit('response', upstreamRes)
+      // The proxy consumes a response one of two ways — piping it when it passes
+      // the body through, or listening for `data`/`end` when it encodes it — so a
+      // scripted answer has to deliver the body both ways. Only one is ever read.
+      for (const chunk of chunks) upstreamRes.emit('data', chunk)
+      upstreamRes.emit('end')
+      return upstreamRes
+    },
+    /**
+     * Answer with a response the test drives chunk by chunk.
+     *
+     * The proxy may consume a response either by piping it (the plain path) or by
+     * subscribing to `data`/`end` (the compression path), so a scripted answer has
+     * to support both. `push`/`finish` are what the streaming tests use.
+     */
+    stream({ statusCode = 200, headers = {} } = {}) {
+      const responseListeners = new Map()
+      const upstreamRes = {
+        statusCode,
+        headers,
+        paused: 0,
+        resumed: 0,
+        pipedTo: [],
+        on(event, fn) {
+          const list = responseListeners.get(event) ?? []
+          list.push(fn)
+          responseListeners.set(event, list)
+          return upstreamRes
+        },
+        once(event, fn) {
+          return upstreamRes.on(event, fn)
+        },
+        emit(event, ...args) {
+          for (const fn of [...(responseListeners.get(event) ?? [])]) fn(...args)
+        },
+        pause() {
+          upstreamRes.paused += 1
+        },
+        resume() {
+          upstreamRes.resumed += 1
+        },
+        pipe(destination) {
+          upstreamRes.pipedTo.push(destination)
+          upstreamRes.destination = destination
+          return destination
+        },
+        /** Feed one chunk: to the pipe if the proxy made one, and as an event either way. */
+        push(chunk) {
+          upstreamRes.destination?.write?.(chunk)
+          upstreamRes.emit('data', chunk)
+        },
+        finish() {
+          upstreamRes.destination?.end?.()
+          upstreamRes.emit('end')
         },
       }
       upstream.emit('response', upstreamRes)
@@ -287,6 +373,25 @@ function createScope(services, collected) {
 /** Wait for the microtask/timer turns an un-awaited `bind()` needs. */
 function settle() {
   return new Promise(resolve => setTimeout(resolve, 5))
+}
+
+/**
+ * Wait until `predicate` holds, with a wall-clock deadline.
+ *
+ * zlib's output lands on the libuv threadpool, so "the next microtask" is not a
+ * promise that it has arrived: a suite that only spun `setImmediate` a fixed
+ * number of times passed alone and failed when eight suites ran back to back.
+ * The deadline is the real bound; the yields just keep the loop cheap.
+ * @param predicate - what to wait for.
+ * @param label - the step name a failure names.
+ */
+async function until(predicate, label) {
+  const deadline = Date.now() + 5000
+  for (let turn = 0; ; turn += 1) {
+    if (predicate() === true) return
+    assert.equal(Date.now() < deadline, true, `timed out waiting for ${label}`)
+    await new Promise(resolve => (turn % 8 === 0 ? setTimeout(resolve, 1) : setImmediate(resolve)))
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,6 +1466,422 @@ function listenersOf(target) {
   apply(empty, { storePath })
   await settle()
   assert.equal(routes.length, 0)
+}
+
+// ---------------------------------------------------------------------------
+// 13 — transport compression: what is negotiated, and what is refused outright
+// ---------------------------------------------------------------------------
+{
+  assert.deepEqual([...ENCODINGS], ['br', 'gzip'], 'brotli is offered first')
+
+  // Negotiation, including q-values, because `br;q=0, gzip` really means gzip.
+  assert.equal(chooseEncoding('gzip, deflate, br'), 'br', 'br wins when both are offered')
+  assert.equal(chooseEncoding('br, gzip'), 'br')
+  assert.equal(chooseEncoding('gzip, deflate'), 'gzip', 'gzip when br is absent')
+  assert.equal(chooseEncoding('gzip'), 'gzip')
+  assert.equal(chooseEncoding('x-gzip'), 'gzip', 'the legacy spelling counts')
+  assert.equal(chooseEncoding('br;q=0, gzip'), 'gzip', 'a refused br falls back to gzip')
+  assert.equal(chooseEncoding('br;q=0.5, gzip;q=1'), 'br', 'a small q still means accepted')
+  assert.equal(chooseEncoding('identity'), undefined, 'a client that refuses every codec gets none')
+  assert.equal(chooseEncoding('identity;q=1, gzip;q=0'), undefined)
+  assert.equal(chooseEncoding(''), undefined)
+  assert.equal(chooseEncoding(undefined), undefined, 'no header, no compression')
+  assert.equal(chooseEncoding('*'), 'gzip', 'a wildcard asks for anything; gzip is the safe anything')
+  assert.equal(chooseEncoding('GZIP , Br'), 'br', 'case and spacing do not matter')
+  assert.equal(chooseEncoding('deflate'), undefined, 'deflate is not a codec this proxy emits')
+  assert.equal(chooseEncoding('br;q=zero'), 'br', 'an unreadable q is ignored — the codec was still offered')
+
+  // Media types: an allowlist, so the event stream cannot slip through.
+  for (const type of [
+    'text/html',
+    'text/html; charset=utf-8',
+    'text/css',
+    'text/javascript',
+    'application/javascript',
+    'application/json; charset=utf-8',
+    'application/manifest+json',
+    'image/svg+xml',
+    'text/plain',
+    'application/xml',
+  ]) {
+    assert.equal(isCompressibleType(type), true, `${type} is worth encoding`)
+  }
+  for (const type of [
+    'text/event-stream',
+    'text/event-stream; charset=utf-8',
+    'image/png',
+    'image/jpeg',
+    'font/woff2',
+    'application/octet-stream',
+    'application/wasm',
+    'multipart/form-data',
+    '',
+    undefined,
+  ]) {
+    assert.equal(isCompressibleType(type), false, `${JSON.stringify(type)} goes out exactly as it came`)
+  }
+  assert.equal(COMPRESSIBLE_TYPES.includes('text/event-stream'), false, 'the event stream is not on the allowlist at all')
+
+  // The skip list, one rule at a time.
+  const ok = {
+    method: 'GET',
+    status: 200,
+    requestHeaders: { 'accept-encoding': 'br' },
+    responseHeaders: { 'content-type': 'application/json', 'content-length': '2048' },
+  }
+  assert.equal(shouldCompress(ok), 'br', 'a JSON answer over br')
+  assert.equal(shouldCompress({ ...ok, method: 'HEAD' }), undefined, 'HEAD has no body to encode')
+  assert.equal(shouldCompress({ ...ok, status: 204 }), undefined, '204 must arrive byte-empty')
+  assert.equal(shouldCompress({ ...ok, status: 205 }), undefined)
+  assert.equal(shouldCompress({ ...ok, status: 304 }), undefined, '304 must not be re-encoded')
+  assert.equal(shouldCompress({ ...ok, status: 302 }), undefined, 'a redirect is not a document')
+  assert.equal(shouldCompress({ ...ok, status: 500 }), undefined, 'only 2xx')
+  assert.equal(
+    shouldCompress({ ...ok, responseHeaders: { ...ok.responseHeaders, 'content-encoding': 'gzip' } }),
+    undefined,
+    'an already-encoded body is never encoded twice',
+  )
+  assert.equal(
+    shouldCompress({ ...ok, responseHeaders: { ...ok.responseHeaders, 'cache-control': 'public, no-transform' } }),
+    undefined,
+    'no-transform is the origin saying so',
+  )
+  assert.equal(
+    shouldCompress({ ...ok, responseHeaders: { ...ok.responseHeaders, 'content-length': '0' } }),
+    undefined,
+    'an empty body is not given a header it cannot justify',
+  )
+  assert.equal(
+    shouldCompress({ ...ok, requestHeaders: { 'accept-encoding': 'br', range: 'bytes=0-99' } }),
+    undefined,
+    'a range request keeps its byte offsets',
+  )
+  assert.equal(shouldCompress({ ...ok, requestHeaders: {} }), undefined, 'no accept-encoding, no compression')
+  assert.equal(
+    shouldCompress({ ...ok, responseHeaders: { 'content-type': 'text/event-stream' } }),
+    undefined,
+    'never the plugin event stream',
+  )
+  assert.equal(
+    shouldCompress({ ...ok, status: 200, responseHeaders: { 'Content-Type': 'text/CSS', 'Accept-Encoding': 'gzip' } }),
+    'br',
+    'headers are read case-insensitively',
+  )
+  assert.equal(shouldCompress({ ...ok, status: undefined }), undefined, 'a status it cannot read is not compressed')
+
+  // The headers an encoded body carries.
+  const encoded = encodedHeaders(
+    {
+      'content-type': 'application/json',
+      'content-length': '2048',
+      'content-md5': 'abc',
+      digest: 'sha-256=xyz',
+      'cache-control': 'no-store',
+    },
+    'br',
+  )
+  assert.equal(encoded['content-encoding'], 'br')
+  assert.equal('content-length' in encoded, false, 'content-length is dropped when the body changed')
+  assert.equal('content-md5' in encoded, false, 'an integrity header for the old bytes is dropped too')
+  assert.equal('digest' in encoded, false)
+  assert.equal(encoded['content-type'], 'application/json')
+  assert.equal(encoded['cache-control'], 'no-store')
+  assert.equal(encoded.vary, 'accept-encoding', 'vary is honest about what the answer now depends on')
+  assert.equal(encodedHeaders({ vary: 'origin' }, 'gzip').vary, 'origin, accept-encoding', 'an existing vary is extended')
+  assert.equal(
+    encodedHeaders({ vary: 'origin, Accept-Encoding' }, 'gzip').vary,
+    'origin, Accept-Encoding',
+    'and never duplicated',
+  )
+  assert.equal(encodedHeaders({}, 'gzip').vary, 'accept-encoding')
+
+  // Both codecs exist; an unknown one degrades to "no transform".
+  const brotli = createCompressor('br')
+  const gzip = createCompressor('gzip')
+  assert.equal(typeof brotli.write, 'function')
+  assert.equal(typeof gzip.write, 'function')
+  assert.notEqual(brotli, gzip)
+  assert.equal(createCompressor('deflate'), undefined)
+  assert.equal(createCompressor(undefined), undefined)
+  brotli.destroy()
+  gzip.destroy()
+}
+
+// ---------------------------------------------------------------------------
+// 14 — the transform streams: headers with the first byte, never a whole body held
+// ---------------------------------------------------------------------------
+{
+  /** One upstream response body the test pushes into, with the plumbing zlib needs. */
+  const fakeBodySource = () => {
+    const listeners = new Map()
+    const source = {
+      pauses: 0,
+      resumes: 0,
+      pipeCalls: 0,
+      on(event, fn) {
+        const list = listeners.get(event) ?? []
+        list.push(fn)
+        listeners.set(event, list)
+        return source
+      },
+      once(event, fn) {
+        return source.on(event, fn)
+      },
+      emit(event, ...args) {
+        for (const fn of [...(listeners.get(event) ?? [])]) fn(...args)
+      },
+      pause() {
+        source.pauses += 1
+      },
+      resume() {
+        source.resumes += 1
+      },
+      pipe(destination) {
+        source.pipeCalls += 1
+        return destination
+      },
+    }
+    return source
+  }
+
+  // gzip: the header waits for the first byte, and the body streams.
+  const text = `${'abcdefgh'.repeat(4096)}tail`
+  const source = fakeBodySource()
+  const sink = fakeResponse()
+  streamBody({
+    source,
+    sink,
+    status: 200,
+    headers: { 'content-type': 'application/json', 'content-length': String(text.length) },
+    encoding: 'gzip',
+  })
+  assert.equal(sink.headersSent, false, 'no header before the first byte of body exists')
+  assert.equal(sink.chunkCount(), 0)
+  assert.equal(source.pipeCalls, 0, 'the compression path drives the source itself, never pipe')
+
+  source.emit('data', Buffer.from(text.slice(0, 32_768)))
+  await until(() => sink.chunkCount() > 0, 'the first compressed chunk')
+  assert.equal(sink.headersSent, true, 'the header goes out with the first chunk, not with the last')
+  assert.equal(sink.headers['content-encoding'], 'gzip')
+  assert.equal('content-length' in sink.headers, false)
+  assert.equal(sink.headers.vary, 'accept-encoding')
+  assert.equal(sink.writableEnded, false, 'and the response is still open: nothing waits for the end')
+
+  source.emit('data', Buffer.from(text.slice(32_768)))
+  source.emit('end')
+  await until(() => sink.writableEnded === true, 'the end of the encoded response')
+  assert.equal(gunzipSync(sink.raw()).toString('utf8'), text, 'the body decodes to exactly what the origin sent')
+
+  // brotli: the same contract, the other codec.
+  {
+    const brSource = fakeBodySource()
+    const brSink = fakeResponse()
+    streamBody({
+      source: brSource,
+      sink: brSink,
+      status: 200,
+      headers: { 'content-type': 'text/html', 'content-length': '40000' },
+      encoding: 'br',
+    })
+    brSource.emit('data', Buffer.alloc(40_000, 0x41))
+    brSource.emit('end')
+    await until(() => brSink.writableEnded === true, 'the end of the brotli response')
+    assert.equal(brSink.headers['content-encoding'], 'br')
+    assert.equal(brotliDecompressSync(brSink.raw()).toString('utf8'), 'A'.repeat(40_000))
+    assert.equal(brSink.chunkCount() >= 1, true)
+  }
+
+  // An empty body: a codec always emits its own frame header, and that must not
+  // reach the client while the headers say the body is not encoded.
+  {
+    const emptySource = fakeBodySource()
+    const emptySink = fakeResponse()
+    streamBody({
+      source: emptySource,
+      sink: emptySink,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      encoding: 'br',
+    })
+    emptySource.emit('end')
+    await until(() => emptySink.writableEnded === true, 'the empty response to end')
+    assert.equal(emptySink.status, 200)
+    assert.equal('content-encoding' in emptySink.headers, false, 'an empty body is never given a compressed frame')
+    assert.equal(emptySink.raw().length, 0, 'and nothing at all is written for it')
+  }
+
+  // No encoding asked for: exactly the plain pipe the proxy always had.
+  {
+    const plainSource = fakeBodySource()
+    const plainSink = fakeResponse()
+    streamBody({
+      source: plainSource,
+      sink: plainSink,
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-length': '2' },
+      encoding: undefined,
+    })
+    assert.equal(plainSink.headersSent, true, 'the plain path writes its headers immediately')
+    assert.equal(plainSink.headers['content-type'], 'application/json')
+    assert.equal(plainSource.pipeCalls, 1, 'and hands the body straight to the socket')
+  }
+
+  // A codec failure is contained: the response is destroyed, never left open.
+  {
+    const errorSource = fakeBodySource()
+    const errorSink = fakeResponse()
+    const warnings = []
+    streamBody({
+      source: errorSource,
+      sink: errorSink,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      encoding: 'gzip',
+      logger: { warn: message => warnings.push(String(message)) },
+    })
+    errorSource.emit('error', new Error('socket hang up'))
+    assert.equal(warnings.length, 0, 'a source failure is handled without a warning')
+    assert.equal(errorSink.destroyed, true, 'a dead upstream takes the response down with it rather than hanging')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 15 — compression through the proxy: the event stream is never touched
+// ---------------------------------------------------------------------------
+{
+  const sink = {
+    origin: 'http://127.0.0.1:51234',
+    authority: '127.0.0.1:51234',
+    hostname: '127.0.0.1',
+    port: 51234,
+    tls: false,
+  }
+  const upstreams = []
+  const proxy = createRemoteProxy({
+    target: () => sink,
+    mintCookie: () => 'dsh-auth-abc=v1.body.signature',
+    createRequest: options => {
+      const created = fakeUpstream()
+      created.options = options
+      upstreams.push(created)
+      return created
+    },
+  })
+
+  // A JSON answer over wifi: brotli, no content-length, honest vary.
+  const payload = JSON.stringify({ messages: 'x'.repeat(8_000) })
+  const call = fakeRequest({
+    url: '/api/edh.remote',
+    headers: { host: '192.168.1.23:8787', accept: 'application/json', 'accept-encoding': 'gzip, deflate, br' },
+  })
+  const answer = fakeResponse()
+  await proxy.handle(call, answer)
+  const jsonUpstream = upstreams[0].stream({
+    statusCode: 200,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'content-length': String(payload.length) },
+  })
+  jsonUpstream.push(Buffer.from(payload.slice(0, 4000)))
+  jsonUpstream.push(Buffer.from(payload.slice(4000)))
+  jsonUpstream.finish()
+  await until(() => answer.writableEnded === true, 'the compressed JSON answer to end')
+  assert.equal(answer.status, 200)
+  assert.equal(answer.headers['content-encoding'], 'br', 'br was preferred')
+  assert.equal('content-length' in answer.headers, false, 'content-length is dropped')
+  assert.equal(answer.headers.vary, 'accept-encoding')
+  assert.equal(JSON.parse(brotliDecompressSync(answer.raw()).toString('utf8')).messages.length, 8000)
+  assert.equal(proxy.stats.encoded, 1)
+
+  // The same answer to a client that only speaks gzip.
+  const gzipCall = fakeRequest({
+    url: '/api/edh.remote',
+    headers: { host: '192.168.1.23:8787', 'accept-encoding': 'gzip' },
+  })
+  const gzipAnswer = fakeResponse()
+  await proxy.handle(gzipCall, gzipAnswer)
+  upstreams[1].respond({
+    statusCode: 200,
+    headers: { 'content-type': 'application/json' },
+    chunks: [Buffer.from('{"ok":true}')],
+  })
+  await until(() => gzipAnswer.writableEnded === true, 'the gzip answer to end')
+  assert.equal(gzipAnswer.headers['content-encoding'], 'gzip')
+  assert.equal(gunzipSync(gzipAnswer.raw()).toString('utf8'), '{"ok":true}')
+
+  // The plugin event stream is never encoded and never held: each event is
+  // forwarded to the phone as it arrives.
+  const sseCall = fakeRequest({
+    url: '/plugins/events',
+    headers: { host: '192.168.1.23:8787', accept: 'text/event-stream', 'accept-encoding': 'br, gzip' },
+  })
+  const sseAnswer = fakeResponse()
+  await proxy.handle(sseCall, sseAnswer)
+  const sseUpstream = upstreams[2].stream({ statusCode: 200, headers: { 'content-type': 'text/event-stream' } })
+  sseUpstream.push(Buffer.from('data: one\n\n'))
+  await until(() => sseAnswer.chunkCount() === 1, 'the first event')
+  assert.equal(sseAnswer.writableEnded, false, 'the stream is still open after its first event')
+  assert.equal('content-encoding' in sseAnswer.headers, false, 'an event stream is never encoded')
+  sseUpstream.push(Buffer.from('data: two\n\n'))
+  sseUpstream.finish()
+  await until(() => sseAnswer.writableEnded === true, 'the event stream to close')
+  assert.equal(sseAnswer.text(), 'data: one\n\ndata: two\n\n', 'and every event arrives in order, untouched')
+  assert.equal(proxy.stats.encoded, 2, 'the event stream did not count as encoded')
+
+  // An upstream that already encoded its body passes straight through.
+  const preCall = fakeRequest({
+    url: '/assets/app.js',
+    headers: { host: '192.168.1.23:8787', 'accept-encoding': 'br' },
+  })
+  const preAnswer = fakeResponse()
+  await proxy.handle(preCall, preAnswer)
+  upstreams[3].respond({
+    statusCode: 200,
+    headers: { 'content-type': 'application/javascript', 'content-encoding': 'gzip', 'content-length': '12' },
+    chunks: [Buffer.from('x'.repeat(12))],
+  })
+  assert.equal(preAnswer.headers['content-encoding'], 'gzip', 'the origin’s own encoding is left alone')
+  assert.equal(preAnswer.headers['content-length'], '12')
+
+  // A HEAD is not encoded, and a 304 is not either.
+  const headCall = fakeRequest({
+    url: '/assets/app.js',
+    method: 'HEAD',
+    headers: { host: '192.168.1.23:8787', 'accept-encoding': 'br' },
+  })
+  const headAnswer = fakeResponse()
+  await proxy.handle(headCall, headAnswer)
+  const headUpstream = upstreams[4].stream({
+    statusCode: 200,
+    headers: { 'content-type': 'application/javascript', 'content-length': '999' },
+  })
+  headUpstream.finish()
+  await until(() => headAnswer.headersSent === true, 'the HEAD answer')
+  assert.equal('content-encoding' in headAnswer.headers, false, 'HEAD carries no body to encode')
+  assert.equal(headAnswer.headers['content-length'], '999', 'and its headers are the origin’s own')
+
+  const notModified = fakeRequest({
+    url: '/assets/app.js',
+    headers: { host: '192.168.1.23:8787', 'accept-encoding': 'br' },
+  })
+  const notModifiedAnswer = fakeResponse()
+  await proxy.handle(notModified, notModifiedAnswer)
+  upstreams[5].respond({ statusCode: 304, headers: { etag: '"abc"' } })
+  assert.equal(notModifiedAnswer.status, 304)
+  assert.equal('content-encoding' in notModifiedAnswer.headers, false)
+
+  // A client that refuses encoding still gets the document, just as plain bytes.
+  const plainCall = fakeRequest({ url: '/', headers: { host: '192.168.1.23:8787', 'accept-encoding': 'identity' } })
+  const plainAnswer = fakeResponse()
+  await proxy.handle(plainCall, plainAnswer)
+  upstreams[6].respond({
+    statusCode: 200,
+    headers: { 'content-type': 'text/html' },
+    chunks: [Buffer.from('<html></html>')],
+  })
+  assert.equal('content-encoding' in plainAnswer.headers, false)
+  assert.equal(plainAnswer.text(), '<html></html>')
+  assert.equal(proxy.stats.encoded, 2, 'nothing else was encoded')
+
+  proxy.dispose()
 }
 
 console.log('edh remote: all checks passed')

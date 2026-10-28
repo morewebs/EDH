@@ -12,6 +12,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `export` | Downloads the Session as a Markdown document |
 | `update` | Updates EDH itself from its published repo, from EDH's page in Plugin Manager, and reloads the new browser half in place |
 | `mcp` | Connects MCP servers from a settings page — no Cordis config — and gives their tools to the model as it goes |
+| `remote` | Opens the same Web GUI on a phone over the LAN, behind a login page and a username and password you set |
 
 A switch in the conversation header turns them all on or off together.
 

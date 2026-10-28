@@ -49,3 +49,11 @@
     - id: edh-mcp
       name: '@moreweb/edh/mcp'
       config: {}
+
+    # remote — the same Web GUI on a phone over the LAN. The row owns a listener
+    # of its own on 0.0.0.0 (the harness webserver refuses a wildcard bind), a
+    # login page, and the reverse proxy to the loopback GUI; the browser half
+    # carries the settings page.
+    - id: edh-remote
+      name: '@moreweb/edh/remote'
+      config: {}

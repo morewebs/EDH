@@ -145,6 +145,49 @@ each to rediscover:
 - **The pane is per-parent-session storage**, keyed by the tab type id: it stays with the
   conversation that opened it and will not follow you to another session.
 
+## Remote access
+
+`remote.js` serves the same Web GUI to a phone on the LAN. Most of it is one
+fact: **the listener is ours, and the harness only ever sees loopback.**
+
+- **The harness webserver refuses a wildcard bind.** `@deepseek-ai/dsh-host-webserver`
+  requires a concrete IP literal and throws on an unspecified address; the
+  desktop pins `--host 127.0.0.1 --port 0`. So `0.0.0.0:<port>` is a `node:http`
+  server inside `apply()`, and `webServer.port` / `getOrigin()` only say where to
+  forward. There is also **no pre-auth seam** — `WebServer` is
+  register/registerUpgrade/registerFallback/tapIndex/renderIndex, nothing in
+  front of its auth chain.
+- **Host and Origin must both be rewritten to the loopback authority, and the
+  harness cookie injected.** The browser-trust fence (`api-request-trust`) takes
+  a loopback Host on any port but refuses a LAN authority with 403 even when the
+  Origin matches, and requires an attached Origin to name that same Host. The
+  session cookie is authority-bound (name `dsh-auth-<sha256(authority)>`), so the
+  phone's cookie is dropped and never forwarded, and the proxy's own credential
+  is the only one on the wire.
+- **Obtain that credential through the service, not by re-deriving it.**
+  `ctx.connection.authenticatedUrl(base)` yields the process launch token and
+  `ctx.connection.authorizeIndex(request, response)` accepts any object with
+  `method`, `url` and `headers.host` and answers via `writeHead`/`end`, so a
+  synthetic pair captures the exact `set-cookie`. Both are typed members of the
+  `connection` service contract.
+- **The phone is the owner principal.** The cookie admits `browserPeer`, whose
+  principal is `owner`: the whole shell, the file API, the terminal.
+  `dsh-api-remote-access` cannot narrow it (`decide()` allows owner first). The
+  login page is the entire barrier, so the store keeps a scrypt hash with a
+  per-user salt, our own cookie is HMAC-signed and expiry-bounded, and attempts
+  are rate-limited per address.
+- **Plain HTTP, deliberately.** The transport is the harness's own: the desktop
+  listener is plain and minting a certificate for a LAN address is out of scope.
+  The cookie therefore cannot be marked `Secure`, so anyone who can watch the
+  network can replay it. Every answer and the settings page carry that sentence
+  (`LAN_WARNING`); do not drop it.
+- **Bodies are piped, both ways.** Uploads (`POST /api/session/uploadFileBinary`),
+  the SSE stream (`/plugins/events`) and the one WebSocket (`/api/remote.mux`)
+  never get buffered and never get an idle timeout. The WS proxy is the shipped
+  inspector's `cdp` pattern: `net.connect`, a hand-written `GET … Upgrade:
+  websocket` with the forwarded `sec-websocket-*` headers, then
+  `socket.pipe(upstream).pipe(socket)`.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -169,7 +212,13 @@ node test/retry.mjs
 node test/client.mjs
 node test/export.mjs
 node test/update.mjs
+node test/remote.mjs
 ```
+
+`test/remote.mjs` opens no socket on purpose: the listener, the proxy and the
+sign-in gate are all driven through their injected seams (a fake `createServer`,
+a fake `http.request`, a scripted request/response pair), because a suite that
+binds a port cannot run twice at once or on a locked-down machine.
 
 There is often no browser control in a session, so EDH writes Local Storage breadcrumbs:
 `edh:debug` for the switch, `edh:edit` for message editing (`shadowed` / `shadow-failed` /
@@ -180,7 +229,7 @@ both Plugin Manager controls — update (`mounted` / `checked` / `update-started
 for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
 and `edh:btw` for the side-chat commands and its launcher card (`click` / `guide-click` /
 `forked` / `named` / `pane-opened` / `pane-failed` / `register-failed` / `failed` with the
-step that failed).
+step that failed), and `edh:remote` for the Remote page (`loaded` / `saved` / `started` / `stopped` / `failed` / `register-failed`).
 Read them off disk while the app is closed or running:
 
 ```

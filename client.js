@@ -113,6 +113,49 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: 'Write environment lines as NAME=value, one per line.',
       mcpNotReady: 'The server is not ready. Start it, then try again.',
       mcpUnknownServer: 'That server is no longer in the list.',
+      remoteNav: 'Remote',
+      remoteTitle: 'Remote access',
+      remoteIntro: 'Publish this GUI to your phone over the local network.',
+      remoteLoading: 'Loading…',
+      remoteLoadFailed: 'The remote settings could not be read.',
+      remoteRetry: 'Retry',
+      remoteOff: 'Remote access is off. Turn it on with the EDH switch.',
+      remoteUnavailable: 'This profile has no remote services, so there is nothing to publish here.',
+      remoteStateOff: 'Off',
+      remoteStateStarting: 'Starting',
+      remoteStateListening: 'Listening',
+      remoteStateFailed: 'Failed',
+      remoteStart: 'Start',
+      remoteStop: 'Stop',
+      remotePort: 'Port',
+      remotePortHint: '1 to 65535.',
+      remotePortInvalid: 'Enter a port number.',
+      remotePortRange: 'Use a port from 1 to 65535.',
+      remotePortInUse: 'That port is already in use. Pick another.',
+      remoteUsername: 'User name',
+      remoteUsernameRequired: 'Enter a user name.',
+      remoteUsernameInvalid: 'Use at most 64 characters.',
+      remotePassword: 'Password',
+      remotePasswordConfirm: 'Confirm password',
+      remotePasswordHint: 'Changing the password signs out the phone.',
+      remotePasswordRequired: 'Set a password before the server starts.',
+      remotePasswordShort: 'Use at least 8 characters.',
+      remotePasswordMismatch: 'The two passwords do not match.',
+      remoteSave: 'Save',
+      remoteSaving: 'Saving…',
+      remoteSaved: 'Saved',
+      remoteAccount: 'Remote sign-in',
+      remoteAddresses: 'Addresses',
+      remoteAddressesHint: 'Open one of these on your phone.',
+      remoteAddressesWaiting: 'Start the server to get an address.',
+      remotePlainHttp: 'Plain HTTP is the trade: one address and no certificate, but the connection is not encrypted and your password crosses the network in clear text. Use it on a network you trust.',
+      remoteSignOut: 'Sign out all devices',
+      remoteSignOutHint: 'Closes every phone that is signed in.',
+      remoteSessions: 'Phones signed in: {count}',
+      remoteSessionOne: '1 phone signed in',
+      remoteNoSessions: 'No phone signed in',
+      remoteActionFailed: 'That change did not save. Try again, and check the port.',
+      remoteSignedOut: 'Every phone was signed out.',
     }
     const zh = {
       label: 'EDH',
@@ -208,6 +251,49 @@ window.__ModuleLoader__.load({
       mcpEnvInvalid: '环境变量每行写成 NAME=value。',
       mcpNotReady: '服务器尚未就绪，请先启动再试。',
       mcpUnknownServer: '该服务器已不在列表中。',
+      remoteNav: '远程访问',
+      remoteTitle: '远程访问',
+      remoteIntro: '在本地区域网上把这个界面发布到手机上。',
+      remoteLoading: '正在读取…',
+      remoteLoadFailed: '无法读取远程设置。',
+      remoteRetry: '重试',
+      remoteOff: '远程访问已关闭，请用 EDH 开关打开。',
+      remoteUnavailable: '当前配置没有远程服务，这里没有可发布的东西。',
+      remoteStateOff: '已关闭',
+      remoteStateStarting: '正在启动',
+      remoteStateListening: '正在监听',
+      remoteStateFailed: '失败',
+      remoteStart: '启动',
+      remoteStop: '停止',
+      remotePort: '端口',
+      remotePortHint: '1 到 65535。',
+      remotePortInvalid: '请填写端口号。',
+      remotePortRange: '端口请使用 1 到 65535。',
+      remotePortInUse: '该端口已被占用，请换一个。',
+      remoteUsername: '用户名',
+      remoteUsernameRequired: '请填写用户名。',
+      remoteUsernameInvalid: '最多 64 个字符。',
+      remotePassword: '密码',
+      remotePasswordConfirm: '确认密码',
+      remotePasswordHint: '修改密码会让手机退出登录。',
+      remotePasswordRequired: '请先设置密码，再启动服务器。',
+      remotePasswordShort: '至少 8 个字符。',
+      remotePasswordMismatch: '两次输入的密码不一致。',
+      remoteSave: '保存',
+      remoteSaving: '正在保存…',
+      remoteSaved: '已保存',
+      remoteAccount: '远程登录',
+      remoteAddresses: '地址',
+      remoteAddressesHint: '在手机上打开下面任意一个地址。',
+      remoteAddressesWaiting: '启动服务器后会显示地址。',
+      remotePlainHttp: '明文 HTTP 是有意的取舍：只有一个地址、不用证书，但连接不加密，密码会以明文经过网络。请只在信任的网络上使用。',
+      remoteSignOut: '退出所有设备',
+      remoteSignOutHint: '已登录的手机都会退回登录页。',
+      remoteSessions: '已登录手机：{count} 台',
+      remoteSessionOne: '已登录 1 台手机',
+      remoteNoSessions: '没有手机登录',
+      remoteActionFailed: '改动未保存。请重试，并检查端口。',
+      remoteSignedOut: '所有设备已退出。',
     }
 
     /**
@@ -245,6 +331,8 @@ window.__ModuleLoader__.load({
     const UPDATE_DEBUG_KEY = 'edh:update'
     /** Separate breadcrumb for the MCP server page. */
     const MCP_DEBUG_KEY = 'edh:mcp'
+    /** Separate breadcrumb for the remote-access page. */
+    const REMOTE_DEBUG_KEY = 'edh:remote'
     /** Separate breadcrumb for the side-chat commands. */
     const BTW_DEBUG_KEY = 'edh:btw'
 
@@ -274,6 +362,10 @@ window.__ModuleLoader__.load({
 
     function mcpWrite(payload) {
       writeBreadcrumb(MCP_DEBUG_KEY, payload)
+    }
+
+    function remoteWrite(payload) {
+      writeBreadcrumb(REMOTE_DEBUG_KEY, payload)
     }
 
     function btwWrite(payload) {
@@ -2642,6 +2734,1007 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------------------------------------------------------------------
+    // Remote access
+    //
+    // One page in Settings that publishes this GUI to a phone on the same
+    // network: the switch, the port, one account, and the addresses to type
+    // into the phone. The Host half owns the listener, the login page, and the
+    // sessions; this page owns the decisions a person makes about them, and it
+    // says out loud that the connection is plain HTTP.
+    // ---------------------------------------------------------------------
+
+    /**
+     * The Host route that reads the state (`GET`) and changes it (`POST`), in
+     * the document-relative form the browser resolves against its own base.
+     */
+    const REMOTE_ROUTE = 'api/edh.remote'
+
+    /** The row that owns the route; the page is useless without it. */
+    const REMOTE_MODULE = '@moreweb/edh/remote'
+
+    /** The Settings seat: one page in the Settings navigation. */
+    const REMOTE_SECTION_SLOT = 'settings.section'
+
+    /**
+     * Where that page sits. MCP takes 16, so this is the next seat: the shipped
+     * sections stay contiguous and the two EDH pages sit side by side instead of
+     * one being an appendix at an arbitrary number.
+     */
+    const REMOTE_SECTION_ORDER = 17
+
+    /** Every action the route accepts besides reading. */
+    const REMOTE_ACTIONS = ['set', 'logout-all', 'regenerate-secret']
+
+    /** The port the page offers before anything has been chosen. */
+    const REMOTE_DEFAULT_PORT = 8787
+
+    /**
+     * The range the page accepts, and the same one the Host enforces: a port is
+     * a whole number from 1 to 65535. The page states the rule before the
+     * request goes out; it does not invent a stricter one, because a page that
+     * refuses a value the Host would store is a page arguing with its own Host.
+     */
+    const REMOTE_PORT_MIN = 1
+    const REMOTE_PORT_MAX = 65535
+
+    /** The longest user name the Host stores; the page checks it the same way. */
+    const REMOTE_USERNAME_MAX = 64
+
+    /**
+     * The shortest password the Host accepts, mirrored here so the common typo
+     * is caught before a request goes out. The confirm field is the page's own
+     * addition: the Host has no idea it exists, and it never travels.
+     */
+    const REMOTE_PASSWORD_MIN = 8
+
+    /** How long `Saved` stays before it clears itself. */
+    const REMOTE_SAVED_MS = 3000
+
+    /** How long one address says `Copied` before it goes back. */
+    const REMOTE_COPY_MS = 2000
+
+    /** The reasons that mean the feature is not on this profile at all. */
+    const REMOTE_MISSING = ['unavailable', 'no-services', 'missing']
+
+    /**
+     * One route answer's view, read without trusting the Host's shape.
+     *
+     * Only the fields the page renders are copied. A password, a secret, or a
+     * token in the answer is never read at all — the page learns whether one is
+     * set (`hasPassword`), never what it is — so no response can echo a secret
+     * into a record, and from there into the DOM.
+     * @param payload - one route answer.
+     * @returns the view record, or `undefined` when the answer carries none.
+     */
+    function remoteView(payload) {
+      if (payload === null || typeof payload !== 'object') return undefined
+      const known = ['available', 'enabled', 'listening', 'port', 'username', 'hasPassword', 'addresses', 'warning', 'sessions']
+      let present = false
+      for (const field of known) {
+        if (Object.prototype.hasOwnProperty.call(payload, field)) present = true
+      }
+      if (!present) return undefined
+      const port = Number(payload.port)
+      const sessions = Number(payload.sessions)
+      const addresses = []
+      for (const raw of Array.isArray(payload.addresses) ? payload.addresses : []) {
+        if (typeof raw !== 'string') continue
+        const address = raw.trim()
+        if (address !== '' && !addresses.includes(address)) addresses.push(address)
+      }
+      return {
+        available: payload.available !== false,
+        enabled: payload.enabled === true,
+        listening: payload.listening === true,
+        port: Number.isInteger(port) && port > 0 && port <= REMOTE_PORT_MAX ? port : REMOTE_DEFAULT_PORT,
+        username: typeof payload.username === 'string' ? payload.username.trim() : '',
+        hasPassword: payload.hasPassword === true,
+        addresses,
+        warning: typeof payload.warning === 'string' ? payload.warning.trim() : '',
+        sessions: Number.isInteger(sessions) && sessions > 0 ? sessions : 0,
+        // A listener that failed says so in its own words. Only the error-ish
+        // fields are read: a successful answer may carry an unrelated `message`.
+        failure: failureText({
+          lastError: payload.lastError,
+          error: payload.error,
+          detail: payload.detail,
+        }),
+      }
+    }
+
+    /**
+     * One action's outcome, read from the route's `report`.
+     *
+     * A rejected input answers a non-200 status with this same body, so the
+     * outcome is read here rather than from the HTTP status.
+     * @param value - the `report` field of a route answer.
+     * @returns the outcome, or `undefined` when the answer carries none.
+     */
+    function remoteReport(value) {
+      if (value === null || typeof value !== 'object') return undefined
+      return {
+        ok: value.ok === true,
+        action: typeof value.action === 'string' ? value.action : '',
+        reason: typeof value.reason === 'string' ? value.reason : '',
+        message: typeof value.message === 'string' ? value.message.trim() : '',
+      }
+    }
+
+    /**
+     * The view one route answer describes.
+     *
+     * A `GET` answers the state; a `POST` answers the same state plus a report,
+     * and the view in *that* answer is the one to adopt — the page never re-reads
+     * to find out what its own write did. Two consequences worth naming: a save
+     * cannot be lost to a race with a second read, and a 400 that carries the
+     * view still updates the page to the Host's truth.
+     * @param payload - the route's parsed answer.
+     * @returns whether the answer carries a view, the view, the action report,
+     *   the sentence explaining anything that failed, and the refusal reason.
+     */
+    function readRemoteView(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const view = remoteView(answer)
+      const report = remoteReport(answer.report)
+      let failure = ''
+      if (report !== undefined && report.ok !== true && report.message !== '') failure = report.message
+      if (failure === '' && answer.ok === false) failure = failureText(answer)
+      return {
+        ok: view !== undefined,
+        view,
+        report,
+        failure,
+        reason: typeof answer.reason === 'string' ? answer.reason : '',
+      }
+    }
+
+    /**
+     * Whether one read says the feature is absent from this profile.
+     * @param read - a `readRemoteView` result.
+     */
+    function remoteMissing(read) {
+      if (read === null || typeof read !== 'object') return false
+      if (read.view !== undefined && read.view !== null && read.view.available === false) return true
+      return REMOTE_MISSING.includes(String(read.reason ?? ''))
+    }
+
+    /**
+     * The listener state one view is in.
+     *
+     * The page names four states and no more. A switch that is off reads Off
+     * whatever the listener last said, because nothing is meant to be running
+     * behind it; a switch that is on but not listening is Starting until the
+     * Host puts a sentence on it, and Failed after that.
+     * @param view - a `remoteView` result, or the merged record the page keeps.
+     * @returns `off`, `starting`, `listening`, or `failed`.
+     */
+    function remoteState(view) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      if (data.enabled !== true) return 'off'
+      if (data.listening === true) return 'listening'
+      if (typeof data.failure === 'string' && data.failure !== '') return 'failed'
+      return 'starting'
+    }
+
+    /**
+     * The dictionary key of one state's one word.
+     * @param state - a `remoteState` result.
+     */
+    function remoteStateLabel(state) {
+      switch (state) {
+        case 'listening': return 'remoteStateListening'
+        case 'starting': return 'remoteStateStarting'
+        case 'failed': return 'remoteStateFailed'
+        default: return 'remoteStateOff'
+      }
+    }
+
+    /**
+     * The colour one state paints its dot: `ok`, `busy`, `bad`, or `off`.
+     * @param state - a `remoteState` result.
+     */
+    function remoteStateTone(state) {
+      switch (state) {
+        case 'listening': return 'ok'
+        case 'starting': return 'busy'
+        case 'failed': return 'bad'
+        default: return 'off'
+      }
+    }
+
+    /**
+     * One port field's value, checked before anything is sent.
+     * @param text - the input's value.
+     * @returns the port, or the field and sentence that block it.
+     */
+    function portCheck(text) {
+      const raw = String(text ?? '').trim()
+      if (raw === '' || !/^\d+$/u.test(raw)) return { ok: false, field: 'port', message: 'remotePortInvalid' }
+      const port = Number(raw)
+      if (!Number.isInteger(port) || port < REMOTE_PORT_MIN || port > REMOTE_PORT_MAX) {
+        return { ok: false, field: 'port', message: 'remotePortRange' }
+      }
+      return { ok: true, port }
+    }
+
+    /**
+     * The form's values, seeded from a view.
+     *
+     * The two password fields are always empty, whatever the view says: the Host
+     * never sends a password back, and a page that prefilled one would be
+     * displaying a secret it does not have. That is why this is the only place
+     * the form is built from a response.
+     * @param view - a `remoteView` result, or nothing at all.
+     */
+    function remoteDraft(view) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      const port = Number(data.port)
+      return {
+        port: String(Number.isInteger(port) && port > 0 ? port : REMOTE_DEFAULT_PORT),
+        username: typeof data.username === 'string' ? data.username : '',
+        password: '',
+        confirm: '',
+      }
+    }
+
+    /**
+     * The save form turned into the body the Host should apply.
+     *
+     * The password only travels when one was typed, and the confirm field never
+     * travels at all: it exists so a typo cannot lock the owner out of their own
+     * GUI, and the Host has no idea it exists.
+     * @param draft - the form's current values.
+     * @returns the body and the fields it carries, or the field and sentence
+     *   that block it.
+     */
+    function validateRemoteDraft(draft) {
+      const form = draft !== null && typeof draft === 'object' ? draft : {}
+      const checked = portCheck(form.port)
+      if (!checked.ok) return checked
+      const username = typeof form.username === 'string' ? form.username.trim() : ''
+      if (username === '') return { ok: false, field: 'username', message: 'remoteUsernameRequired' }
+      if (username.length > REMOTE_USERNAME_MAX) {
+        return { ok: false, field: 'username', message: 'remoteUsernameInvalid' }
+      }
+      const password = typeof form.password === 'string' ? form.password : ''
+      const confirm = typeof form.confirm === 'string' ? form.confirm : ''
+      if (password !== '' || confirm !== '') {
+        if (password.length < REMOTE_PASSWORD_MIN) {
+          return { ok: false, field: 'password', message: 'remotePasswordShort' }
+        }
+        if (password !== confirm) return { ok: false, field: 'confirm', message: 'remotePasswordMismatch' }
+      }
+      const body = { action: 'set', port: checked.port, username }
+      const fields = ['port', 'username']
+      if (password !== '') {
+        body.password = password
+        fields.push('password')
+      }
+      return { ok: true, body, fields }
+    }
+
+    /**
+     * The body that starts or stops the listener.
+     *
+     * Stopping is one field and never touches the account. Starting with no
+     * stored password has to carry one, or the GUI would be published with its
+     * login page open to anyone on the network — so that one case validates the
+     * form, and saves it in the same request.
+     * @param view - the view on screen.
+     * @param draft - the form's current values.
+     */
+    function toggleBody(view, draft) {
+      const data = view !== null && typeof view === 'object' ? view : undefined
+      const state = remoteState(data)
+      if (state !== 'off' && state !== 'failed') {
+        return { ok: true, body: { action: 'set', enabled: false }, fields: ['enabled'] }
+      }
+      const form = draft !== null && typeof draft === 'object' ? draft : {}
+      const typed = String(form.password ?? '') !== '' || String(form.confirm ?? '') !== ''
+      if (data !== undefined && data.hasPassword === true && !typed) {
+        return { ok: true, body: { action: 'set', enabled: true }, fields: ['enabled'] }
+      }
+      const checked = validateRemoteDraft(form)
+      if (!checked.ok) return checked
+      // A start with no stored password and no typed one would publish the GUI
+      // with its login page open to the network, so it waits for a password.
+      if (String(form.password ?? '') === '') {
+        return { ok: false, field: 'password', message: 'remotePasswordRequired' }
+      }
+      return { ok: true, body: { ...checked.body, enabled: true }, fields: [...checked.fields, 'enabled'] }
+    }
+
+    /**
+     * One body that names an action and nothing else.
+     * @param action - `logout-all` or `regenerate-secret`.
+     */
+    function remoteActionBody(action) {
+      return { action }
+    }
+
+    /**
+     * One refusal turned into the field it came from and the sentence to show.
+     *
+     * The Host words a rejection in `report.message`; this is only the fallback
+     * for the codes it can name without a sentence, and the pointer at which
+     * field to correct.
+     * @param report - a `remoteReport` result.
+     */
+    function remoteRefusal(report) {
+      const reason = report !== null && typeof report === 'object' && typeof report.reason === 'string'
+        ? report.reason
+        : ''
+      switch (reason) {
+        case 'bad-port': return { field: 'port', message: 'remotePortInvalid' }
+        case 'port-range':
+        case 'bad-port-range': return { field: 'port', message: 'remotePortRange' }
+        case 'port-in-use':
+        case 'eaddrinuse': return { field: 'port', message: 'remotePortInUse' }
+        case 'bad-username': return { field: 'username', message: 'remoteUsernameInvalid' }
+        case 'bad-password':
+        case 'password-required': return { field: 'password', message: 'remotePasswordRequired' }
+        default: return { field: '', message: 'remoteActionFailed' }
+      }
+    }
+
+    /**
+     * One address as the string to type into the phone.
+     *
+     * The Host may hand back a bare host, a base URL, or something with a port
+     * already on it; all three become one absolute `http://` line, and only the
+     * port the page is actually listening on is filled in when none was given.
+     * @param address - one entry from the view's `addresses`.
+     * @param port - the port the listener reported.
+     */
+    function addressLine(address, port) {
+      const text = String(address ?? '').trim()
+      if (text === '') return ''
+      const known = Number.isInteger(port) && port > 0 ? port : REMOTE_DEFAULT_PORT
+      const withScheme = /^https?:\/\//iu.test(text) ? text : `http://${text}`
+      const rest = withScheme.replace(/^https?:\/\//iu, '').replace(/\/+$/u, '')
+      const cut = rest.search(/[/?#]/u)
+      const authority = cut < 0 ? rest : rest.slice(0, cut)
+      if (authority === '') return ''
+      const bracketed = /^\[[^\]]+\]:\d+$/u.test(authority)
+      const plain = /^[^:]+:\d+$/u.test(authority)
+      const scheme = withScheme.slice(0, withScheme.indexOf('//') + 2)
+      return `${scheme}${bracketed || plain ? authority : `${authority}:${known}`}`
+    }
+
+    /**
+     * The page's address list: one line per address, in the Host's order.
+     * @param view - a `remoteView` result.
+     */
+    function remoteAddressLines(view) {
+      const data = view !== null && typeof view === 'object' ? view : {}
+      const lines = []
+      for (const address of Array.isArray(data.addresses) ? data.addresses : []) {
+        const line = addressLine(address, data.port)
+        if (line !== '' && !lines.includes(line)) lines.push(line)
+      }
+      return lines
+    }
+
+    /**
+     * The plain-HTTP warning, in the order it is shown.
+     *
+     * The page's own sentence is always there — this feature decided plain HTTP
+     * on purpose, so the tradeoff is stated on the page rather than only when
+     * something goes wrong. The Host's `warning`, when it gives one, follows it
+     * in its own words instead of replacing it.
+     * @param view - a `remoteView` result.
+     * @param t - the dictionary's translate function.
+     * @returns one sentence per line.
+     */
+    function warningLines(view, t) {
+      const lines = [t('remotePlainHttp')]
+      const data = view !== null && typeof view === 'object' ? view : {}
+      const host = typeof data.warning === 'string' ? data.warning.trim() : ''
+      if (host !== '' && !lines.includes(host)) lines.push(host)
+      return lines
+    }
+
+    /**
+     * How many phones are signed in, as one sentence.
+     * @param t - the dictionary's translate function.
+     * @param count - the view's `sessions`.
+     */
+    function sessionsText(t, count) {
+      const value = Number(count)
+      if (!Number.isInteger(value) || value <= 0) return t('remoteNoSessions')
+      return value === 1 ? t('remoteSessionOne') : t('remoteSessions', { count: value })
+    }
+
+    /**
+     * One request on the remote route.
+     *
+     * A rejected input answers a non-200 status with the same JSON body a 200
+     * would carry, so the body decides. Only a reply without one is a route
+     * failure — and it carries the status, because a missing route means the
+     * feature is not on this profile rather than that the read went wrong.
+     * @param method - `GET` to read, `POST` to change.
+     * @param body - the request body, if the method takes one.
+     * @returns the parsed answer.
+     */
+    async function requestRemote(method, body) {
+      const response = await fetch(REMOTE_ROUTE, {
+        method,
+        headers: body === undefined
+          ? { accept: 'application/json' }
+          : { accept: 'application/json', 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      })
+      if (response === null || response === undefined) throw new Error(`${REMOTE_ROUTE} answered nothing`)
+      let answer
+      try {
+        answer = await response.json()
+      } catch (error) {
+        answer = undefined
+      }
+      if (answer !== null && typeof answer === 'object') return answer
+      const failure = new Error(`${REMOTE_ROUTE} answered ${response.status}`)
+      failure.status = response.status
+      throw failure
+    }
+
+    /**
+     * The page, rendered from one explicit state.
+     *
+     * Kept apart from the component for the same reason the reload copy is kept
+     * in `reloadText`: a session with no browser has no other way to see what a
+     * state actually paints, and "the unavailable page has no dead controls" is
+     * a claim about markup, not about a flag.
+     * @param t - the dictionary's translate function.
+     * @param state - the component's state, its ids, and the handlers it wired.
+     */
+    function remotePage(t, state) {
+      const source = state !== null && typeof state === 'object' ? state : {}
+      const view = source.view !== null && typeof source.view === 'object' ? source.view : {}
+      const status = typeof view.status === 'string' ? view.status : 'loading'
+      const data = view.data !== null && typeof view.data === 'object' ? view.data : undefined
+      const draft = source.draft !== null && typeof source.draft === 'object' ? source.draft : remoteDraft(undefined)
+      const fieldError = source.fieldError !== null && typeof source.fieldError === 'object'
+        ? source.fieldError
+        : { field: '', text: '' }
+      const notice = source.notice !== null && typeof source.notice === 'object'
+        ? source.notice
+        : { text: '', tone: 'bad' }
+      const copy = source.copy !== null && typeof source.copy === 'object'
+        ? source.copy
+        : { address: '', copied: false }
+      const ids = source.ids !== null && typeof source.ids === 'object' ? source.ids : {}
+      const actions = source.actions !== null && typeof source.actions === 'object' ? source.actions : {}
+      const busy = typeof source.busy === 'string' ? source.busy : ''
+      const saving = busy === 'save'
+      const call = (name, ...parameters) => {
+        const handler = actions[name]
+        if (typeof handler === 'function') handler(...parameters)
+      }
+
+      /** The page frame: the heading and its one line, in every state. */
+      const frame = (...children) => h('div', { className: 'edh-remote' },
+        h('h2', { className: 'edh-remote-title' }, t('remoteTitle')),
+        h('p', { className: 'edh-remote-intro' }, t('remoteIntro')),
+        ...children,
+      )
+
+      if (source.enabled === false) {
+        return frame(h('p', { className: 'edh-remote-status' }, t('remoteOff')))
+      }
+
+      const noticeNode = notice.text === ''
+        ? []
+        : [h('p', {
+          className: 'edh-remote-notice',
+          'data-tone': notice.tone === 'ok' ? 'ok' : 'bad',
+          role: notice.tone === 'ok' ? 'status' : 'alert',
+        }, notice.text)]
+
+      if (status === 'loading') {
+        return frame(...noticeNode, h('p', { className: 'edh-remote-status', role: 'status' }, t('remoteLoading')))
+      }
+
+      if (status === 'error') {
+        return frame(...noticeNode, h('div', { className: 'edh-remote-error', role: 'alert' },
+          h('p', { className: 'edh-remote-status' }, t('remoteLoadFailed')),
+          typeof view.failure === 'string' && view.failure !== ''
+            ? h('p', { className: 'edh-remote-failure' }, view.failure)
+            : null,
+          h('button', {
+            type: 'button',
+            className: 'edh-remote-button edh-remote-buttonPrimary',
+            onClick: () => {
+              call('retry')
+            },
+          }, t('remoteRetry')),
+        ))
+      }
+
+      if (status !== 'ready' || data === undefined) {
+        // `unavailable` lands here. One sentence, and nothing to press: a control
+        // in front of a missing service is a promise this profile cannot keep.
+        return frame(...noticeNode, h('p', { className: 'edh-remote-status' }, t('remoteUnavailable')))
+      }
+
+      const stateWord = remoteState(data)
+      const startable = stateWord === 'off' || stateWord === 'failed'
+      const lines = remoteAddressLines(data)
+      const blocked = field => (fieldError.field === field
+        ? { 'aria-invalid': true, 'aria-describedby': ids.error }
+        : {})
+      const failureNode = () => (typeof fieldError.text === 'string' && fieldError.text !== ''
+        ? h('p', { className: 'edh-remote-failure', role: 'alert', id: ids.error }, fieldError.text)
+        : null)
+      const fieldRow = (key, id, label, control, hint) => h('div', { key, className: 'edh-remote-row' },
+        h('label', { className: 'edh-remote-fieldLabel', htmlFor: id }, label),
+        h('div', { className: 'edh-remote-control' },
+          control,
+          typeof hint === 'string' && hint !== ''
+            ? h('p', { className: 'edh-remote-hint', id: key === 'password' ? ids.passwordHint : undefined }, hint)
+            : null,
+          fieldError.field === key ? failureNode() : null,
+        ),
+      )
+
+      return frame(...noticeNode, h('form', {
+        className: 'edh-remote-form',
+        'aria-label': t('remoteAccount'),
+        onSubmit: event => {
+          if (event !== null && typeof event === 'object' && typeof event.preventDefault === 'function') {
+            event.preventDefault()
+          }
+          call('submit')
+        },
+      },
+        h('div', { key: 'state', className: 'edh-remote-row', 'data-kind': 'state' },
+          h('div', { className: 'edh-remote-stateCol' },
+            h('span', { className: 'edh-remote-state' },
+              h('span', {
+                className: 'edh-remote-dot',
+                'data-tone': remoteStateTone(stateWord),
+                'aria-hidden': true,
+              }),
+              h('span', { className: 'edh-remote-stateWord' }, t(remoteStateLabel(stateWord))),
+            ),
+            h('span', { className: 'edh-remote-hint' }, sessionsText(t, data.sessions)),
+            data.failure === ''
+              ? null
+              : h('span', { className: 'edh-remote-failure', role: 'alert' }, data.failure),
+          ),
+          h('div', { className: 'edh-remote-control edh-remote-controlEnd' },
+            h('button', {
+              type: 'button',
+              className: 'edh-remote-button',
+              disabled: busy !== '',
+              'aria-busy': busy === 'toggle' || undefined,
+              onClick: () => {
+                call('toggle')
+              },
+            }, startable ? t('remoteStart') : t('remoteStop')),
+          ),
+        ),
+        fieldRow('port', ids.port, t('remotePort'), h('input', {
+          id: ids.port,
+          type: 'number',
+          className: 'edh-remote-input edh-remote-port',
+          inputMode: 'numeric',
+          min: REMOTE_PORT_MIN,
+          max: REMOTE_PORT_MAX,
+          step: 1,
+          value: draft.port,
+          autoComplete: 'off',
+          spellCheck: false,
+          ...blocked('port'),
+          onChange: event => {
+            call('field', 'port', event.target.value)
+          },
+        }), t('remotePortHint')),
+        fieldRow('username', ids.username, t('remoteUsername'), h('input', {
+          id: ids.username,
+          type: 'text',
+          className: 'edh-remote-input',
+          value: draft.username,
+          autoComplete: 'username',
+          spellCheck: false,
+          ...blocked('username'),
+          onChange: event => {
+            call('field', 'username', event.target.value)
+          },
+        })),
+        fieldRow('password', ids.password, t('remotePassword'), h('input', {
+          id: ids.password,
+          type: 'password',
+          className: 'edh-remote-input',
+          value: draft.password,
+          autoComplete: 'new-password',
+          spellCheck: false,
+          'aria-invalid': fieldError.field === 'password' || undefined,
+          'aria-describedby': fieldError.field === 'password' ? `${ids.passwordHint} ${ids.error}` : ids.passwordHint,
+          onChange: event => {
+            call('field', 'password', event.target.value)
+          },
+        }), t('remotePasswordHint')),
+        fieldRow('confirm', ids.confirm, t('remotePasswordConfirm'), h('input', {
+          id: ids.confirm,
+          type: 'password',
+          className: 'edh-remote-input',
+          value: draft.confirm,
+          autoComplete: 'new-password',
+          spellCheck: false,
+          ...blocked('confirm'),
+          onChange: event => {
+            call('field', 'confirm', event.target.value)
+          },
+        })),
+        h('div', { key: 'save', className: 'edh-remote-row', 'data-kind': 'save' },
+          h('span', { className: 'edh-remote-fieldLabel' }),
+          h('div', { className: 'edh-remote-control edh-remote-controlEnd' },
+            h('span', { className: 'edh-remote-hint', role: 'status' },
+              saving ? t('remoteSaving') : source.saved === true ? t('remoteSaved') : ''),
+            h('button', {
+              type: 'submit',
+              className: 'edh-remote-button edh-remote-buttonPrimary',
+              disabled: busy !== '',
+              'aria-busy': saving || undefined,
+            }, t('remoteSave')),
+          ),
+        ),
+        h('div', { key: 'addresses', className: 'edh-remote-row' },
+          h('span', { className: 'edh-remote-fieldLabel' }, t('remoteAddresses')),
+          h('div', { className: 'edh-remote-control' },
+            lines.length === 0
+              ? h('p', { className: 'edh-remote-hint' }, t('remoteAddressesWaiting'))
+              : [
+                h('p', { key: 'hint', className: 'edh-remote-hint' }, t('remoteAddressesHint')),
+                h('ul', { key: 'list', className: 'edh-remote-addresses' },
+                  lines.map(line => h('li', { key: line, className: 'edh-remote-address' },
+                    h('code', { className: 'edh-remote-url' }, line),
+                    h('button', {
+                      type: 'button',
+                      className: 'edh-remote-button edh-remote-buttonSm',
+                      onClick: () => {
+                        call('copy', line)
+                      },
+                    }, copy.address === line && copy.copied === true ? t('copied') : t('copy')),
+                  ))),
+              ],
+          ),
+        ),
+        ...warningLines(data, t).map((line, index) => h('p', {
+          key: `warning-${index}`,
+          className: 'edh-remote-warning',
+        }, line)),
+        h('div', { key: 'signout', className: 'edh-remote-row' },
+          h('p', { className: 'edh-remote-fieldLabel edh-remote-hint' }, t('remoteSignOutHint')),
+          h('div', { className: 'edh-remote-control edh-remote-controlEnd' },
+            h('button', {
+              type: 'button',
+              className: 'edh-remote-button',
+              'data-danger': true,
+              disabled: busy !== '' || data.sessions === 0,
+              onClick: () => {
+                call('signOut')
+              },
+            }, t('remoteSignOut')),
+          ),
+        ),
+      ))
+    }
+
+    /**
+     * The remote-access page: the listener, one account, and the addresses.
+     *
+     * It reads the `remote` row's own enablement rather than the aggregate,
+     * because the row is what mounts the route behind it. The nav entry is gated
+     * the same way where it is registered; this is the answer for the one case
+     * registration cannot cover, a row switched off while the page is open.
+     * @param t - the dictionary's translate function.
+     * @param controller - the switch controller holding the row states.
+     */
+    function createRemotePage(t, controller) {
+      const useRemoteEnabled = createFeatureHook(controller, REMOTE_MODULE, rowEnabled)
+
+      return function EdhRemotePage() {
+        const enabled = useRemoteEnabled()
+        const [view, setView] = React.useState(() => ({ status: 'loading', data: undefined, failure: '' }))
+        const [attempt, setAttempt] = React.useState(0)
+        const [draft, setDraft] = React.useState(() => remoteDraft(undefined))
+        const [fieldError, setFieldError] = React.useState({ field: '', text: '' })
+        const [busy, setBusy] = React.useState('')
+        const [saved, setSaved] = React.useState(false)
+        const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
+        const [copy, setCopy] = React.useState({ address: '', copied: false, at: 0 })
+        const seeded = React.useRef(false)
+        const base = React.useId()
+        const ids = {
+          port: `${base}port`,
+          username: `${base}username`,
+          password: `${base}password`,
+          confirm: `${base}confirm`,
+          passwordHint: `${base}passwordHint`,
+          error: `${base}error`,
+        }
+
+        // Read once on mount and once per retry. The page never polls: every
+        // change answers the new state itself.
+        React.useEffect(() => {
+          if (!enabled) return undefined
+          let current = true
+          setView(previous => ({ status: 'loading', data: previous.data, failure: '' }))
+          void (async () => {
+            let answer
+            try {
+              answer = await requestRemote('GET')
+            } catch (error) {
+              if (!current) return
+              // A route that is not there is not a read that went wrong: it
+              // means the services are missing on this profile.
+              const missing = error?.status === 404 || error?.status === 405
+              remoteWrite({
+                phase: 'failed',
+                action: 'read',
+                reason: missing ? 'route-missing' : 'error',
+                message: messageOf(error),
+              })
+              setView({
+                status: missing ? 'unavailable' : 'error',
+                data: undefined,
+                failure: missing ? '' : messageOf(error),
+              })
+              return
+            }
+            if (!current) return
+            const read = readRemoteView(answer)
+            if (!read.ok || (read.view !== undefined && read.view.available === false)) {
+              const missing = remoteMissing(read)
+              remoteWrite({
+                phase: 'failed',
+                action: 'read',
+                reason: missing ? 'unavailable' : String(read.reason || 'error'),
+                message: read.failure,
+              })
+              setView({ status: missing ? 'unavailable' : 'error', data: undefined, failure: read.failure })
+              return
+            }
+            remoteWrite({
+              phase: 'loaded',
+              enabled: read.view.enabled,
+              listening: read.view.listening,
+              port: read.view.port,
+              addresses: read.view.addresses.length,
+              sessions: read.view.sessions,
+            })
+            setView({
+              status: 'ready',
+              data: read.failure === '' ? read.view : { ...read.view, failure: read.failure },
+              failure: read.failure,
+            })
+          })()
+          return () => {
+            current = false
+          }
+        }, [enabled, attempt])
+
+        // The fields are seeded from the Host's own state once. A later answer
+        // must not overwrite what someone is in the middle of typing; the write
+        // paths re-seed explicitly, and always with empty password fields.
+        React.useEffect(() => {
+          if (view.status !== 'ready' || view.data === undefined || seeded.current) return
+          seeded.current = true
+          setDraft(remoteDraft(view.data))
+        }, [view])
+
+        // `Saved` and `Copied` are confirmations, not states: they clear.
+        React.useEffect(() => {
+          if (!saved) return undefined
+          const timer = setTimeout(() => setSaved(false), REMOTE_SAVED_MS)
+          return () => clearTimeout(timer)
+        }, [saved])
+
+        React.useEffect(() => {
+          if (copy.at === 0) return undefined
+          const timer = setTimeout(() => setCopy({ address: '', copied: false, at: 0 }), REMOTE_COPY_MS)
+          return () => clearTimeout(timer)
+        }, [copy.at])
+
+        /**
+         * One write on the route.
+         *
+         * The answer's view replaces the one on screen; a refusal is read from
+         * its report rather than the status code, and lands on the field it came
+         * from when the Host names one.
+         * @returns the adopted read and whether the Host accepted it, or
+         *   `undefined` when no answer arrived at all.
+         */
+        const send = React.useCallback(async (body, key, action) => {
+          setBusy(key)
+          setNotice({ text: '', tone: 'bad' })
+          let answer
+          try {
+            answer = await requestRemote('POST', body)
+          } catch (error) {
+            remoteWrite({ phase: 'failed', action, reason: 'error', message: messageOf(error) })
+            setBusy('')
+            setNotice({ text: messageOf(error), tone: 'bad' })
+            return undefined
+          }
+          setBusy('')
+          const read = readRemoteView(answer)
+          if (read.ok) {
+            setView({
+              status: 'ready',
+              data: read.failure === '' ? read.view : { ...read.view, failure: read.failure },
+              failure: read.failure,
+            })
+          }
+          const rejected = read.report !== undefined && read.report.ok !== true
+          if (rejected) {
+            const refusal = remoteRefusal(read.report)
+            const text = read.failure !== '' ? read.failure : t(refusal.message)
+            if (read.ok && refusal.field !== '') setFieldError({ field: refusal.field, text })
+            else setNotice({ text, tone: 'bad' })
+            remoteWrite({ phase: 'failed', action, reason: String(read.report.reason || 'error'), message: text })
+            return { read, ok: false }
+          }
+          if (!read.ok) {
+            const text = read.failure !== '' ? read.failure : t('remoteActionFailed')
+            setNotice({ text, tone: 'bad' })
+            remoteWrite({ phase: 'failed', action, reason: String(read.reason || 'error'), message: text })
+            return { read, ok: false }
+          }
+          return { read, ok: true }
+        }, [t])
+
+        const onRetry = React.useCallback(() => {
+          setAttempt(value => value + 1)
+        }, [])
+
+        const onField = React.useCallback((name, value) => {
+          setDraft(previous => ({ ...previous, [name]: value }))
+          setFieldError({ field: '', text: '' })
+          setSaved(false)
+        }, [])
+
+        const onSave = React.useCallback(async () => {
+          const checked = validateRemoteDraft(draft)
+          if (!checked.ok) {
+            setFieldError({ field: checked.field, text: t(checked.message) })
+            return
+          }
+          setFieldError({ field: '', text: '' })
+          setSaved(false)
+          const done = await send(checked.body, 'save', 'set')
+          if (done === undefined || !done.ok) return
+          setDraft(remoteDraft(done.read.view))
+          remoteWrite({ phase: 'saved', field: checked.fields.join('+'), listening: done.read.view.listening })
+          setSaved(true)
+        }, [draft, send, t])
+
+        const onToggle = React.useCallback(async () => {
+          const planned = toggleBody(view.data, draft)
+          if (!planned.ok) {
+            setFieldError({ field: planned.field, text: t(planned.message) })
+            return
+          }
+          setFieldError({ field: '', text: '' })
+          setSaved(false)
+          const start = planned.body.enabled === true
+          const done = await send(planned.body, 'toggle', start ? 'start' : 'stop')
+          if (done === undefined || !done.ok) return
+          setDraft(remoteDraft(done.read.view))
+          remoteWrite({ phase: 'saved', field: planned.fields.join('+') })
+          remoteWrite(start
+            ? { phase: 'started', port: done.read.view.port, addresses: done.read.view.addresses.length }
+            : { phase: 'stopped', port: done.read.view.port })
+        }, [view, draft, send, t])
+
+        const onSignOut = React.useCallback(async () => {
+          const done = await send(remoteActionBody('logout-all'), 'signout', 'logout-all')
+          if (done === undefined || !done.ok) return
+          setDraft(remoteDraft(done.read.view))
+          setNotice({ text: t('remoteSignedOut'), tone: 'ok' })
+          remoteWrite({ phase: 'saved', field: 'sessions', sessions: done.read.view.sessions })
+        }, [send, t])
+
+        const onCopy = React.useCallback(async address => {
+          const copied = await copyText(address)
+          setCopy({ address, copied, at: Date.now() })
+        }, [])
+
+        return remotePage(t, {
+          enabled,
+          view,
+          draft,
+          fieldError,
+          busy,
+          saved,
+          notice,
+          copy,
+          ids,
+          actions: {
+            retry: onRetry,
+            field: onField,
+            submit: onSave,
+            toggle: onToggle,
+            signOut: onSignOut,
+            copy: onCopy,
+          },
+        })
+      }
+    }
+
+    /**
+     * The page's stylesheet.
+     *
+     * Rows and hairlines, not cards: this page is a list of decisions, and the
+     * only fill on it is the one the shipped sections already use for a button.
+     * Every rule is built from `--dsw-alias-*` tokens, including the focus ring.
+     */
+    const REMOTE_CSS = [
+      '.edh-remote{color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;max-width:760px;display:flex}',
+      '.edh-remote-title{margin:0;font-size:16px;font-weight:500;line-height:24px}',
+      '.edh-remote-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}',
+      '.edh-remote-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
+      '.edh-remote-error{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
+      '.edh-remote-notice{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-remote-notice[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-remote-notice[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-remote-form{flex-direction:column;margin:0;display:flex}',
+      '.edh-remote-row{border-bottom:.5px solid var(--dsw-alias-border-l2);grid-template-columns:180px minmax(0,1fr);align-items:start;gap:4px 16px;padding:10px 0;display:grid}',
+      '.edh-remote-row[data-kind=state]{grid-template-columns:minmax(0,1fr) max-content;align-items:center}',
+      '.edh-remote-row:last-of-type{border-bottom:none;padding-bottom:0}',
+      '.edh-remote-fieldLabel{color:var(--dsw-alias-label-secondary);margin:0;padding-top:5px;font-size:12px;line-height:18px}',
+      '.edh-remote-control{flex-direction:column;align-items:flex-start;gap:4px;min-width:0;display:flex}',
+      '.edh-remote-controlEnd{flex-direction:row;align-items:center;justify-content:flex-end;gap:8px}',
+      '.edh-remote-stateCol{flex-direction:column;gap:2px;min-width:0;display:flex}',
+      '.edh-remote-state{align-items:center;gap:6px;color:var(--dsw-alias-label-secondary);display:flex;font-size:13px;line-height:20px}',
+      '.edh-remote-stateWord{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}',
+      '.edh-remote-dot{border-radius:50%;flex:none;background:currentColor;width:6px;height:6px;display:inline-block}',
+      '.edh-remote-dot[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-remote-dot[data-tone=busy]{color:var(--dsw-alias-state-warn-primary)}',
+      '.edh-remote-dot[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-remote-dot[data-tone=off]{color:var(--dsw-alias-state-idle-primary)}',
+      '.edh-remote-hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-remote-failure{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-remote-input{box-sizing:border-box;width:100%;max-width:320px;min-height:28px;margin:0;padding:3px 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);outline:none;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px}',
+      '.edh-remote-input::placeholder{color:var(--dsw-alias-label-dimmed)}',
+      '.edh-remote-port{max-width:96px;font-variant-numeric:tabular-nums}',
+      '.edh-remote-addresses{flex-direction:column;margin:0;padding:0;list-style:none;gap:4px;display:flex}',
+      '.edh-remote-address{align-items:center;gap:8px;display:flex}',
+      '.edh-remote-url{color:var(--dsw-alias-label-primary);font-family:var(--dsh-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px;line-height:18px;word-break:break-all}',
+      '.edh-remote-warning{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-remote-button{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);justify-content:center;align-items:center;gap:4px;height:28px;padding:0 10px;font:inherit;font-size:12px;line-height:18px;white-space:nowrap;display:inline-flex}',
+      '.edh-remote-buttonSm{height:24px;padding:0 8px}',
+      '.edh-remote-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-remote-button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.edh-remote-button:disabled{cursor:not-allowed;opacity:.4}',
+      '.edh-remote-button[data-danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}',
+      '.edh-remote-buttonPrimary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}',
+      '.edh-remote-buttonPrimary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.edh-remote :is(button,input,textarea,a):focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+    ].join('')
+
+    /** Install the remote page stylesheet once and take it back out on dispose. */
+    function installRemoteStyles() {
+      if (typeof document === 'undefined') return () => {}
+      const selector = 'style[data-edh-css="remote"]'
+      if (document.querySelector(selector) === null) {
+        const tag = document.createElement('style')
+        tag.dataset.edhCss = 'remote'
+        tag.dataset.plugin = '@moreweb/edh'
+        tag.textContent = REMOTE_CSS
+        document.head.appendChild(tag)
+        return () => {
+          if (tag.parentNode !== null) tag.parentNode.removeChild(tag)
+        }
+      }
+      return () => {
+        const existing = document.querySelector(selector)
+        if (existing !== null && existing.parentNode !== null) existing.parentNode.removeChild(existing)
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -3428,6 +4521,51 @@ window.__ModuleLoader__.load({
         }
       })
 
+      // remote — its own page in the Settings navigation, right after the MCP
+      // one and gated the same way. The listener behind it belongs to a feature
+      // row; while that row is missing or off there is no route to publish to,
+      // so the cell is withdrawn instead of opening a page in front of nothing.
+      const RemotePage = createRemotePage(t, controller)
+      ctx.effect(() => installRemoteStyles(), 'edh: remote styles')
+      ctx.slots.inject(REMOTE_SECTION_SLOT, () => {
+        let dispose
+        let installed = false
+        /** Register, dispose, or leave alone, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), REMOTE_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({
+              name: REMOTE_SECTION_SLOT,
+              id: 'remote',
+              order: REMOTE_SECTION_ORDER,
+              locale: NS,
+              label: () => t('remoteNav'),
+            }, RemotePage)
+            installed = true
+          } catch (error) {
+            // This runs from the controller's own listener, so a throw would
+            // surface as a failed row read and take the switch with it. Record
+            // it and stay uninstalled: no nav cell, nothing half-mounted.
+            installed = false
+            remoteWrite({ phase: 'register-failed', part: 'section', message: messageOf(error) })
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          dispose?.()
+          dispose = undefined
+        }
+      })
+
       // The reload face is optional: without `modules` both controls still check
       // and apply, and the Reload button is simply not offered rather than
       // present-and-failing. The face is shared because the update control's
@@ -3622,6 +4760,39 @@ window.__ModuleLoader__.load({
       BTW_TAB_KIND,
       BTW_CHAT_SLOT,
       BTW_RETAIN_SOURCE,
+      remoteView,
+      remoteReport,
+      readRemoteView,
+      remoteMissing,
+      remoteState,
+      remoteStateLabel,
+      remoteStateTone,
+      portCheck,
+      remoteDraft,
+      validateRemoteDraft,
+      toggleBody,
+      remoteActionBody,
+      remoteRefusal,
+      addressLine,
+      remoteAddressLines,
+      warningLines,
+      sessionsText,
+      remotePage,
+      createRemotePage,
+      installRemoteStyles,
+      REMOTE_CSS,
+      REMOTE_ROUTE,
+      REMOTE_MODULE,
+      REMOTE_SECTION_SLOT,
+      REMOTE_SECTION_ORDER,
+      REMOTE_ACTIONS,
+      REMOTE_DEFAULT_PORT,
+      REMOTE_PORT_MIN,
+      REMOTE_PORT_MAX,
+      REMOTE_DEBUG_KEY,
+      // The two dictionaries, so a suite can prove they are symmetric.
+      en,
+      zh,
       NS,
       EDIT_MODULE,
       EXPORT_MODULE,

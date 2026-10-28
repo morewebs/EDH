@@ -111,6 +111,37 @@ const {
   BTW_RETAIN_SOURCE,
   ICON_SIDE,
 } = mod.__test
+const {
+  remoteView,
+  remoteReport,
+  readRemoteView,
+  remoteMissing,
+  remoteState,
+  remoteStateLabel,
+  remoteStateTone,
+  portCheck,
+  remoteDraft,
+  validateRemoteDraft,
+  toggleBody,
+  remoteActionBody,
+  remoteRefusal,
+  addressLine,
+  remoteAddressLines,
+  warningLines,
+  sessionsText,
+  remotePage,
+  REMOTE_ROUTE,
+  REMOTE_MODULE,
+  REMOTE_SECTION_SLOT,
+  REMOTE_SECTION_ORDER,
+  REMOTE_ACTIONS,
+  REMOTE_DEFAULT_PORT,
+  REMOTE_PORT_MIN,
+  REMOTE_PORT_MAX,
+  REMOTE_DEBUG_KEY,
+  en,
+  zh,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -1941,9 +1972,830 @@ function fakeRemote(options = {}) {
   }
 }
 
+/**
+ * A React-shaped `createElement` plus inert hooks: one page state can then be
+ * rendered and inspected without a browser, and without running an effect that
+ * would reach for a route the Node process cannot answer.
+ */
+function stubPageFactory() {
+  return definition.factory(() => ({
+    createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+    useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
+    useEffect: () => undefined,
+    useRef: value => ({ current: value }),
+    useCallback: fn => fn,
+    useMemo: fn => fn(),
+    useId: () => 'edh',
+  })).__test
+}
+
+/** Every element in a stub tree, root first. */
+function treeNodes(tree, found = []) {
+  if (Array.isArray(tree)) {
+    for (const child of tree) treeNodes(child, found)
+    return found
+  }
+  if (tree === null || tree === undefined || typeof tree !== 'object') return found
+  found.push(tree)
+  treeNodes(tree.props.children, found)
+  return found
+}
+
+/** Every element of one type in a stub tree. */
+function treeByType(tree, type) {
+  return treeNodes(tree).filter(node => node.type === type)
+}
+
+/** Every string a stub tree places directly in an element, in document order. */
+function treeText(tree) {
+  const text = []
+  for (const node of treeNodes(tree)) {
+    const children = Array.isArray(node.props.children) ? node.props.children : []
+    for (const child of children) {
+      if (typeof child === 'string') text.push(child)
+    }
+  }
+  return text
+}
+
+/** Every button's visible label. */
+function treeButtons(tree) {
+  return treeByType(tree, 'button').map(button => button.props.children
+    .filter(child => typeof child === 'string').join(' '))
+}
+
+// 27 — the remote seat: one settings section, right after MCP, gated on its row.
+// The listener only exists while the `remote` row is mounted, so the nav cell is
+// registered from the row's own state and withdrawn when the row goes away —
+// exactly the rule the MCP page follows, on the seat next to it.
+{
+  /** A fake ctx with the surfaces `apply` touches, recording every slot entry. */
+  function fakeSectionCtx(rows) {
+    const entries = []
+    const handlers = new Map()
+    const ctx = {
+      locale: {
+        bind: () => (key, params) => (params === undefined ? key : `${key}(${JSON.stringify(params)})`),
+        register: () => () => {},
+        subscribe: () => () => {},
+      },
+      effect: fn => fn(),
+      slots: {
+        inject: (_name, callback) => callback(),
+        register: (options, component) => {
+          const entry = { options, component }
+          entries.push(entry)
+          return () => {
+            const at = entries.indexOf(entry)
+            if (at >= 0) entries.splice(at, 1)
+          }
+        },
+      },
+      remote: {
+        pluginManager: {
+          async listPlugins() {
+            return { ok: true, value: rows.map(row => ({ ...row })) }
+          },
+          async setPluginEnabled(entryId, enabled) {
+            const row = rows.find(candidate => candidate.entryId === entryId)
+            if (row !== undefined) row.enabled = enabled
+            return { ok: true, value: { application: 'applied', target: entryId } }
+          },
+        },
+        $on: (event, handler) => {
+          handlers.set(event, handler)
+          return () => handlers.delete(event)
+        },
+        on: () => () => {},
+      },
+      inject: () => undefined,
+      get: () => undefined,
+      logger: { warn() {}, error() {}, info() {} },
+    }
+    const sections = () => entries.filter(entry => entry.options.name === REMOTE_SECTION_SLOT)
+    return {
+      ctx,
+      entries,
+      sections,
+      section: id => sections().find(entry => entry.options.id === id),
+      /** Change a row the way the Host would, then let the switch re-read. */
+      async setRow(entryId, enabled) {
+        const row = rows.find(candidate => candidate.entryId === entryId)
+        row.enabled = enabled
+        handlers.get('plugin-manager/changed')()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      },
+    }
+  }
+
+  assert.equal(REMOTE_ROUTE, 'api/edh.remote', 'document-relative, like the MCP and update routes')
+  assert.equal(REMOTE_MODULE, '@moreweb/edh/remote', 'the row that owns the route')
+  assert.equal(REMOTE_SECTION_SLOT, 'settings.section', 'a page of its own in the Settings nav')
+  assert.equal(REMOTE_SECTION_ORDER, 17, 'the seat right after MCP')
+  assert.equal(REMOTE_SECTION_ORDER, MCP_SECTION_ORDER + 1, 'the two EDH pages stay contiguous')
+  assert.deepEqual(REMOTE_ACTIONS, ['set', 'logout-all', 'regenerate-secret'], 'every action the route accepts')
+  assert.equal(REMOTE_DEBUG_KEY, 'edh:remote', 'its own breadcrumb, beside edh:mcp')
+  assert.equal(rowEnabled({ status: 'ready', moduleStates: { [REMOTE_MODULE]: true } }, REMOTE_MODULE), true)
+  assert.equal(rowEnabled({ status: 'ready', moduleStates: { [MCP_MODULE]: true } }, REMOTE_MODULE), false, 'MCP is not this row')
+  assert.equal(rowEnabled({ status: 'loading', moduleStates: { [REMOTE_MODULE]: true } }, REMOTE_MODULE), false)
+
+  const shell = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
+  const mcpRow = { entryId: 'include:edh-mcp', moduleName: MCP_MODULE, enabled: true, fiberPhase: 'active' }
+  const remoteRow = { entryId: 'include:edh-remote', moduleName: REMOTE_MODULE, enabled: true, fiberPhase: 'active' }
+  const harness = fakeSectionCtx([shell, { ...mcpRow }, { ...remoteRow }])
+  mod.apply(harness.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(harness.sections().map(entry => entry.options.id), ['mcp', 'remote'], 'one page per feature')
+  const page = harness.section('remote')
+  assert.ok(page, 'the page registers once its row is known to be there')
+  assert.equal(page.options.order, REMOTE_SECTION_ORDER, 'and sits where the constant says')
+  assert.equal(page.options.label(), 'remoteNav', 'the nav reads the localized name')
+  assert.equal(page.options.locale, 'edh', 'its copy comes from the plugin dictionary')
+  assert.equal(page.options.children, undefined, 'a section page owns no child slots')
+  assert.equal(typeof page.component, 'function', 'and it renders the page the row is about')
+  assert.equal(
+    harness.entries.filter(entry => entry.options.name === 'settings.plugins.tab').length,
+    0,
+    'nothing is buried under the Plugins page',
+  )
+
+  // The row is the switch: off withdraws the entry, on puts it back, and the MCP
+  // page beside it is untouched either way.
+  await harness.setRow('include:edh-remote', false)
+  assert.deepEqual(harness.section('remote'), undefined, 'a row that is off leaves no nav cell')
+  assert.ok(harness.section('mcp'), 'and does not take the page next to it')
+  await harness.setRow('include:edh-remote', true)
+  assert.ok(harness.section('remote'), 'turning it back on restores the page')
+
+  // A bundle patch that predates the row: no entry at all, never a dead cell.
+  const patchless = fakeSectionCtx([shell, { ...mcpRow }])
+  mod.apply(patchless.ctx)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(patchless.section('remote'), undefined, 'no row in this profile means no page to open')
+  assert.ok(patchless.section('mcp'))
+}
+
+// 28 — the answer is the view: a GET's state, a POST's own state, and the four
+// listener words the page is allowed to say.
+{
+  assert.deepEqual(remoteView({
+    ok: true,
+    available: true,
+    enabled: true,
+    listening: true,
+    port: 8787,
+    username: '  me  ',
+    hasPassword: true,
+    addresses: ['192.168.1.20', ' ', '192.168.1.20', 7, '192.168.1.21'],
+    warning: ' LAN only ',
+    secure: false,
+    sessions: 2,
+  }), {
+    available: true,
+    enabled: true,
+    listening: true,
+    port: 8787,
+    username: 'me',
+    hasPassword: true,
+    addresses: ['192.168.1.20', '192.168.1.21'],
+    warning: 'LAN only',
+    sessions: 2,
+    failure: '',
+  }, 'the record is a projection: trimmed, de-duplicated, and typed')
+  assert.equal('secure' in remoteView({ ok: true, enabled: false, secure: true }), false, 'the page decided plain HTTP; it has no secure mode to report')
+  for (const absent of [undefined, null, 0, 'nope', {}, { ok: true }, { report: { ok: true } }]) {
+    assert.equal(remoteView(absent), undefined, `no view in ${JSON.stringify(absent)}`)
+  }
+
+  // A view that names only its switch is the off state, not a claim of anything
+  // running, and an impossible port is not a port.
+  const bare = remoteView({ ok: true, enabled: false })
+  assert.equal(bare.port, REMOTE_DEFAULT_PORT, 'the default port stands in for an absent one')
+  assert.equal(bare.enabled, false)
+  assert.equal(bare.listening, false)
+  assert.equal(bare.available, true, 'a view is available unless it says otherwise')
+  assert.equal(remoteView({ ok: true, enabled: false, port: 0 }).port, REMOTE_DEFAULT_PORT)
+  assert.equal(remoteView({ ok: true, enabled: false, port: 70000 }).port, REMOTE_DEFAULT_PORT, 'an impossible port is not a port')
+
+  const read = readRemoteView({
+    ok: true,
+    enabled: false,
+    listening: false,
+    port: 8080,
+    username: '',
+    hasPassword: false,
+    addresses: [],
+    warning: '',
+    sessions: 0,
+  })
+  assert.equal(read.ok, true)
+  assert.equal(read.report, undefined)
+  assert.equal(read.failure, '')
+  assert.equal(read.view.port, 8080)
+
+  // A POST answers the view *and* the report, and that view is the one to adopt:
+  // the page never re-reads to find out what its own write did.
+  const posted = readRemoteView({
+    ok: true,
+    enabled: true,
+    listening: true,
+    port: 9000,
+    username: 'phone',
+    hasPassword: true,
+    addresses: ['10.0.0.5'],
+    warning: '',
+    sessions: 0,
+    report: { ok: true, action: 'set' },
+  })
+  assert.equal(posted.ok, true)
+  assert.equal(posted.view.port, 9000, 'the answer already carries the new port')
+  assert.equal(posted.view.listening, true)
+  assert.deepEqual(posted.report, { ok: true, action: 'set', reason: '', message: '' })
+
+  // Every action answers the same shape, so every action's answer is a view the
+  // page can adopt — the sign-out included.
+  for (const action of REMOTE_ACTIONS) {
+    const answered = readRemoteView({
+      ok: true,
+      enabled: true,
+      listening: true,
+      port: 8787,
+      username: 'owner',
+      hasPassword: true,
+      addresses: [],
+      warning: '',
+      sessions: 0,
+      report: { ok: true, action },
+    })
+    assert.equal(answered.ok, true, `${action} answers a view`)
+    assert.equal(answered.view.port, 8787, `and ${action}'s view is the one to adopt`)
+    assert.equal(answered.report.action, action)
+  }
+
+  // The page reads the route once on mount and once per retry; a write's answer
+  // is the only thing that moves it afterwards.
+  assert.equal(source.split("requestRemote('GET'").length - 1, 1, 'one read, and no blind re-fetch after a write')
+  assert.equal(source.split("requestRemote('POST'").length - 1, 1, 'one write path')
+
+  // A 400 answers the same body shape, so it still updates the page to the
+  // Host's truth and is never mistaken for a broken route.
+  const refused = readRemoteView({
+    ok: false,
+    enabled: false,
+    listening: false,
+    port: 8787,
+    username: 'me',
+    hasPassword: true,
+    addresses: [],
+    warning: '',
+    sessions: 0,
+    report: { ok: false, action: 'set', reason: 'port-in-use', message: 'port 9000 is already taken' },
+  })
+  assert.equal(refused.ok, true, 'the body is still a view')
+  assert.equal(refused.view.port, 8787)
+  assert.equal(refused.failure, 'port 9000 is already taken', 'the Host words the refusal')
+  assert.equal(refused.report.ok, false)
+
+  // A refusal with no view is a route that carries nothing to adopt.
+  const absent = readRemoteView({ ok: false, reason: 'error', message: 'api/edh.remote answered 500' })
+  assert.equal(absent.ok, false)
+  assert.equal(absent.view, undefined)
+  assert.equal(absent.failure, 'api/edh.remote answered 500')
+  for (const empty of [undefined, null, 'nope', {}, { ok: false }]) {
+    assert.equal(readRemoteView(empty).ok, false, `inert for ${JSON.stringify(empty)}`)
+    assert.equal(readRemoteView(empty).view, undefined)
+  }
+
+  // The four words. Off wins over everything, because the switch is the authority:
+  // nothing is meant to be running behind it.
+  const states = [
+    [{ enabled: false }, 'off', 'remoteStateOff', 'off'],
+    [{ enabled: false, listening: true, failure: 'stale' }, 'off', 'remoteStateOff', 'off'],
+    [{ enabled: true, listening: true }, 'listening', 'remoteStateListening', 'ok'],
+    [{ enabled: true, listening: false }, 'starting', 'remoteStateStarting', 'busy'],
+    [{ enabled: true, listening: false, failure: 'EADDRINUSE' }, 'failed', 'remoteStateFailed', 'bad'],
+  ]
+  for (const [view, state, label, tone] of states) {
+    assert.equal(remoteState(view), state, `${JSON.stringify(view)} reads as ${state}`)
+    assert.equal(remoteStateLabel(state), label, `${state} has one word`)
+    assert.equal(remoteStateTone(state), tone, `${state} paints one dot`)
+  }
+  assert.equal(remoteState(undefined), 'off')
+
+  // The missing-feature routes: either the view says so, or the refusal names it.
+  assert.equal(remoteMissing({ view: { available: false } }), true)
+  for (const reason of ['unavailable', 'no-services', 'missing']) {
+    assert.equal(remoteMissing({ reason }), true, `${reason} means the services are missing`)
+  }
+  for (const reason of ['error', 'bad-port', '']) {
+    assert.equal(remoteMissing({ reason }), false, `${reason} is not a missing feature`)
+  }
+  assert.equal(remoteMissing(undefined), false)
+}
+
+// 29 — the port and the account are checked before anything is sent, and the
+// Host's own refusal lands on the field it came from.
+{
+  assert.equal(REMOTE_DEFAULT_PORT, 8787, 'the port the page offers')
+  assert.equal(REMOTE_PORT_MIN, 1, 'the range the Host accepts, not a stricter one of our own')
+  assert.equal(REMOTE_PORT_MAX, 65535, 'and nothing that is not a port')
+
+  assert.deepEqual(portCheck('8787'), { ok: true, port: 8787 })
+  assert.deepEqual(portCheck(' 8787 '), { ok: true, port: 8787 }, 'a pasted value is trimmed')
+  assert.deepEqual(portCheck(8787), { ok: true, port: 8787 }, 'an already-numeric value still checks')
+  assert.deepEqual(portCheck('1'), { ok: true, port: 1 }, 'the bottom of the range')
+  assert.deepEqual(portCheck('80'), { ok: true, port: 80 }, 'a privileged port is the Host\'s call, not the page\'s')
+  assert.deepEqual(portCheck('65535'), { ok: true, port: 65535 }, 'the top of the range')
+
+  for (const blank of ['', '   ', undefined, null]) {
+    assert.deepEqual(portCheck(blank), { ok: false, field: 'port', message: 'remotePortInvalid' }, `${JSON.stringify(blank)} is not a number`)
+  }
+  for (const notNumber of ['eighty', '8o87', '8.5', '-1', '0x22', '8e3', '8787 8787']) {
+    assert.deepEqual(portCheck(notNumber), { ok: false, field: 'port', message: 'remotePortInvalid' }, `${notNumber} is not a port number`)
+  }
+  for (const outOfRange of ['0', '65536', '99999']) {
+    assert.deepEqual(portCheck(outOfRange), { ok: false, field: 'port', message: 'remotePortRange' }, `${outOfRange} is out of range`)
+  }
+
+  // The range is stated before a request goes out; "in use" can only come back
+  // from the Host, so it is read from the refusal and shown on the same field.
+  assert.deepEqual(remoteRefusal({ ok: false, reason: 'port-in-use', message: '' }), { field: 'port', message: 'remotePortInUse' })
+  assert.deepEqual(remoteRefusal({ ok: false, reason: 'eaddrinuse', message: '' }), { field: 'port', message: 'remotePortInUse' })
+  assert.deepEqual(remoteRefusal({ reason: 'bad-port' }), { field: 'port', message: 'remotePortInvalid' })
+  assert.deepEqual(remoteRefusal({ reason: 'bad-port-range' }), { field: 'port', message: 'remotePortRange' })
+  assert.deepEqual(remoteRefusal({ reason: 'bad-username' }), { field: 'username', message: 'remoteUsernameInvalid' })
+  assert.deepEqual(remoteRefusal({ reason: 'bad-password' }), { field: 'password', message: 'remotePasswordRequired' })
+  assert.deepEqual(remoteRefusal({ reason: 'password-required' }), { field: 'password', message: 'remotePasswordRequired' })
+  assert.deepEqual(remoteRefusal({ reason: 'something-new' }), { field: '', message: 'remoteActionFailed' }, 'an unknown reason is a sentence, not a code')
+  assert.deepEqual(remoteRefusal(undefined), { field: '', message: 'remoteActionFailed' })
+
+  const form = (overrides = {}) => ({ port: '8787', username: 'owner', password: '', confirm: '', ...overrides })
+  assert.deepEqual(validateRemoteDraft(form()), {
+    ok: true,
+    body: { action: 'set', port: 8787, username: 'owner' },
+    fields: ['port', 'username'],
+  }, 'an untouched account saves the port and the name, and nothing else')
+  assert.deepEqual(validateRemoteDraft(form({ port: '0' })), { ok: false, field: 'port', message: 'remotePortRange' })
+  assert.deepEqual(validateRemoteDraft(form({ port: 'eighty' })), { ok: false, field: 'port', message: 'remotePortInvalid' })
+  for (const blank of ['', '   ']) {
+    assert.deepEqual(validateRemoteDraft(form({ username: blank })), { ok: false, field: 'username', message: 'remoteUsernameRequired' })
+  }
+  assert.deepEqual(
+    validateRemoteDraft(form({ username: 'x'.repeat(65) })),
+    { ok: false, field: 'username', message: 'remoteUsernameInvalid' },
+    'longer than the Host stores',
+  )
+  assert.equal(validateRemoteDraft(form({ username: 'x'.repeat(64) })).ok, true, 'sixty-four characters is still a name')
+  assert.equal(validateRemoteDraft(form({ username: 'a' })).ok, true, 'one character is a name the Host accepts')
+  assert.equal(
+    validateRemoteDraft(form({ username: 'a b' })).ok,
+    true,
+    'a space is the Host\'s call, not the page\'s — it trims and stores what it is given',
+  )
+  assert.equal(validateRemoteDraft(form({ username: '  owner  ' })).body.username, 'owner', 'the name is trimmed, not refused')
+}
+
+// 30 — the account: a secret never comes back, a typo cannot lock the owner out,
+// and stopping never touches what is stored.
+{
+  const secret = 'hunter2-hunter2'
+  const read = readRemoteView({
+    ok: true,
+    enabled: true,
+    listening: true,
+    port: 8787,
+    username: 'me',
+    hasPassword: true,
+    password: secret,
+    confirm: secret,
+    secret,
+    token: secret,
+    credentials: { password: secret },
+    addresses: [],
+    warning: '',
+    sessions: 1,
+  })
+  assert.equal(read.view.hasPassword, true, 'the page learns a password is set, not what it is')
+  assert.equal(JSON.stringify(read.view).includes(secret), false, 'the password is not in the record')
+  assert.equal(JSON.stringify(read).includes(secret), false, 'and not in the read result either')
+
+  // The form is seeded from the view and never from a secret.
+  assert.deepEqual(remoteDraft({ ...read.view, password: secret, confirm: secret }), {
+    port: '8787',
+    username: 'me',
+    password: '',
+    confirm: '',
+  }, 'the two password fields are always empty')
+  assert.deepEqual(remoteDraft(undefined), { port: '8787', username: '', password: '', confirm: '' })
+  assert.deepEqual(remoteDraft({ port: 'not a port' }).port, '8787', 'a broken answer falls back to the default')
+
+  const form = (overrides = {}) => ({ port: '8787', username: 'owner', password: '', confirm: '', ...overrides })
+  // A typo in the confirm field blocks the submit instead of locking the owner
+  // out of their own GUI.
+  assert.deepEqual(
+    validateRemoteDraft(form({ password: 'correct-horse', confirm: 'correct-hors' })),
+    { ok: false, field: 'confirm', message: 'remotePasswordMismatch' },
+  )
+  assert.deepEqual(
+    validateRemoteDraft(form({ password: 'short', confirm: 'short' })),
+    { ok: false, field: 'password', message: 'remotePasswordShort' },
+  )
+  assert.deepEqual(
+    validateRemoteDraft(form({ password: '', confirm: 'something' })),
+    { ok: false, field: 'password', message: 'remotePasswordShort' },
+    'a confirm with nothing to confirm is not a password',
+  )
+  const typed = validateRemoteDraft(form({ password: 'long-enough', confirm: 'long-enough' }))
+  assert.deepEqual(typed.body, { action: 'set', port: 8787, username: 'owner', password: 'long-enough' })
+  assert.equal('confirm' in typed.body, false, 'the Host never hears about the confirm field')
+  assert.deepEqual(typed.fields, ['port', 'username', 'password'])
+  assert.equal('password' in validateRemoteDraft(form()).body, false, 'an empty password is never sent')
+
+  // Starting has to leave something guarding the door.
+  const empty = remoteDraft({ enabled: false, hasPassword: false, port: 8787, username: 'owner' })
+  assert.deepEqual(
+    toggleBody({ enabled: false, hasPassword: false, port: 8787, username: 'owner' }, empty),
+    { ok: false, field: 'password', message: 'remotePasswordRequired' },
+    'a listener with no password would publish the GUI unprotected',
+  )
+  const stored = { enabled: false, hasPassword: true, port: 8787, username: 'owner' }
+  assert.deepEqual(toggleBody(stored, remoteDraft(stored)), {
+    ok: true,
+    body: { action: 'set', enabled: true },
+    fields: ['enabled'],
+  }, 'with a stored password, starting is one field')
+  assert.deepEqual(toggleBody(stored, form({ password: 'long-enough', confirm: 'long-enough' })), {
+    ok: true,
+    body: { action: 'set', port: 8787, username: 'owner', password: 'long-enough', enabled: true },
+    fields: ['port', 'username', 'password', 'enabled'],
+  }, 'a password typed in the same breath is saved by the start')
+  const running = { enabled: true, listening: true, hasPassword: true, port: 8787, username: 'owner' }
+  assert.deepEqual(toggleBody(running, form({ password: 'long-enough', confirm: 'long-enough' })), {
+    ok: true,
+    body: { action: 'set', enabled: false },
+    fields: ['enabled'],
+  }, 'stopping never touches the account')
+  const failed = { enabled: true, listening: false, failure: 'EADDRINUSE', hasPassword: true }
+  assert.equal(toggleBody(failed, remoteDraft(failed)).body.enabled, true, 'a failed listener offers Start again')
+
+  assert.deepEqual(remoteActionBody('logout-all'), { action: 'logout-all' })
+  for (const action of REMOTE_ACTIONS.filter(value => value !== 'set')) {
+    assert.deepEqual(remoteActionBody(action), { action })
+  }
+}
+
+// 31 — the addresses: one absolute line per address, on the port being served.
+{
+  assert.equal(addressLine('192.168.1.20', 8787), 'http://192.168.1.20:8787', 'a bare host gets the scheme and the port')
+  assert.equal(addressLine(' 192.168.1.20 ', 8787), 'http://192.168.1.20:8787')
+  assert.equal(addressLine('http://192.168.1.20:8787', 8787), 'http://192.168.1.20:8787', 'a finished line is left alone')
+  assert.equal(addressLine('http://192.168.1.20', 9000), 'http://192.168.1.20:9000', 'the port being served fills the gap')
+  assert.equal(addressLine('http://192.168.1.20:9000', 8787), 'http://192.168.1.20:9000', 'a port already on the line wins')
+  assert.equal(addressLine('http://192.168.1.20:8787/', 8787), 'http://192.168.1.20:8787', 'no trailing slash')
+  assert.equal(addressLine('192.168.1.20/gui', 8787), 'http://192.168.1.20:8787', 'the address is the door, not a path')
+  assert.equal(addressLine('https://phone.example.com', 8787), 'https://phone.example.com:8787', 'a scheme the Host chose is kept')
+  assert.equal(addressLine('[::1]', 8787), 'http://[::1]:8787', 'a bracketed address keeps its brackets')
+  assert.equal(addressLine('[::1]:9000', 8787), 'http://[::1]:9000')
+  assert.equal(addressLine('', 8787), '')
+  assert.equal(addressLine(undefined, 8787), '')
+  assert.equal(addressLine('   ', 8787), '')
+  assert.equal(addressLine('192.168.1.20', undefined), 'http://192.168.1.20:8787', 'no port reported still yields a line')
+
+  assert.deepEqual(remoteAddressLines({
+    port: 8787,
+    addresses: ['192.168.1.20', '192.168.1.21', '192.168.1.20', ''],
+  }), ['http://192.168.1.20:8787', 'http://192.168.1.21:8787'], 'one line per address, in the Host order')
+  assert.deepEqual(remoteAddressLines({ port: 9000, addresses: ['192.168.1.20'] }), ['http://192.168.1.20:9000'], 'on the port it serves')
+  assert.deepEqual(remoteAddressLines({ port: 8787, addresses: [] }), [], 'nothing to open yet')
+  assert.deepEqual(remoteAddressLines(undefined), [])
+
+  // The plain-HTTP warning is the page's own sentence, always first.
+  const t = (key, params) => (params === undefined ? key : `${key}(${params.count})`)
+  for (const view of [undefined, {}, { warning: '' }, { warning: 'Host words' }, { warning: 'remotePlainHttp' }]) {
+    assert.equal(warningLines(view, t)[0], 'remotePlainHttp', `the tradeoff is stated for ${JSON.stringify(view)}`)
+  }
+  assert.deepEqual(warningLines({ warning: 'Host words' }, t), ['remotePlainHttp', 'Host words'], 'and the Host may add its own')
+  assert.deepEqual(warningLines({ warning: 'remotePlainHttp' }, t), ['remotePlainHttp'], 'the same sentence is said once')
+
+  assert.equal(sessionsText(t, 0), 'remoteNoSessions')
+  assert.equal(sessionsText(t, 1), 'remoteSessionOne')
+  assert.equal(sessionsText(t, 2), 'remoteSessions(2)')
+  assert.equal(sessionsText(t, undefined), 'remoteNoSessions')
+  assert.equal(sessionsText(t, -3), 'remoteNoSessions')
+}
+
+// 32 — the page itself: real labels, one line per address, Enter saves, and no
+// secret anywhere on screen.
+{
+  const stub = stubPageFactory()
+  const t = (key, params) => (params === undefined ? key : `${key}(${params.count})`)
+  const ids = {
+    port: 'port-id',
+    username: 'user-id',
+    password: 'pass-id',
+    confirm: 'confirm-id',
+    passwordHint: 'pass-hint',
+    error: 'error-id',
+  }
+  const calls = []
+  const actions = {
+    retry: () => calls.push('retry'),
+    field: (name, value) => calls.push(`field:${name}:${value}`),
+    submit: () => calls.push('submit'),
+    toggle: () => calls.push('toggle'),
+    signOut: () => calls.push('signOut'),
+    copy: address => calls.push(`copy:${address}`),
+  }
+  const live = {
+    status: 'ready',
+    data: {
+      available: true,
+      enabled: true,
+      listening: true,
+      port: 8787,
+      username: 'me',
+      hasPassword: true,
+      addresses: ['192.168.1.20', 'http://192.168.1.21'],
+      warning: 'Host words',
+      sessions: 1,
+      failure: '',
+    },
+    failure: '',
+  }
+  const base = {
+    enabled: true,
+    view: live,
+    draft: stub.remoteDraft(live.data),
+    fieldError: { field: '', text: '' },
+    busy: '',
+    saved: false,
+    notice: { text: '', tone: 'bad' },
+    copy: { address: '', copied: false },
+    ids,
+    actions,
+  }
+  const page = (overrides = {}) => stub.remotePage(t, { ...base, ...overrides })
+  const ready = page()
+  const text = treeText(ready)
+
+  assert.deepEqual(treeByType(ready, 'h2').map(node => node.props.children[0]), ['remoteTitle'], 'the page has one heading')
+  assert.ok(text.includes('remoteIntro'), 'and one introduction line')
+  assert.ok(text.includes('remoteStateListening'), 'the listener state is a word, not a colour')
+  assert.ok(treeButtons(ready).includes('remoteStop'), 'and the control is named after what it will do')
+
+  // The port: a number field at the default, with the range on it.
+  const portInput = treeByType(ready, 'input').find(input => input.props.type === 'number')
+  assert.ok(portInput, 'the port is a number field')
+  assert.equal(portInput.props.value, '8787', 'starting at the default')
+  assert.equal(portInput.props.min, REMOTE_PORT_MIN)
+  assert.equal(portInput.props.max, REMOTE_PORT_MAX)
+
+  // The passwords: two of them, both empty, both opaque, both off the
+  // browser's own autofill of a stored secret.
+  const passwordInputs = treeByType(ready, 'input').filter(input => input.props.type === 'password')
+  assert.equal(passwordInputs.length, 2, 'one password field and its confirm')
+  for (const input of passwordInputs) {
+    assert.equal(input.props.value, '', 'never prefilled, even when the Host says a password is set')
+    assert.equal(input.props.autoComplete, 'new-password')
+  }
+  assert.ok(text.includes('remotePasswordHint'), 'the hint says what changing it costs')
+
+  // Every input is tied to a real label, and the label is the field's name.
+  const labelFor = id => treeByType(ready, 'label').find(label => label.props.htmlFor === id)
+  for (const input of treeByType(ready, 'input')) {
+    assert.equal(typeof input.props.id, 'string', 'every input has an id')
+    assert.ok(labelFor(input.props.id), `${input.props.id} has a label pointing at it`)
+  }
+  assert.deepEqual(labelFor(ids.port).props.children.filter(child => typeof child === 'string'), ['remotePort'])
+  assert.deepEqual(labelFor(ids.username).props.children.filter(child => typeof child === 'string'), ['remoteUsername'])
+  assert.deepEqual(labelFor(ids.password).props.children.filter(child => typeof child === 'string'), ['remotePassword'])
+  assert.deepEqual(labelFor(ids.confirm).props.children.filter(child => typeof child === 'string'), ['remotePasswordConfirm'])
+
+  // Enter submits: the fields live in one form, and its submit is the save.
+  const [form] = treeByType(ready, 'form')
+  assert.equal(typeof form.props.onSubmit, 'function', 'Enter in any field submits the form')
+  assert.equal(form.props['aria-label'], 'remoteAccount', 'and the form has a name')
+  form.props.onSubmit({ preventDefault() {} })
+  assert.deepEqual(calls, ['submit'])
+  calls.length = 0
+
+  // Inputs and buttons call the handlers they were given.
+  portInput.props.onChange({ target: { value: '9000' } })
+  assert.deepEqual(calls, ['field:port:9000'])
+  calls.length = 0
+  treeByType(ready, 'button').find(button => button.props.children.includes('remoteStop')).props.onClick()
+  assert.deepEqual(calls, ['toggle'])
+  calls.length = 0
+  treeByType(ready, 'button').find(button => button.props.children.includes('remoteSignOut')).props.onClick()
+  assert.deepEqual(calls, ['signOut'])
+  calls.length = 0
+  const copyButtons = treeByType(ready, 'button').filter(button => button.props.className.includes('buttonSm'))
+  assert.equal(copyButtons.length, 2, 'one Copy control per address')
+  copyButtons[0].props.onClick()
+  assert.deepEqual(calls, ['copy:http://192.168.1.20:8787'])
+  calls.length = 0
+
+  // One line per address, each carrying the port, over a sentence about the phone.
+  const items = treeByType(ready, 'li')
+  assert.equal(items.length, 2, 'one line per address')
+  assert.deepEqual(
+    items.map(item => treeByType(item, 'code')[0].props.children[0]),
+    ['http://192.168.1.20:8787', 'http://192.168.1.21:8787'],
+    'each line is an address to open on the phone, with the port',
+  )
+  assert.ok(text.includes('remoteAddressesHint'), 'and a plain sentence says what to do with them')
+  assert.deepEqual(treeButtons(ready).filter(label => label === 'copy'), ['copy', 'copy'])
+
+  // The warning is on the page, in its own words and in the Host's.
+  assert.ok(text.includes('remotePlainHttp'), 'the plain-HTTP tradeoff is stated, not decorated')
+  assert.ok(text.includes('Host words'), 'and the Host may add its own sentence')
+
+  // Saving and saved are the button's state, not its name.
+  const saving = page({ busy: 'save' })
+  assert.ok(treeText(saving).includes('remoteSaving'))
+  assert.ok(treeButtons(saving).includes('remoteSave'), 'the button keeps one name through the flow')
+  const saved = page({ saved: true })
+  assert.ok(treeText(saved).includes('remoteSaved'))
+  assert.ok(treeButtons(saved).includes('remoteSave'))
+  const idle = page({ view: { ...live, data: { ...live.data, sessions: 0 } } })
+  assert.equal(
+    treeByType(idle, 'button').find(button => button.props.children.includes('remoteSignOut')).props.disabled,
+    true,
+    'nothing to sign out with no phone signed in',
+  )
+  assert.ok(treeText(idle).includes('remoteNoSessions'))
+  const signedOut = page({ notice: { text: 'Every phone was signed out.', tone: 'ok' } })
+  assert.ok(treeText(signedOut).includes('Every phone was signed out.'))
+  assert.equal(treeByType(signedOut, 'p').find(node => node.props['data-tone'] === 'ok').props.role, 'status')
+
+  // A field error is described, not just coloured: aria-invalid plus the id of
+  // the sentence that says what is wrong.
+  const badPort = page({ fieldError: { field: 'port', text: 'Use a port from 1024 to 65535.' } })
+  const badPortInput = treeByType(badPort, 'input').find(input => input.props.type === 'number')
+  assert.equal(badPortInput.props['aria-invalid'], true)
+  assert.equal(badPortInput.props['aria-describedby'], ids.error)
+  const alert = treeByType(badPort, 'p').find(node => node.props.role === 'alert')
+  assert.equal(alert.props.id, ids.error, 'the sentence is the one that describes it')
+  assert.deepEqual(alert.props.children.filter(child => typeof child === 'string'), ['Use a port from 1024 to 65535.'])
+  const badPassword = page({ fieldError: { field: 'password', text: 'Use at least 8 characters.' } })
+  const badPasswordInput = treeByType(badPassword, 'input').find(input => input.props.type === 'password')
+  assert.equal(badPasswordInput.props['aria-invalid'], true)
+  assert.equal(
+    badPasswordInput.props['aria-describedby'],
+    `${ids.passwordHint} ${ids.error}`,
+    'the hint and the error both describe the password field',
+  )
+  assert.equal(
+    treeByType(badPassword, 'input').find(input => input.props.type === 'number').props['aria-invalid'],
+    undefined,
+    'the port is not marked when the password is the problem',
+  )
+  const badConfirm = page({ fieldError: { field: 'confirm', text: 'The two passwords do not match.' } })
+  const confirmInput = treeByType(badConfirm, 'input').filter(input => input.props.type === 'password')[1]
+  assert.equal(confirmInput.props['aria-invalid'], true)
+  assert.equal(confirmInput.props['aria-describedby'], ids.error)
+}
+
+// 33 — every state of the page, and the one promise the unavailable state makes:
+// no control at all.
+{
+  const stub = stubPageFactory()
+  const t = key => key
+  const ids = { port: 'p', username: 'u', password: 'w', confirm: 'c', passwordHint: 'h', error: 'e' }
+  const actions = {}
+  const base = {
+    enabled: true,
+    draft: stub.remoteDraft({ port: 8787 }),
+    fieldError: { field: '', text: '' },
+    busy: '',
+    saved: false,
+    notice: { text: '', tone: 'bad' },
+    copy: { address: '', copied: false },
+    ids,
+    actions,
+  }
+  const page = (view, overrides = {}) => stub.remotePage(t, { ...base, view, ...overrides })
+
+  // Loading is one quiet line, and nothing to fill in yet.
+  const loading = page({ status: 'loading' })
+  assert.deepEqual(treeText(loading), ['remoteTitle', 'remoteIntro', 'remoteLoading'])
+  assert.equal(treeByType(loading, 'form').length, 0)
+  assert.equal(treeByType(loading, 'button').length, 0)
+  assert.equal(treeByType(loading, 'input').length, 0)
+
+  // A read that failed says so in the Host's words and offers one way back.
+  const failed = page({ status: 'error', failure: 'api/edh.remote answered 500' })
+  assert.ok(treeText(failed).includes('remoteLoadFailed'))
+  assert.ok(treeText(failed).includes('api/edh.remote answered 500'))
+  assert.deepEqual(treeButtons(failed), ['remoteRetry'])
+
+  // The services are missing on this profile: one sentence, and no dead control.
+  const unavailable = page({ status: 'unavailable' })
+  assert.deepEqual(treeText(unavailable), ['remoteTitle', 'remoteIntro', 'remoteUnavailable'])
+  assert.equal(treeByType(unavailable, 'button').length, 0, 'no promise this profile cannot keep')
+  assert.equal(treeByType(unavailable, 'input').length, 0)
+  assert.equal(treeByType(unavailable, 'form').length, 0)
+
+  // A row switched off while the page is open: the same quiet answer.
+  const off = page({ status: 'loading' }, { enabled: false })
+  assert.deepEqual(treeText(off), ['remoteTitle', 'remoteIntro', 'remoteOff'])
+  assert.equal(treeByType(off, 'button').length, 0)
+
+  // Every listener state: its one word, the control that can change it, and the
+  // warning — which is page copy, so it does not come and go with the listener.
+  const listeners = [
+    [{ enabled: false, listening: false }, 'remoteStateOff', 'remoteStart'],
+    [{ enabled: false, listening: false, failure: 'old' }, 'remoteStateOff', 'remoteStart'],
+    [{ enabled: true, listening: false }, 'remoteStateStarting', 'remoteStop'],
+    [{ enabled: true, listening: true }, 'remoteStateListening', 'remoteStop'],
+    [{ enabled: true, listening: false, failure: 'EADDRINUSE' }, 'remoteStateFailed', 'remoteStart'],
+  ]
+  for (const [data, word, control] of listeners) {
+    const view = {
+      status: 'ready',
+      data: {
+        available: true,
+        port: 8787,
+        username: 'me',
+        hasPassword: true,
+        addresses: [],
+        warning: '',
+        sessions: 0,
+        failure: '',
+        ...data,
+      },
+      failure: '',
+    }
+    const tree = page(view)
+    const words = treeText(tree)
+    assert.ok(words.includes(word), `${JSON.stringify(data)} reads ${word}`)
+    assert.ok(treeButtons(tree).includes(control), `and offers ${control}`)
+    assert.ok(words.includes('remotePlainHttp'), `${word} still states the plain-HTTP tradeoff`)
+    assert.ok(words.includes('remoteAddressesWaiting'), 'and says there is no address until the listener has one')
+  }
+
+  // A listener that failed says so in the Host's own sentence, under its word.
+  const broken = page({
+    status: 'ready',
+    data: {
+      available: true,
+      enabled: true,
+      listening: false,
+      port: 8787,
+      username: 'me',
+      hasPassword: true,
+      addresses: [],
+      warning: '',
+      sessions: 0,
+      failure: 'listen EADDRINUSE 0.0.0.0:8787',
+    },
+    failure: '',
+  })
+  assert.ok(treeText(broken).includes('listen EADDRINUSE 0.0.0.0:8787'))
+  assert.ok(treeByType(broken, 'span').some(node => node.props.className.includes('edh-remote-failure')))
+}
+
+// 34 — the dictionary: every string in both languages, and no key one of them
+// is missing. The page is only as translated as its weakest dictionary.
+{
+  const enKeys = Object.keys(en).sort()
+  const zhKeys = Object.keys(zh).sort()
+  assert.deepEqual(enKeys, zhKeys, 'both dictionaries carry exactly the same keys')
+  for (const key of enKeys) {
+    assert.equal(typeof en[key], 'string', `${key} is a string in en`)
+    assert.equal(typeof zh[key], 'string', `${key} is a string in zh`)
+    assert.notEqual(en[key].trim(), '', `${key} says something in en`)
+    assert.notEqual(zh[key].trim(), '', `${key} says something in zh`)
+  }
+  assert.equal(en.remoteSessions.includes('{count}'), true)
+  assert.equal(zh.remoteSessions.includes('{count}'), true, 'the placeholder survives translation')
+
+  const remoteKeys = enKeys.filter(key => key.startsWith('remote'))
+  assert.ok(remoteKeys.length >= 35, `the remote page has its own copy (${remoteKeys.length} keys)`)
+
+  // Every dictionary key the page asks for by name exists in both.
+  const asked = new Set()
+  for (const match of source.matchAll(/t\('(remote[A-Za-z]+)'/gu)) asked.add(match[1])
+  assert.ok(asked.size >= 20, 'the page asks the dictionary for its copy')
+  for (const key of asked) {
+    assert.ok(Object.prototype.hasOwnProperty.call(en, key), `${key} is in en`)
+    assert.ok(Object.prototype.hasOwnProperty.call(zh, key), `${key} is in zh`)
+  }
+
+  // The page decided plain HTTP, so the warning names the tradeoff rather than
+  // hiding it behind a colour.
+  assert.match(en.remotePlainHttp, /not encrypted/iu)
+  assert.match(en.remotePlainHttp, /clear text/iu)
+  assert.match(en.remotePlainHttp, /trust/iu)
+  assert.match(zh.remotePlainHttp, /不加密/u)
+  assert.match(zh.remotePlainHttp, /明文/u)
+}
+
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
 console.log('edh mcp: settings section checks passed')
 console.log('edh update: control and reload checks passed')
+console.log('edh remote: page, account, and address checks passed')
 console.log('edh btw: side chat command checks passed')
 console.log('edh switch: all checks passed')

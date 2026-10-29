@@ -238,7 +238,10 @@ const {
   notifySessionTitle,
   notifyOpenSession,
   readNotifyLast,
+  raiseNotifyWindow,
   NOTIFY_LAST_ROUTE,
+  NOTIFY_RAISE_ROUTE,
+  NOTIFY_RAISE_TIMEOUT_MS,
   NOTIFY_TITLE_MAX,
   NOTIFY_BODY_MAX,
   notifyPage,
@@ -5234,9 +5237,9 @@ function recordingNotification(permission, behaviour) {
       focus: () => opened.push('focus'),
       log,
     })
-    assert.deepEqual(okay, { opened: true, sessionId: 's1', focused: true })
+    assert.deepEqual(okay, { opened: true, sessionId: 's1', focused: true, raising: false }, 'no raise was supplied, so none was started')
     assert.deepEqual(opened, ['focus', 's1'], 'the window is focused, then the conversation opens')
-    assert.deepEqual(writes.at(-1), { phase: 'opened', turn: 's1' })
+    assert.deepEqual(writes.at(-1), { phase: 'opened', turn: 's1', focused: true, raising: false })
 
     // A missing id navigates nowhere, and says so.
     opened.length = 0
@@ -5696,6 +5699,168 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 60 — the click raises the window without waiting for it, and opens the chat.
+{
+  const t = dictionaryOf('en')
+  const order = []
+  const requests = []
+  const audio = { playTone: () => true, playSound: async () => true, close() {} }
+
+  /** A Notification whose click the suite can invoke. */
+  const clickable = () => {
+    const instances = []
+    const api = function FakeNotification(title, options) {
+      const instance = { title, options, closed: 0, onclick: null, onclose: null }
+      instance.close = () => {
+        instance.closed++
+      }
+      instances.push(instance)
+      return instance
+    }
+    api.permission = 'granted'
+    api.requestPermission = async () => 'granted'
+    return { popup: createNotifyPopup({ Notification: api }), instances }
+  }
+
+  /** A fetch-shaped fake for the raise route, one behaviour per case. */
+  const fetchFor = behaviour => async (url, init) => {
+    requests.push({ url, init })
+    if (behaviour === 'reject') throw new Error('network down')
+    if (behaviour === 'hang') return new Promise(() => {})
+    if (behaviour === 'html') return { ok: true, status: 200, json: async () => { throw new Error('not JSON') } }
+    if (behaviour === 'http') return { ok: false, status: 500, json: async () => ({}) }
+    if (behaviour === 'refused') return { ok: true, status: 200, json: async () => ({ ok: false, reason: 'no-window' }) }
+    if (behaviour === 'denied') return { ok: true, status: 200, json: async () => ({ ok: true, raised: false, reason: 'foreground-refused' }) }
+    return { ok: true, status: 200, json: async () => ({ ok: true, raised: true }) }
+  }
+
+  /** Fire one notification over a scripted raise, then click it. */
+  const clickWith = async (behaviour, options = {}) => {
+    requests.length = 0
+    order.length = 0
+    const written = []
+    const { popup, instances } = clickable()
+    const opened = []
+    const notifier = createNotifier({
+      audio,
+      popup,
+      settings: notifyDefaults(),
+      log: payload => written.push(payload),
+      t,
+      openSession: id => {
+        opened.push(id)
+        order.push('open')
+      },
+      focus: () => order.push('focus'),
+      raise: () => {
+        order.push('raise')
+        return raiseNotifyWindow({ fetch: fetchFor(behaviour), timeoutMs: options.raiseTimeoutMs ?? 20, log: payload => written.push(payload) })
+      },
+    })
+    await notifier.fire({ sessionId: options.sessionId ?? 's-click', title: 'Refactor the parser' })
+    if (options.noClick !== true) instances.at(-1).onclick()
+    order.push('after-click')
+    await new Promise(resolve => setTimeout(resolve, options.settleMs ?? 60))
+    return { instances, opened, written, order }
+  }
+
+  // Every failure of the raise still ends in one open, with the popup closed.
+  const failures = [
+    ['a rejected raise', 'reject'],
+    ['a raising-timeout', 'hang'],
+    ['a raise answering raised:false', 'denied'],
+    ['a raise answering ok:false', 'refused'],
+    ['a raise answering HTML', 'html'],
+    ['a raise answering 500', 'http'],
+  ]
+  for (const [label, behaviour] of failures) {
+    const { instances, opened, written } = await clickWith(behaviour)
+    assert.deepEqual(opened, ['s-click'], `${label}: the session opened, exactly once`)
+    assert.equal(instances.at(-1).closed, 1, `${label}: the popup closed`)
+    assert.equal(requests.length, 1, `${label}: exactly one raise request`)
+    assert.equal(written.some(payload => payload.action === 'raise' || payload.reason === 'raise-denied'), true, `${label}: the failure is recorded, not swallowed`)
+  }
+
+  // The raise is a POST to the exact route, and never waited for.
+  {
+    const { order: seen } = await clickWith('ok')
+    assert.equal(requests[0].url, NOTIFY_RAISE_ROUTE, 'the exact route')
+    assert.equal(requests[0].init.method, 'POST', 'POST, with no body needed')
+    assert.equal(requests[0].init.headers.accept, 'application/json')
+    assert.deepEqual(seen.slice(0, 4), ['focus', 'raise', 'open', 'after-click'], 'focus, then raise, then open — the click does not wait')
+    assert.equal(seen.includes('settle'), false)
+  }
+
+  // Navigation does not await the raise, proven on the pending promise itself.
+  {
+    order.length = 0
+    let releaseRaise
+    const gate = new Promise(resolve => {
+      releaseRaise = resolve
+    })
+    const opened = []
+    const answer = notifyOpenSession({
+      sessionId: 's-gate',
+      focus: () => order.push('focus'),
+      raise: () => {
+        order.push('raise-start')
+        return gate.then(() => {
+          order.push('raise-settled')
+          return { raised: true }
+        })
+      },
+      open: id => {
+        opened.push(id)
+        order.push('open')
+      },
+      log: () => {},
+    })
+    assert.deepEqual(opened, ['s-gate'], 'the session opened while the raise is still in flight')
+    assert.deepEqual(order, ['focus', 'raise-start', 'open'], 'and in that order')
+    assert.equal(answer.raising, true, 'the answer says a raise is in flight')
+    releaseRaise()
+    await gate
+    assert.equal(order.at(-1), 'raise-settled', 'the raise settles afterwards')
+  }
+
+  // A missing id navigates nowhere and starts no raise at all.
+  {
+    const opened = []
+    let raised = 0
+    const answer = notifyOpenSession({
+      sessionId: '',
+      focus: () => order.push('focus'),
+      raise: () => {
+        raised++
+        return Promise.resolve({ raised: true })
+      },
+      open: id => opened.push(id),
+      log: () => {},
+    })
+    assert.equal(raised, 0, 'no raise for no session')
+    assert.deepEqual(opened, [], 'and no navigation')
+    assert.equal(answer.reason, 'no-session')
+  }
+
+  // A double click produces one raise and one open.
+  {
+    const { instances, opened, written } = await clickWith('ok')
+    instances.at(-1).onclick()
+    instances.at(-1).onclick()
+    assert.deepEqual(opened, ['s-click'], 'one open')
+    assert.equal(requests.length, 1, 'one raise request')
+    assert.equal(written.filter(payload => payload.phase === 'opened').length, 1, 'one opened breadcrumb')
+  }
+
+  // An honest answer is recorded as raised, not as a failure.
+  {
+    const { written } = await clickWith('ok')
+    assert.equal(written.some(payload => payload.phase === 'raised'), true, 'a raised window is recorded')
+    assert.equal(written.some(payload => payload.phase === 'failed' && payload.action === 'raise'), false)
+  }
+}
+
+console.log('edh notify: click-to-raise checks passed')
 console.log('edh notify: stored-sound fidelity checks passed')
 console.log('edh notify: host-read fallback checks passed')
 console.log('edh notify: title, body, and click checks passed')

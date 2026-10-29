@@ -304,6 +304,28 @@ Audio, and the watcher that decides when to fire).
 - **WAVs are streamed, never buffered** (`createReadStream` → `Readable.toWeb`),
   ~200 KB each, `private, max-age=86400`. `audio/wav` is deliberately absent from
   the proxy's compressible list, so Remote passes the bytes through untouched.
+- **A renderer cannot raise its own window**, so a notification click calls
+  `POST /api/edh.notify/raise`, and the Host restores-and-raises **its own
+  process's window, found by pid** (`process.pid`, then `process.ppid` — on a
+  desktop build the visible window may belong to the parent; nine of this app's
+  ten processes have no window at all). Never by title text: raising "some
+  DeepSeek window" could raise the wrong one.
+- **`SetForegroundWindow` alone is not enough, and the reason is the caller.**
+  The process that calls it is the `powershell.exe` we spawned: it owns no window
+  and is not the foreground process, so Windows' foreground lock refuses — measured
+  here as `raised=0 reason=denied` before the workaround. The script therefore
+  climbs, verifying `GetForegroundWindow()` after every rung and printing which one
+  won: `ShowWindowAsync(SW_RESTORE)` for a *minimised* window → `AttachThreadInput`
+  (join the foreground thread's input queue, ask, detach) → the minimise/restore
+  nudge (a visible flash) → `BringWindowToTop` for the Z order alone. **On this
+  machine `step=attach` is the rung that works**: a genuinely background app window
+  came forward in ~460 ms, confirmed by an independent foreground-pid probe. Keep
+  the ladder in that order; a `raised=0 reason=denied steps=…` means all four were
+  tried and Windows said no, which is reported as `{ ok: true, raised: false,
+  reason: 'denied' }` and never dressed up. Where PowerShell or the OS refuses
+  outright the answer degrades to `raised: false` with `not-windows`, `no-window`,
+  `timeout` or `failed` — the click still made its sound. One raise runs at a time;
+  a second click joins it.
 - **The notification body is a bounded tail read, never a transcript fetch.**
   `GET /api/edh.notify/last?sessionId=…` reads the last 256 KB of the Session's
   Zstandard artifact, splits it into frames with `usage.js`'s `splitZstdFrames`

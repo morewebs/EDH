@@ -9,6 +9,7 @@ import {
   assistantTextOf,
   catalogEntry,
   clipBody,
+  createRaiser,
   decodeWindow,
   findFrameStart,
   inject,
@@ -22,14 +23,21 @@ import {
   name,
   NOTIFY_CATALOG,
   NOTIFY_LAST_PATH,
+  NOTIFY_RAISE_PATH,
   NOTIFY_SOUND_CACHE,
   NOTIFY_SOUND_PATH,
   NOTIFY_SOUND_TYPE,
   NOTIFY_SOUNDS_PATH,
   notifyLastResponse,
+  notifyRaiseResponse,
   notifySoundResponse,
   notifySoundsRequest,
   openSoundStream,
+  parseRaiseOutput,
+  RAISE_BODY_LIMIT,
+  RAISE_TIMEOUT_MS,
+  raiseCommand,
+  raisePids,
   readLastWindow,
   resolveMediaDir,
   soundCatalog,
@@ -508,8 +516,8 @@ class CountingStream extends Readable {
   const { ctx, routes, disposers, warnings } = createContext()
   apply(ctx)
 
-  assert.equal(routes.length, 3, 'all three routes are registered')
-  assert.deepEqual(routes.map(route => route.path), [NOTIFY_SOUNDS_PATH, NOTIFY_SOUND_PATH, NOTIFY_LAST_PATH])
+  assert.equal(routes.length, 4, 'all four routes are registered')
+  assert.deepEqual(routes.map(route => route.path), [NOTIFY_SOUNDS_PATH, NOTIFY_SOUND_PATH, NOTIFY_LAST_PATH, NOTIFY_RAISE_PATH])
   for (const route of routes) {
     assert.deepEqual(
       [...route.methods],
@@ -582,7 +590,7 @@ class CountingStream extends Readable {
     connection: {},
   }
   assert.doesNotThrow(() => apply(withoutFetch))
-  assert.equal(logged.length, 3, 'every route reports its own refusal')
+  assert.equal(logged.length, 4, 'every route reports its own refusal')
   assert.equal(logged.every(line => /registration failed/u.test(line)), true)
 
   // And with no context hooks at all, the pure handlers still answer.
@@ -1112,6 +1120,305 @@ class CountingStream extends Readable {
   )
   assert.deepEqual(noList, { ok: true, path: 'C:\\sessions\\x.log' })
   assert.deepEqual(await locateSessionPath(undefined, 'session-abc'), { ok: false, reason: 'unavailable' })
+}
+
+// ---------------------------------------------------------------------------
+// 12 — raising the app's own window: by pid, restore-then-raise, verified
+// ---------------------------------------------------------------------------
+{
+  // The command: one hidden, timeout-bounded PowerShell, with the pids as integer
+  // literals inside the script and no shell anywhere.
+  const command = raiseCommand([process.pid, 4321])
+  assert.equal(command.executable, 'powershell.exe')
+  assert.deepEqual(command.args.slice(0, 6), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden'])
+  assert.equal(command.args[6], '-Command')
+  assert.equal(command.args.length, 8, 'exactly one script argument, nothing loose')
+  const script = command.args[7]
+  assert.equal(script.includes(`[EdhRaise]::Run([int[]]@(${process.pid}, 4321))`), true, 'the pids are integer literals')
+  for (const call of [
+    'EnumWindows',
+    'GetWindowThreadProcessId',
+    'ShowWindowAsync',
+    'SetForegroundWindow',
+    'BringWindowToTop',
+    'GetForegroundWindow',
+    'AttachThreadInput',
+    'GetCurrentThreadId',
+  ]) {
+    assert.equal(script.includes(call), true, `the script calls ${call}`)
+  }
+  assert.equal(script.includes('private const int SwRestore = 9;'), true, 'SW_RESTORE is 9')
+  assert.equal(script.includes('private const int SwMinimize = 6;'), true, 'SW_MINIMIZE is 6')
+
+  // The rungs climb in the documented order, and each one names itself in the
+  // verdict so the answer says which workaround Windows honoured.
+  const rungs = [
+    'step=restore',
+    'step=attach',
+    'ShowWindowAsync(target, SwMinimize)',
+    'step=nudge',
+    'step=top',
+  ].map(marker => script.indexOf(marker))
+  assert.equal(rungs.every(index => index > 0), true, 'every rung is in the script')
+  assert.deepEqual(
+    rungs.every((index, position) => position === 0 || index > rungs[position - 1]),
+    true,
+    'restore, then attach, then the minimise/restore nudge, then the Z-order fallback',
+  )
+  assert.equal(
+    script.indexOf('ShowWindowAsync(target, SwRestore)') < script.indexOf('SetForegroundAttached(target)'),
+    true,
+    'restore happens before any foreground request — a minimised window cannot be foregrounded',
+  )
+  assert.equal(
+    script.indexOf('ShowWindowAsync(target, SwMinimize)') > script.indexOf('step=attach'),
+    true,
+    'the visible flash only happens after the attach attempt failed',
+  )
+  assert.equal(script.includes('steps=restore,attach,nudge,top'), true, 'a total refusal names every rung it tried')
+  assert.equal(script.includes('window=none'), true, 'and it says when there is no window')
+  assert.equal(command.options.windowsHide, true, 'no console window flashes on the click')
+  assert.equal(command.options.timeout, RAISE_TIMEOUT_MS)
+  assert.equal(command.options.killSignal, 'SIGKILL')
+  assert.equal('shell' in command.options, false, 'no shell is ever involved')
+
+  // A pid is a number. Nothing else can reach the script, and nothing comes from
+  // a request in the first place.
+  assert.deepEqual(raisePids([process.pid, process.pid, 0, -5, 1.5, Number.NaN, '1234', null]), [process.pid])
+  const hostile = raiseCommand(['1; Remove-Item C:\\ -Recurse', `${process.pid}) ; calc`, '$null'])
+  assert.equal(hostile.args[7].includes('Remove-Item'), false, 'a string pid cannot smuggle a command')
+  assert.equal(hostile.args[7].includes('calc'), false)
+  assert.equal(hostile.args[7].includes('Run(@())'), true, 'with no valid pid the script targets nothing')
+
+  // The verdict parser: only one line matters, the last one wins, and the rung
+  // that worked is carried through.
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=restore\n'), { raised: true, step: 'restore' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=attach'), { raised: true, step: 'attach' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=nudge'), { raised: true, step: 'nudge' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=top'), { raised: true, step: 'top' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1'), { raised: true }, 'a bare success is still a success')
+  assert.deepEqual(parseRaiseOutput('noise\r\nEDH raised=1 step=attach\r\nmore noise\r\n'), { raised: true, step: 'attach' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=denied'), { raised: false, reason: 'denied' })
+  assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=denied steps=restore,attach,nudge,top'), {
+    raised: false,
+    reason: 'denied',
+    tried: ['restore', 'attach', 'nudge', 'top'],
+  })
+  assert.deepEqual(parseRaiseOutput('EDH window=none'), { raised: false, reason: 'no-window' })
+  assert.deepEqual(parseRaiseOutput('EDH window=none\nEDH raised=1 step=attach'), { raised: true, step: 'attach' }, 'the last verdict wins')
+  assert.equal(parseRaiseOutput(''), undefined, 'no output is not a verdict')
+  assert.equal(parseRaiseOutput('EDH'), undefined)
+  assert.equal(parseRaiseOutput('EDH raised=1 extra'), undefined)
+  assert.equal(parseRaiseOutput(undefined), undefined)
+
+  /** A raiser whose PowerShell is a fake, recording every command it was given. */
+  const fakeRaiser = (outcome, extra = {}) => {
+    const commands = []
+    const warnings = []
+    const raiser = createRaiser({
+      platform: 'win32',
+      pid: 111,
+      parentPid: 222,
+      run: async command => {
+        commands.push(command)
+        return typeof outcome === 'function' ? outcome() : outcome
+      },
+      logger: { warn: (...args) => warnings.push(args.map(String).join(' ')) },
+      ...extra,
+    })
+    return { raiser, commands, warnings }
+  }
+
+  // Success is only claimed when the script *verified* the foreground window, and
+  // the answer names the rung that did it.
+  {
+    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach\n' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'attach' })
+    assert.equal(commands.length, 1)
+    assert.equal(commands[0].args[7].includes('(111, 222)'), true, 'this process, then its parent')
+    assert.equal(raiser.attempts(), 1)
+  }
+  {
+    // Which rung won is logged — the only way to know what to keep on this machine.
+    const info = []
+    const raiser = createRaiser({
+      platform: 'win32',
+      pid: 1,
+      parentPid: 2,
+      run: async () => ({ ok: true, stdout: 'EDH raised=1 step=nudge' }),
+      logger: { warn: () => {}, info: (...args) => info.push(args.map(String).join(' ')) },
+    })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'nudge' })
+    assert.equal(info.length, 1)
+    assert.match(info[0], /nudge/u)
+  }
+
+  // The foreground lock refusing is `raised: false` with a reason, not a lie.
+  {
+    const { raiser, warnings } = fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied steps=restore,attach,nudge,top' })
+    const verdict = await raiser.raise()
+    assert.equal(verdict.ok, true)
+    assert.equal(verdict.raised, false)
+    assert.equal(verdict.reason, 'denied')
+    assert.deepEqual(verdict.tried, ['restore', 'attach', 'nudge', 'top'])
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /denied/u)
+    assert.equal(warnings[0].includes('DeepSeek'), false, 'nothing about the window is logged')
+  }
+
+  {
+    const { raiser } = fakeRaiser({ ok: true, stdout: 'EDH window=none' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'no-window' })
+  }
+  {
+    const { raiser, warnings } = fakeRaiser({ ok: true, stdout: 'unexpected chatter' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'failed' })
+    assert.match(warnings[0], /unreadable answer/u)
+  }
+  {
+    const { raiser } = fakeRaiser({ ok: false, killed: true })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'timeout' }, 'a stuck PowerShell is a timeout')
+  }
+  {
+    const { raiser } = fakeRaiser({ ok: false, code: 'ENOENT' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'failed' }, 'no PowerShell is a degrade')
+  }
+  {
+    const { raiser } = fakeRaiser(() => {
+      throw new Error('spawn EPERM')
+    })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'failed' }, 'a runner that throws is a degrade')
+  }
+
+  // Not Windows: no process is spawned at all.
+  {
+    let spawned = 0
+    const raiser = createRaiser({
+      platform: 'linux',
+      run: async () => {
+        spawned += 1
+        return { ok: true, stdout: 'EDH raised=1' }
+      },
+    })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'not-windows' })
+    assert.equal(spawned, 0, 'nothing is run off Windows')
+    assert.equal(raiser.attempts(), 0)
+  }
+
+  // Single flight: a second click joins the running one.
+  {
+    let release
+    let spawns = 0
+    const raiser = createRaiser({
+      platform: 'win32',
+      pid: 10,
+      parentPid: 20,
+      run: () =>
+        new Promise(resolve => {
+          spawns += 1
+          release = () => resolve({ ok: true, stdout: 'EDH raised=1' })
+        }),
+    })
+    const first = raiser.raise()
+    const second = raiser.raise()
+    assert.equal(first, second, 'the second call returns the same promise')
+    release()
+    assert.deepEqual(await first, { ok: true, raised: true })
+    assert.equal(spawns, 1, 'exactly one PowerShell for two clicks')
+    // A later click is a fresh attempt.
+    const third = raiser.raise()
+    release()
+    assert.deepEqual(await third, { ok: true, raised: true })
+    assert.equal(spawns, 2)
+  }
+
+  // Disposal stops the raiser without throwing.
+  {
+    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1' })
+    raiser.dispose()
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'disposed' })
+    assert.equal(commands.length, 0, 'nothing is spawned after disposal')
+  }
+
+  // The route: POST answers, anything else is a 405, and a bad body is 400.
+  {
+    const raised = await notifyRaiseResponse(
+      { method: 'POST', text: async () => '' },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+    )
+    assert.equal(raised.status, 200)
+    assert.deepEqual(await raised.json(), { ok: true, raised: true })
+
+    // The rung that worked is carried to the answer, so the page (and this report)
+    // can see which workaround Windows honoured.
+    const byAttach = await notifyRaiseResponse(
+      { method: 'POST', text: async () => '' },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach' }).raiser },
+    )
+    assert.deepEqual(await byAttach.json(), { ok: true, raised: true, step: 'attach' })
+
+    const empty = await notifyRaiseResponse(
+      { method: 'POST', text: async () => '{}' },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+    )
+    assert.deepEqual(await empty.json(), { ok: true, raised: true }, 'an empty object body is fine')
+
+    const refused = await notifyRaiseResponse(
+      { method: 'POST', text: async () => '' },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied' }).raiser },
+    )
+    const refusedBody = await refused.json()
+    assert.equal(refused.status, 200, 'a refused raise is a report, not an error status')
+    assert.deepEqual(refusedBody, { ok: true, raised: false, reason: 'denied' })
+
+    for (const method of ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']) {
+      const rejected = await notifyRaiseResponse({ method, text: async () => '' }, {})
+      assert.equal(rejected.status, 405, `${method} is a 405`)
+      assert.equal(rejected.headers.get('allow'), 'POST')
+      assert.equal((await rejected.json()).reason, 'unsupported-method')
+    }
+
+    for (const body of ['not json', '[]', '"text"', '42', 'null', 'x'.repeat(RAISE_BODY_LIMIT + 1)]) {
+      const rejected = await notifyRaiseResponse(
+        { method: 'POST', text: async () => body },
+        { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+      )
+      assert.equal(rejected.status, 400, `${JSON.stringify(body.slice(0, 20))} is a bad body`)
+      const parsed = await rejected.json()
+      assert.equal(parsed.ok, false)
+      assert.equal(parsed.reason, 'bad-input')
+      assert.equal(typeof parsed.message, 'string')
+    }
+
+    const unreadable = await notifyRaiseResponse(
+      {
+        method: 'POST',
+        text: async () => {
+          throw new Error('aborted')
+        },
+      },
+      {},
+    )
+    assert.equal(unreadable.status, 400)
+    assert.equal((await unreadable.json()).reason, 'bad-input')
+
+    // A raiser that throws is still an answer, never a 500.
+    const exploding = {
+      raise: async () => {
+        throw new Error('boom')
+      },
+    }
+    const survived = await notifyRaiseResponse({ method: 'POST', text: async () => '' }, { raiser: exploding })
+    assert.equal(survived.status, 200)
+    assert.deepEqual(await survived.json(), { ok: true, raised: false, reason: 'failed' })
+
+    // A raiser that refuses without a reason still answers with `raised: false`.
+    const vague = await notifyRaiseResponse(
+      { method: 'POST', text: async () => '' },
+      { raiser: { raise: async () => ({ ok: true, raised: false }) } },
+    )
+    assert.deepEqual(await vague.json(), { ok: true, raised: false })
+  }
 }
 
 console.log('edh notify: all checks passed')

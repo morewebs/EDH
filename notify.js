@@ -43,6 +43,7 @@
  * notifications. That is a browser rule this side cannot work around.
  */
 
+import { execFile } from 'node:child_process'
 import { closeSync, createReadStream, existsSync, fstatSync, openSync, readSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -54,6 +55,25 @@ export const name = 'edh-notify'
 /** Absolute pathnames the Host registers; the browser addresses them document-relative. */
 export const NOTIFY_SOUNDS_PATH = '/api/edh.notify/sounds'
 export const NOTIFY_SOUND_PATH = '/api/edh.notify/sound'
+
+/**
+ * The fourth route: bring the app's own window forward.
+ *
+ * This exists because a *renderer cannot raise its own OS window*. Chromium's
+ * focus rules and Windows' foreground lock are both in the way, and
+ * `window.focus()` will not restore a minimised window — so a notification click
+ * has to ask the Host, which is the process that actually owns a window on this
+ * desktop. The Host does it the only honest way available without a native
+ * dependency: a short PowerShell `Add-Type` P/Invoke of `user32`, aimed at **this
+ * process's own top-level window found by pid**, never at a title or a guess.
+ */
+export const NOTIFY_RAISE_PATH = '/api/edh.notify/raise'
+
+/** Never let a stuck PowerShell hold the request: a click must answer quickly. */
+export const RAISE_TIMEOUT_MS = 3000
+
+/** The largest request body the raise route will read; it takes none. */
+export const RAISE_BODY_LIMIT = 4096
 
 /** What a WAV is served as. Deliberately absent from the proxy's compressible list. */
 export const NOTIFY_SOUND_TYPE = 'audio/wav'
@@ -719,6 +739,425 @@ export async function notifyLastResponse(request, options = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Raising the app's own window
+// ---------------------------------------------------------------------------
+//
+// A renderer cannot raise its own OS window: Chromium's focus rules and Windows'
+// foreground lock both refuse it, and `window.focus()` does not un-minimise
+// anything. So a notification click asks this Host — the process that actually
+// owns a window on this desktop.
+//
+// The work is a short PowerShell `Add-Type` P/Invoke of `user32`, because EDH
+// ships no npm dependency and a native addon is not an option. Four rules make it
+// honest rather than hopeful:
+//
+// - **The window is found by pid** — this process's, then its parent's, since on a
+//   desktop build the visible window may belong to the parent — and never by title
+//   text or a guessed name, which could raise the wrong window.
+// - **Restore before foreground**, because a minimised window cannot be
+//   foregrounded at all: `ShowWindowAsync(SW_RESTORE)` first, then
+//   `SetForegroundWindow`.
+// - **The result is verified, not assumed**: the script ends by comparing
+//   `GetForegroundWindow()` with the handle it asked for, and only then reports
+//   `raised=1`. If Windows' foreground lock refuses, it tries `BringWindowToTop`
+//   once and reports `raised: false` (reason `denied`) rather than pretending.
+// - **It is bounded and serialised**: a 3 s timeout, and one raise in flight at a
+//   time — a second click joins the running one instead of spawning another.
+
+/**
+ * The C# the script compiles: find by pid, then climb three documented rungs.
+ *
+ * `SetForegroundWindow` on its own **is expected to fail** for the case this
+ * feature exists for — a window sitting behind another app — because the process
+ * calling it is the `powershell.exe` we spawned: it owns no window and is not the
+ * foreground process. So the script climbs, in order, verifying every attempt
+ * with `GetForegroundWindow()` and reporting which rung worked:
+ *
+ * 1. `ShowWindowAsync(SW_RESTORE)` — enough on its own for a *minimised* window,
+ *    which is why it stays first and is never skipped.
+ * 2. `AttachThreadInput` — join the foreground window's input queue, ask while
+ *    attached, detach. The documented way around the foreground lock for a helper
+ *    process, and the rung that usually works.
+ * 3. the minimise/restore nudge — a visible flash, but on most setups it hands the
+ *    foreground to the restored window. Only after 2 has failed.
+ * 4. `BringWindowToTop` — not a foreground request at all; it leaves the window at
+ *    the top of the Z order, so a total refusal is still not "nothing happened".
+ *
+ * Every `ShowWindowAsync` is asynchronous, so each rung settles briefly before it
+ * is judged, and `raised=1` is printed only after the check passes.
+ */
+const RAISE_TYPE_SOURCE = `using System;
+using System.Runtime.InteropServices;
+
+public class EdhRaise
+{
+    private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+
+    private const int SwMinimize = 6;
+    private const int SwRestore = 9;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint command);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    public static string Run(int[] pids)
+    {
+        IntPtr target = IntPtr.Zero;
+        for (int index = 0; index < pids.Length && target == IntPtr.Zero; index++)
+        {
+            target = Find(pids[index]);
+        }
+        if (target == IntPtr.Zero) return "EDH window=none";
+
+        ShowWindowAsync(target, SwRestore);
+        Settle(60);
+        if (IsForeground(target)) return "EDH raised=1 step=restore";
+
+        SetForegroundAttached(target);
+        Settle(60);
+        if (IsForeground(target)) return "EDH raised=1 step=attach";
+
+        ShowWindowAsync(target, SwMinimize);
+        Settle(100);
+        ShowWindowAsync(target, SwRestore);
+        Settle(100);
+        SetForegroundAttached(target);
+        Settle(60);
+        if (IsForeground(target)) return "EDH raised=1 step=nudge";
+
+        BringWindowToTop(target);
+        Settle(60);
+        if (IsForeground(target)) return "EDH raised=1 step=top";
+
+        return "EDH raised=0 reason=denied steps=restore,attach,nudge,top";
+    }
+
+    private static bool IsForeground(IntPtr target)
+    {
+        return GetForegroundWindow() == target;
+    }
+
+    private static void Settle(int milliseconds)
+    {
+        System.Threading.Thread.Sleep(milliseconds);
+    }
+
+    private static void SetForegroundAttached(IntPtr target)
+    {
+        uint foregroundThread = 0;
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero)
+        {
+            uint owner;
+            foregroundThread = GetWindowThreadProcessId(foreground, out owner);
+        }
+        uint self = GetCurrentThreadId();
+        bool attached = false;
+        if (foregroundThread != 0 && foregroundThread != self)
+        {
+            attached = AttachThreadInput(foregroundThread, self, true);
+        }
+        SetForegroundWindow(target);
+        if (attached) AttachThreadInput(foregroundThread, self, false);
+    }
+
+    private static IntPtr Find(int pid)
+    {
+        IntPtr strict = IntPtr.Zero;
+        IntPtr loose = IntPtr.Zero;
+        EnumProc visit = delegate(IntPtr hWnd, IntPtr lParam)
+        {
+            uint owner;
+            GetWindowThreadProcessId(hWnd, out owner);
+            if (owner != (uint)pid) return true;
+            if (!IsWindowVisible(hWnd)) return true;
+            if (loose == IntPtr.Zero) loose = hWnd;
+            if (GetWindowTextLength(hWnd) > 0 && GetWindow(hWnd, 4u) == IntPtr.Zero)
+            {
+                strict = hWnd;
+                return false;
+            }
+            return true;
+        };
+        EnumWindows(visit, IntPtr.Zero);
+        return strict != IntPtr.Zero ? strict : loose;
+    }
+}`
+
+/**
+ * The pids one raise may target: this process's, then its parent's.
+ *
+ * A pid is a number and only ever comes from `process`, never from a request, so
+ * it cannot be interpolated into the script as anything but digits.
+ * @param pidList - candidate pids, in order.
+ * @returns the valid, unique, positive integers, at most four.
+ */
+export function raisePids(pidList) {
+  const pids = []
+  for (const value of Array.isArray(pidList) ? pidList : []) {
+    if (typeof value !== 'number') continue
+    if (!Number.isSafeInteger(value) || value <= 0) continue
+    if (pids.includes(value)) continue
+    pids.push(value)
+    if (pids.length === 4) break
+  }
+  return pids
+}
+
+/**
+ * The exact command one raise runs.
+ *
+ * Kept as a pure function so the test can assert the argv byte for byte: the pids
+ * appear only as integer literals inside the script (never through a shell, never
+ * from a request), and the process is spawned hidden, with a hard timeout.
+ * @param pidList - candidate pids for the window.
+ * @param options - `executable`, `timeoutMs`.
+ * @returns `{ executable, args, options }` for `child_process.execFile`.
+ */
+export function raiseCommand(pidList, options = {}) {
+  const pids = raisePids(pidList)
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -TypeDefinition @'",
+    RAISE_TYPE_SOURCE,
+    "'@",
+    pids.length === 0 ? "[EdhRaise]::Run(@())" : `[EdhRaise]::Run([int[]]@(${pids.join(', ')}))`,
+    '',
+  ].join('\n')
+  return {
+    executable: typeof options.executable === 'string' && options.executable !== '' ? options.executable : 'powershell.exe',
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-Command',
+      script,
+    ],
+    options: {
+      windowsHide: true,
+      timeout: Number.isInteger(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : RAISE_TIMEOUT_MS,
+      maxBuffer: 64 * 1024,
+      killSignal: 'SIGKILL',
+    },
+  }
+}
+
+/**
+ * The verdict the script printed.
+ *
+ * One line starting `EDH `, and the last one wins. A success names the rung that
+ * actually brought the window forward (`step=restore|attach|nudge|top`) — that is
+ * the only way to know which workaround Windows honoured on this machine, so it is
+ * carried all the way to the answer. Anything else — a wall of text, a PowerShell
+ * error, no output at all — is `undefined`, which the caller reports as `failed`
+ * rather than guessing.
+ * @param text - the process's stdout.
+ * @returns `{ raised, reason?, step? }`, or `undefined` when nothing was printed.
+ */
+export function parseRaiseOutput(text) {
+  if (typeof text !== 'string') return undefined
+  let verdict
+  for (const line of text.split(/\r?\n/u)) {
+    const match = /^EDH[ \t]+(.*)$/u.exec(line.trim())
+    if (match === null) continue
+    const payload = match[1].trim()
+    // Strict on purpose: the script prints one of a handful of exact shapes, so a
+    // line with anything unexpected on it is not evidence of anything.
+    const raised = /^raised=1(?:[ \t]+step=([a-z]+))?$/u.exec(payload)
+    const denied = /^raised=0[ \t]+reason=denied(?:[ \t]+steps=([a-z,]+))?$/u.exec(payload)
+    if (payload === 'window=none') {
+      verdict = { raised: false, reason: 'no-window' }
+    } else if (raised !== null) {
+      verdict = raised[1] === undefined ? { raised: true } : { raised: true, step: raised[1] }
+    } else if (denied !== null) {
+      verdict =
+        denied[1] === undefined
+          ? { raised: false, reason: 'denied' }
+          : { raised: false, reason: 'denied', tried: denied[1].split(',') }
+    } else if (/^raised=0(?:[ \t]|$)/u.test(payload)) {
+      verdict = { raised: false, reason: 'failed' }
+    } else {
+      verdict = undefined
+    }
+  }
+  return verdict
+}
+
+/** Run one command with `execFile`, resolving rather than throwing. */
+function runCommand(command) {
+  return new Promise(resolve => {
+    execFile(command.executable, command.args, command.options, (error, stdout) => {
+      resolve({
+        ok: error === null || error === undefined,
+        code: typeof error?.code === 'string' ? error.code : undefined,
+        killed: error?.killed === true,
+        stdout: String(stdout ?? ''),
+      })
+    })
+  })
+}
+
+/**
+ * The raiser: one attempt at a time, bounded, and never a throw.
+ *
+ * A second call while a raise is running returns the *same* promise, so a double
+ * click cannot spawn a second PowerShell. Every outcome is a report — `raised`
+ * true or false with a short reason — and nothing identifies a window title, a
+ * path, or this machine's layout.
+ * @param options - `platform`, `pid`, `parentPid`, `run`, `executable`, `timeoutMs`, `logger`.
+ * @returns `{ raise(), dispose(), attempts() }`.
+ */
+export function createRaiser(options = {}) {
+  const {
+    platform = process.platform,
+    pid = process.pid,
+    parentPid = process.ppid,
+    run = runCommand,
+    executable,
+    timeoutMs = RAISE_TIMEOUT_MS,
+    logger,
+  } = options
+  let inflight
+  let disposed = false
+  let attempts = 0
+
+  const attempt = async () => {
+    if (platform !== 'win32') return { ok: true, raised: false, reason: 'not-windows' }
+    attempts += 1
+    const command = raiseCommand([pid, parentPid], { executable, timeoutMs })
+    let outcome
+    try {
+      outcome = await run(command)
+    } catch {
+      // A runner that throws is a failure to run, not a window that refused.
+      return { ok: true, raised: false, reason: 'failed' }
+    }
+    if (outcome === undefined || outcome.ok !== true) {
+      const reason = outcome?.killed === true ? 'timeout' : 'failed'
+      logger?.warn?.('edh-notify: the window could not be raised (%s)', reason)
+      return { ok: true, raised: false, reason }
+    }
+    const verdict = parseRaiseOutput(outcome.stdout)
+    if (verdict === undefined) {
+      logger?.warn?.('edh-notify: the window could not be raised (unreadable answer)')
+      return { ok: true, raised: false, reason: 'failed' }
+    }
+    if (verdict.raised !== true) {
+      logger?.warn?.('edh-notify: the window was not raised (%s)', verdict.reason)
+    } else if (typeof verdict.step === 'string') {
+      // Which rung actually worked is the only way to know what to keep on this
+      // machine — a step name is not sensitive.
+      logger?.info?.('edh-notify: the window came forward (step=%s)', verdict.step)
+    }
+    return { ok: true, ...verdict }
+  }
+
+  return {
+    raise() {
+      if (disposed === true) return Promise.resolve({ ok: true, raised: false, reason: 'disposed' })
+      if (inflight !== undefined) return inflight
+      inflight = attempt().finally(() => {
+        inflight = undefined
+      })
+      return inflight
+    },
+    /** Forget the raiser: a late answer is ignored and no further attempt runs. */
+    dispose() {
+      disposed = true
+    },
+    /** How many PowerShell processes this raiser actually started (a test seam). */
+    attempts() {
+      return attempts
+    },
+  }
+}
+
+/** The raiser a direct call uses when none was injected; `apply` always passes its own. */
+let fallbackRaiser
+
+/** One short JSON answer for the raise route. */
+function raiseAnswer(body, status = 200) {
+  return jsonResponse(body, status)
+}
+
+/**
+ * Answer `POST /api/edh.notify/raise`.
+ *
+ * The click's one question: did the window come forward? `ok` says whether the
+ * *request* was acceptable; `raised` says whether the OS actually brought this
+ * app's window to the front — a `false` is a real answer with a short reason
+ * (`not-windows`, `no-window`, `denied`, `timeout`, `failed`, `disposed`), never
+ * an error status and never a 500.
+ * @param request - the incoming request.
+ * @param options - `raiser`, or the seams {@link createRaiser} takes.
+ * @returns the JSON answer.
+ */
+export async function notifyRaiseResponse(request, options = {}) {
+  const method = methodOf(request)
+  if (method !== 'POST') {
+    const message = `Unsupported method ${request?.method ?? 'without a method'}; raising the window is a POST`
+    return jsonResponse({ ok: false, reason: 'unsupported-method', message }, 405, { allow: 'POST' })
+  }
+  // The route takes no arguments. A body is allowed (a client may send `{}`), but
+  // it must be a small JSON object: anything else is the caller's mistake.
+  let text = ''
+  try {
+    text = typeof request?.text === 'function' ? await request.text() : ''
+  } catch {
+    return raiseAnswer({ ok: false, reason: 'bad-input', message: 'That request body could not be read.' }, 400)
+  }
+  if (typeof text === 'string' && text.length > RAISE_BODY_LIMIT) {
+    return raiseAnswer({ ok: false, reason: 'bad-input', message: 'That request body is too large; this route takes none.' }, 400)
+  }
+  if (typeof text === 'string' && text.trim() !== '') {
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return raiseAnswer({ ok: false, reason: 'bad-input', message: 'That request body is not JSON.' }, 400)
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return raiseAnswer({ ok: false, reason: 'bad-input', message: 'That request body must be a JSON object.' }, 400)
+    }
+  }
+  const raiser = options.raiser ?? (fallbackRaiser ??= createRaiser({ logger: options.logger }))
+  try {
+    const result = await raiser.raise()
+    const body = { ok: true, raised: result?.raised === true }
+    // On success the rung that worked is worth reporting: it is the only way to
+    // know which workaround this Windows build honoured.
+    if (body.raised === true && typeof result?.step === 'string') body.step = result.step
+    if (body.raised !== true && typeof result?.reason === 'string') body.reason = result.reason
+    return raiseAnswer(body)
+  } catch {
+    // Never a 500: an unexpected failure is "the window did not come up".
+    return raiseAnswer({ ok: true, raised: false, reason: 'failed' })
+  }
+}
+
 /**
  * Register the routes on the Host connection.
  *
@@ -728,6 +1167,15 @@ export async function notifyLastResponse(request, options = {}) {
  * @param ctx - the Host context.
  */
 export function apply(ctx) {
+  // One raiser for the row: two clicks share an attempt instead of spawning two
+  // PowerShell processes, and turning the row off stops the raiser.
+  const raiser = createRaiser({ logger: ctx.logger })
+  ctx.effect(
+    () => () => {
+      raiser.dispose()
+    },
+    'edh-notify: window raiser',
+  )
   const routes = [
     { path: NOTIFY_SOUNDS_PATH, fetch: request => notifySoundsRequest(request) },
     { path: NOTIFY_SOUND_PATH, fetch: request => notifySoundResponse(request) },
@@ -735,6 +1183,7 @@ export function apply(ctx) {
       path: NOTIFY_LAST_PATH,
       fetch: request => notifyLastResponse(request, { persistence: ctx.get?.('sessionPersistence') }),
     },
+    { path: NOTIFY_RAISE_PATH, fetch: request => notifyRaiseResponse(request, { raiser }) },
   ]
   for (const route of routes) {
     ctx.effect(() => {

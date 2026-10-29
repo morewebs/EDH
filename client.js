@@ -6273,6 +6273,84 @@ window.__ModuleLoader__.load({
       return ''
     }
 
+    /** The Host route that restores and raises the Harness's own window. */
+    const NOTIFY_RAISE_ROUTE = 'api/edh.notify/raise'
+
+    /** How long the raise may take before it is abandoned. */
+    const NOTIFY_RAISE_TIMEOUT_MS = 1500
+
+    /**
+     * Ask the Host to bring the application window forward.
+     *
+     * A renderer cannot raise its own OS window — `window.focus()` is a hint the
+     * platform may ignore, and a minimised window cannot come forward at all — so
+     * this is the Host's job, by process id. Every outcome is reported rather
+     * than swallowed: a refusal is `blocked { reason:'raise-denied' }`, anything
+     * that broke is `failed { action:'raise', reason }`, so a live report of "it
+     * still did not come forward" is diagnosable from the breadcrumb alone.
+     *
+     * The caller starts this and does not await it: the conversation is the
+     * point, and a slow native call must never delay the session switch.
+     * @param options - the fetch, the cap, and a log.
+     * @returns `{ raised, reason? }`; never throws.
+     */
+    async function raiseNotifyWindow(options = {}) {
+      const log = typeof options.log === 'function' ? options.log : () => {}
+      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+      if (typeof request !== 'function') {
+        log({ phase: 'blocked', reason: 'raise-unavailable' })
+        return { raised: false, reason: 'raise-unavailable' }
+      }
+      const cap = Number(options.timeoutMs)
+      const timeoutMs = Number.isFinite(cap) && cap > 0 ? cap : NOTIFY_RAISE_TIMEOUT_MS
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+      let timer
+      try {
+        const attempt = (async () => {
+          const response = await request(NOTIFY_RAISE_ROUTE, {
+            method: 'POST',
+            headers: { accept: 'application/json' },
+            ...(signal === undefined ? {} : { signal }),
+          })
+          if (response === null || typeof response !== 'object' || response.ok !== true) {
+            log({ phase: 'failed', action: 'raise', reason: String(response?.status ?? 'no-response') })
+            return { raised: false, reason: 'http' }
+          }
+          const answer = await response.json()
+          if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+            log({ phase: 'failed', action: 'raise', reason: String(answer?.reason ?? 'refused') })
+            return { raised: false, reason: 'refused' }
+          }
+          if (answer.raised !== true) {
+            log({ phase: 'blocked', reason: 'raise-denied' })
+            return { raised: false, reason: 'raise-denied' }
+          }
+          log({ phase: 'raised', window: true })
+          return { raised: true }
+        })()
+        // The cap is enforced here as well as by the abort signal: a build with
+        // no `AbortSignal.timeout`, or a call that ignores its signal, must still
+        // end, and must still say so.
+        const answer = await Promise.race([
+          attempt,
+          new Promise(resolve => {
+            timer = setTimeout(() => {
+              log({ phase: 'failed', action: 'raise', reason: 'timeout' })
+              resolve({ raised: false, reason: 'timeout' })
+            }, timeoutMs)
+          }),
+        ])
+        return answer
+      } catch (error) {
+        log({ phase: 'failed', action: 'raise', reason: messageOf(error) })
+        return { raised: false, reason: 'threw' }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+
     /**
      * What one click on the popup does: focus the window, open that conversation.
      *
@@ -6299,6 +6377,29 @@ window.__ModuleLoader__.load({
       } catch (error) {
         // A browser that refuses to focus a window is not an error.
       }
+      // Start the raise and do not wait for it. A minimised window needs the Host
+      // to restore it by process id, and that native call can take seconds —
+      // while the conversation can switch right now.
+      let raising = false
+      try {
+        if (typeof options.raise === 'function') {
+          raising = true
+          const pending = options.raise(sessionId)
+          if (pending !== null && typeof pending === 'object' && typeof pending.then === 'function') {
+            pending.then(
+              answer => {
+                if (answer !== null && typeof answer === 'object' && answer.raised !== true) {
+                  log({ phase: 'failed', action: 'raise', reason: String(answer.reason ?? 'denied') })
+                }
+              },
+              error => log({ phase: 'failed', action: 'raise', reason: messageOf(error) }),
+            )
+          }
+        }
+      } catch (error) {
+        raising = false
+        log({ phase: 'failed', action: 'raise', reason: messageOf(error) })
+      }
       if (typeof options.open !== 'function') {
         log({ phase: 'failed', action: 'open', reason: 'no-workspace', turn: sessionId })
         return { opened: false, reason: 'no-workspace', focused }
@@ -6308,8 +6409,8 @@ window.__ModuleLoader__.load({
         if (answer !== null && typeof answer === 'object' && typeof answer.catch === 'function') {
           answer.catch(error => log({ phase: 'failed', action: 'open', reason: messageOf(error), turn: sessionId }))
         }
-        log({ phase: 'opened', turn: sessionId })
-        return { opened: true, sessionId, focused }
+        log({ phase: 'opened', turn: sessionId, focused, raising })
+        return { opened: true, sessionId, focused, raising }
       } catch (error) {
         log({ phase: 'failed', action: 'open', reason: messageOf(error), turn: sessionId })
         return { opened: false, reason: 'threw', focused }
@@ -6815,6 +6916,7 @@ window.__ModuleLoader__.load({
                 sessionId,
                 open: options.openSession,
                 focus: options.focus,
+                raise: options.raise,
                 log,
               })
             },
@@ -6897,6 +6999,7 @@ window.__ModuleLoader__.load({
         readText: options.readText,
         openSession: options.openSession,
         focus: options.focus,
+        raise: options.raise,
       })
       const state = { running: {}, fired: {} }
       let unsubscribe
@@ -8221,6 +8324,9 @@ window.__ModuleLoader__.load({
         focus: () => {
           if (typeof window !== 'undefined' && typeof window.focus === 'function') window.focus()
         },
+        // Clicking the popup asks the Host to bring the window forward: a
+        // renderer cannot raise its own OS window, and a minimised one cannot.
+        raise: () => raiseNotifyWindow({ timeoutMs: NOTIFY_RAISE_TIMEOUT_MS }),
         // The body: one bounded Host read at fire time, with its own abort at the
         // same cap the engine races. It never throws; an empty answer becomes the
         // plain sentence.
@@ -8551,6 +8657,9 @@ window.__ModuleLoader__.load({
       notifySessionTitle,
       notifyOpenSession,
       readNotifyLast,
+      raiseNotifyWindow,
+      NOTIFY_RAISE_ROUTE,
+      NOTIFY_RAISE_TIMEOUT_MS,
       NOTIFY_LAST_ROUTE,
       NOTIFY_TITLE_MAX,
       NOTIFY_BODY_MAX,

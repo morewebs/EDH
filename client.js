@@ -175,37 +175,8 @@ window.__ModuleLoader__.load({
       skillsNoWorkspace: 'No workspace resolved yet',
       skillsUserOnly: 'user only',
       skillsCopyPath: 'Copy path',
-      skillsIncomplete: 'Some skill providers could not be read.',      advTitle: 'Advanced search',
-      advIntro: 'Searches the full text of every conversation on this machine, with filters.',
-      advQueryLabel: 'Text',
-      advQueryPlaceholder: 'Words to find',
-      advSessionLabel: 'Session',
-      advAnySession: 'Any session',
-      advRoleLabel: 'Role',
-      advAnyRole: 'Any role',
-      advRoleYou: 'You',
-      advRoleAgent: 'Agent',
-      advFromLabel: 'From',
-      advToLabel: 'To',
-      advCountLabel: 'Results',
-      advSearch: 'Search',
-      advClear: 'Clear',
-      advClearFilters: 'Clear filters',
-      advInitial: 'Nothing searched yet. Type a word, or narrow by session, role or date, then press Search.',
-      advSearching: 'Searching…',
-      advNoResults: 'No messages match these filters',
-      advFailed: 'That search could not be run.',
-      advRetry: 'Retry',
-      advUnavailable: 'Search is unavailable: the Host did not answer for this build.',
-      advTruncated: 'refine to see more',
-      advCount: '{shown} of {total} results',
-      advMore: 'Load more',
-      advRangeReversed: 'That range ends before it starts.',
-      advOpenHint: 'Open this conversation',
-      advAsk: 'Ask the agent about this',
-      advAskHint: 'Opens a new chat with a question about this message, ready to send',
-      advAskPrompt: 'About this from our conversation: "{snippet}" — could you explain it?',
-      advNav: 'Advanced search',      searchOpen: 'Search',
+      skillsIncomplete: 'Some skill providers could not be read.',
+      searchOpen: 'Search',
       searchPlaceholder: 'Search sessions and messages, or ask the agent',
       searchEsc: 'Esc',
       searchChatSection: 'Chat',
@@ -226,7 +197,6 @@ window.__ModuleLoader__.load({
       searchActionSettings: 'Open Settings',
       searchActionSidebar: 'Toggle the sidebar',
       searchActionConversation: 'Show the conversation',
-      searchActionAdvanced: 'Advanced search',
       searchNoChat: 'The workspace is not ready yet.',
       searchNone: 'Nothing here.',      notifyNav: 'Notifications',
       notifyTitle: 'Notifications',
@@ -479,37 +449,8 @@ window.__ModuleLoader__.load({
       skillsNoWorkspace: '还没有解析出工作区',
       skillsUserOnly: '仅用户',
       skillsCopyPath: '复制路径',
-      skillsIncomplete: '部分技能来源读取失败。',      advTitle: '高级搜索',
-      advIntro: '在整台机器的全部对话中做全文搜索，并可按条件筛选。',
-      advQueryLabel: '文字',
-      advQueryPlaceholder: '要查找的词',
-      advSessionLabel: '会话',
-      advAnySession: '任意会话',
-      advRoleLabel: '角色',
-      advAnyRole: '任意角色',
-      advRoleYou: '你',
-      advRoleAgent: 'Agent',
-      advFromLabel: '起始',
-      advToLabel: '结束',
-      advCountLabel: '结果数',
-      advSearch: '搜索',
-      advClear: '清除',
-      advClearFilters: '清除筛选',
-      advInitial: '还没有搜索。输入一个词，或按会话、角色、日期缩小范围，然后按搜索。',
-      advSearching: '正在搜索…',
-      advNoResults: '没有消息符合这些筛选条件',
-      advFailed: '这次搜索没有执行成功。',
-      advRetry: '重试',
-      advUnavailable: '搜索不可用：这个构建的 Host 没有应答。',
-      advTruncated: '缩小范围查看更多',
-      advCount: '{shown} / {total} 条结果',
-      advMore: '加载更多',
-      advRangeReversed: '这个时间范围的结束早于开始。',
-      advOpenHint: '打开这段对话',
-      advAsk: '就这条询问 agent',
-      advAskHint: '打开一个新对话，问题已写好，可以直接发送',
-      advAskPrompt: '关于我们对话里的这段内容：「{snippet}」——能解释一下吗？',
-      advNav: '高级搜索',      searchOpen: '搜索',
+      skillsIncomplete: '部分技能来源读取失败。',
+      searchOpen: '搜索',
       searchPlaceholder: '搜索会话与消息，或直接问 agent',
       searchEsc: 'Esc',
       searchChatSection: '对话',
@@ -530,7 +471,6 @@ window.__ModuleLoader__.load({
       searchActionSettings: '打开设置',
       searchActionSidebar: '显示或隐藏侧边栏',
       searchActionConversation: '回到对话',
-      searchActionAdvanced: '高级搜索',
       searchNoChat: '工作区尚未就绪。',
       searchNone: '这里什么都没有。',      notifyNav: '通知',
       notifyTitle: '通知',
@@ -7808,7 +7748,6 @@ window.__ModuleLoader__.load({
         { kind: 'action', key: 'action:settings', label: t('searchActionSettings'), meta: '', payload: { action: 'settings' } },
         { kind: 'action', key: 'action:sidebar', label: t('searchActionSidebar'), meta: '', payload: { action: 'sidebar' } },
         { kind: 'action', key: 'action:conversation', label: t('searchActionConversation'), meta: '', payload: { action: 'conversation' } },
-        { kind: 'action', key: 'action:advanced', label: t('searchActionAdvanced'), meta: '', payload: { action: 'advanced' } },
       ]
     }
 
@@ -7839,6 +7778,203 @@ window.__ModuleLoader__.load({
         busy: '',
       }
     }
+    // The agentic lookup: no session, no new chat, just an answer in the menu.
+    const SEARCH_ASK_ROUTE = 'api/edh.ask'
+    const SEARCH_ASK_LIMIT = 6
+    /** The Host budgets ~30 s; we give up first so the palette never hangs. */
+    const SEARCH_ASK_TIMEOUT_MS = 25_000
+    /** After this long the agent must be reading, not still queueing. */
+    const SEARCH_ASK_STEP_MS = 4_000
+
+    /**
+     * The agent-lookup runner: one explicit submission, cancellable, stale-proof.
+     *
+     * There is no debounce here on purpose — this is a deliberate action, not
+     * per-keystroke typing. Two facts it owns: a second submission cancels the
+     * first (its generation no longer matches, so its answer is discarded), and
+     * the client gives up before the Host's own budget so the menu never sits
+     * there waiting on a turn that will not finish.
+     * @param options - fetch, the limit, the caps, and a state listener.
+     */
+    function createAskRunner(options = {}) {
+      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+      const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : SEARCH_ASK_LIMIT
+      const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : SEARCH_ASK_TIMEOUT_MS
+      const stepMs = Number.isFinite(Number(options.stepMs)) ? Number(options.stepMs) : SEARCH_ASK_STEP_MS
+      const onPatch = typeof options.onPatch === 'function' ? options.onPatch : () => {}
+      const log = typeof options.log === 'function' ? options.log : () => {}
+      let generation = 0
+      let timer
+      let stepper
+      let controller
+
+      const cancel = () => {
+        generation++
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        if (stepper !== undefined) {
+          clearTimeout(stepper)
+          stepper = undefined
+        }
+        if (controller !== undefined) {
+          try {
+            controller.abort()
+          } catch (error) {
+            // Nothing in flight to abort.
+          }
+          controller = undefined
+        }
+      }
+
+      const settle = (mine, patch) => {
+        if (mine !== generation) return
+        onPatch(patch)
+      }
+
+      const run = async (text, mine) => {
+        if (typeof request !== 'function') {
+          settle(mine, { status: 'error', reason: 'unavailable' })
+          return
+        }
+        const signal = typeof AbortController === 'function' ? new AbortController() : undefined
+        controller = signal
+        try {
+          const response = await request(SEARCH_ASK_ROUTE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ q: text, limit }),
+            ...(signal === undefined ? {} : { signal: signal.signal }),
+          })
+          if (mine !== generation) return
+          if (response === null || typeof response !== 'object' || response.ok !== true) {
+            settle(mine, { status: 'error', reason: String(response?.status ?? 'no-response') })
+            log({ phase: 'failed', action: 'ask', reason: String(response?.status ?? 'no-response') })
+            return
+          }
+          const answer = await response.json()
+          if (mine !== generation) return
+          if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+            const reason = String(answer?.reason ?? 'error')
+            settle(mine, { status: 'error', reason, message: String(answer?.message ?? '') })
+            log({ phase: 'failed', action: 'ask', reason })
+            return
+          }
+          settle(mine, {
+            status: 'result',
+            answer: typeof answer.answer === 'string' ? answer.answer : '',
+            candidates: searchAskCandidates(answer),
+            usedTool: answer.usedTool === true,
+            turns: Number(answer.turns) || 0,
+            elapsedMs: Number(answer.elapsedMs) || 0,
+          })
+          log({ phase: 'asked', candidates: searchAskCandidates(answer).length })
+        } catch (error) {
+          settle(mine, { status: 'error', reason: messageOf(error) })
+          log({ phase: 'failed', action: 'ask', reason: messageOf(error) })
+        } finally {
+          if (controller === signal) controller = undefined
+        }
+      }
+
+      return {
+        /** Submit one question; a previous run is cancelled first. */
+        submit(query) {
+          const text = String(query ?? '').trim()
+          cancel()
+          const mine = generation
+          if (text === '') {
+            settle(mine, { status: 'error', reason: 'too-short' })
+            return false
+          }
+          onPatch({ status: 'running', step: 'searching', query: text })
+          stepper = setTimeout(() => {
+            stepper = undefined
+            settle(mine, { status: 'running', step: 'reading', query: text })
+          }, stepMs)
+          timer = setTimeout(() => {
+            timer = undefined
+            if (mine !== generation) return
+            generation++
+            if (controller !== undefined) {
+              try {
+                controller.abort()
+              } catch (error) {
+                // Already settled.
+              }
+              controller = undefined
+            }
+            onPatch({ status: 'error', reason: 'timeout' })
+            log({ phase: 'failed', action: 'ask', reason: 'timeout' })
+          }, timeoutMs)
+          void run(text, mine)
+          return true
+        },
+        cancel,
+        generation: () => generation,
+      }
+    }
+
+    /** The candidate conversations from one answer, tolerating the older name. */
+    function searchAskCandidates(answer) {
+      const source = Array.isArray(answer?.candidates)
+        ? answer.candidates
+        : Array.isArray(answer?.results) ? answer.results : []
+      const rows = []
+      for (const entry of source) {
+        if (entry === null || typeof entry !== 'object') continue
+        const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+        if (sessionId === '') continue
+        const snippet = typeof entry.snippet === 'string' ? entry.snippet : ''
+        rows.push({
+          sessionId,
+          title: notifyClampText(entry.sessionTitle, 48),
+          reason: notifyClampText(entry.reason, 90),
+          segments: searchSegments(notifyClampText(snippet, 120), ''),
+          time: Number(entry.time) || 0,
+        })
+        if (rows.length >= SEARCH_ASK_LIMIT) break
+      }
+      return rows
+    }
+
+    /** What the sentence under the section says for one failed lookup. */
+    function searchAskFailure(reason, message, t) {
+      if (reason === 'too-short') return t('searchAskTooShort')
+      if (reason === 'unavailable') return t('searchAskUnavailable')
+      if (reason === 'timeout') return t('searchAskTimeout')
+      if (message !== '' && message !== undefined) return message
+      return t('searchAskFailed')
+    }
+
+    /** The first Messages row, so "Search messages instead" can move the caret there. */
+    function searchFirstMessageIndex(rows) {
+      const list = Array.isArray(rows) ? rows : []
+      const at = list.findIndex(row => row !== null && typeof row === 'object' && row.kind === 'message')
+      return at < 0 ? 0 : at
+    }
+
+    /**
+     * Open one conversation from a palette row: close, then navigate.
+     *
+     * The palette never creates a session; it only ever opens one that already
+     * exists. A missing workspace is reported, never thrown.
+     */
+    function openSessionRow(faces, sessionId, log) {
+      const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+      if (id === '') return { ok: false, reason: 'no-session' }
+      const workspace = faces?.uiWorkspace
+      if (typeof workspace?.openSession !== 'function') return { ok: false, reason: 'no-workspace' }
+      try {
+        workspace.openSession({ kind: 'session', sessionId: id })
+        if (typeof log === 'function') log({ phase: 'opened-session', sessionId: id })
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, reason: messageOf(error) }
+      }
+    }
+
     /** Arrow movement over one flat list, wrapping at both ends. */
     function searchMoveIndex(index, count, delta) {
       if (!Number.isFinite(count) || count <= 0) return 0
@@ -7992,6 +8128,79 @@ window.__ModuleLoader__.load({
         },
         isOpen: () => open,
         via: () => via,
+      }
+    }
+
+    /**
+     * The shipped sidebar magnifier's accessible names, in both shipped locales.
+     *
+     * Verified from the installed asar: `dsh-client-ui-workspace` renders its
+     * search trigger as `<button type="button" aria-label={t('search.sessions.aria')}
+     * aria-keyshortcuts=… aria-expanded=…><IconSearchOutlineRegular /></button>`,
+     * and that dictionary entry is "Search sessions" (en) / "搜索会话" (zh). The
+     * accessible name is the only anchor a build is likely to keep — the class
+     * names are hashed (`GAkraW_searchButton`) and the icon is a component.
+     */
+    const SEARCH_TRIGGER_LABELS = ['Search sessions', '搜索会话']
+
+    /**
+     * The shipped magnifier for one click target, or undefined.
+     *
+     * Walks up to the nearest button (the click usually lands on the glyph inside
+     * it) and compares its accessible name, falling back to `title`.
+     * @param target - the event target.
+     * @param labels - the names to accept.
+     */
+    function searchTriggerOf(target, labels = SEARCH_TRIGGER_LABELS) {
+      if (target === null || typeof target !== 'object') return undefined
+      const closest = typeof target.closest === 'function' ? target.closest('button, [role="button"]') : undefined
+      if (closest === undefined || closest === null || typeof closest.getAttribute !== 'function') return undefined
+      const raw = closest.getAttribute('aria-label') ?? closest.getAttribute('title') ?? ''
+      const name = String(raw).trim().toLowerCase()
+      if (name === '') return undefined
+      const wanted = (Array.isArray(labels) ? labels : SEARCH_TRIGGER_LABELS).map(label => String(label).trim().toLowerCase())
+      return wanted.includes(name) ? closest : undefined
+    }
+
+    /**
+     * Make the sidebar's own magnifier open *our* palette instead of the shipped
+     * inline search.
+     *
+     * One delegated capture-phase listener on the document, because the sidebar
+     * re-renders and a one-shot query would go stale: capture runs before the
+     * React root's own listeners, so `stopPropagation` means the shipped button's
+     * `onClick` (which expands the inline field) and its wrapper's `onClick` both
+     * never fire. A click anywhere else is left completely alone; an element that
+     * is not found costs nothing, and Ctrl+K keeps working regardless.
+     * @param options - the document, the names, and what to open.
+     * @returns the disposer.
+     */
+    function installSearchTriggerGuard(options = {}) {
+      const doc = options.document ?? (typeof document === 'undefined' ? undefined : document)
+      if (doc === undefined || doc === null || typeof doc.addEventListener !== 'function') return () => {}
+      const labels = Array.isArray(options.labels) ? options.labels : SEARCH_TRIGGER_LABELS
+      const open = typeof options.open === 'function' ? options.open : () => {}
+      const log = typeof options.log === 'function' ? options.log : searchWrite
+      const onClick = event => {
+        let found
+        try {
+          found = searchTriggerOf(event?.target, labels)
+        } catch (error) {
+          return
+        }
+        if (found === undefined) return
+        if (typeof event.preventDefault === 'function') event.preventDefault()
+        if (typeof event.stopPropagation === 'function') event.stopPropagation()
+        log({ phase: 'intercepted', via: 'magnifier' })
+        open()
+      }
+      doc.addEventListener('click', onClick, true)
+      return () => {
+        try {
+          doc.removeEventListener('click', onClick, true)
+        } catch (error) {
+          // A document already torn down has nothing to detach.
+        }
       }
     }
 
@@ -8340,18 +8549,6 @@ window.__ModuleLoader__.load({
         }
         return { ok: false, reason: 'no-layout' }
       }
-      if (action === 'advanced') {
-        const layout = faces?.layout
-        if (typeof layout?.selectPanel === 'function') {
-          try {
-            layout.selectPanel(ADV_SEARCH_ID)
-            return { ok: true }
-          } catch (error) {
-            return { ok: false, reason: messageOf(error) }
-          }
-        }
-        return { ok: false, reason: 'no-layout' }
-      }
       return { ok: false, reason: 'unknown-action' }
     }
 
@@ -8514,894 +8711,6 @@ window.__ModuleLoader__.load({
           style.remove()
         } catch (error) {
           // A head that is already gone has nothing to remove.
-        }
-      }
-    }
-
-    // ------------------------------------------------- advanced search page
-    /**
-     * A sidebar destination, not a modal: the panellist entry `id` *is* the
-     * `main` key, because the sidebar row calls `layout.selectPanel(id)` and the
-     * keyed registry dispatches that exact key. A plugin may own its own key —
-     * `dsh-client-ui-schedule` proves it with `key: 'schedules'` — and every key
-     * except `conversation` gets no Session binding, which is what a search page
-     * wants.
-     */
-    const ADV_SEARCH_ID = 'edh-search-advanced'
-    /** `schedules` (Automation tasks) registers at 10; Plugins at 0. Ours is next. */
-    const ADV_SEARCH_PANEL_ORDER = 11
-    const ADV_SEARCH_LIMITS = [20, 50, 100]
-    const ADV_SEARCH_ROLES = ['any', 'user', 'assistant']
-    const ADV_SEARCH_DEBOUNCE_MS = 200
-
-    /** The filter set a fresh page starts with. */
-    function advSearchDefaults() {
-      return { query: '', sessionId: 'any', role: 'any', from: '', to: '', limit: 20 }
-    }
-
-    /** `YYYY-MM-DD` to the first millisecond of that local day, or null. */
-    function advSearchDayStart(value) {
-      const text = String(value ?? '').trim()
-      const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(text)
-      if (match === null) return null
-      const year = Number(match[1])
-      const month = Number(match[2])
-      const day = Number(match[3])
-      if (month < 1 || month > 12 || day < 1 || day > 31) return null
-      const at = new Date(year, month - 1, day, 0, 0, 0, 0).getTime()
-      return Number.isFinite(at) ? at : null
-    }
-
-    /** `YYYY-MM-DD` to the last millisecond of that local day, or null. */
-    function advSearchDayEnd(value) {
-      const start = advSearchDayStart(value)
-      if (start === null) return null
-      const day = new Date(start)
-      return new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1, 0, 0, 0, 0).getTime() - 1
-    }
-
-    /**
-     * The date range as epochs, and a refusal when it runs backwards.
-     *
-     * A reversed range is refused in place rather than silently swapped: the
-     * reader asked for something impossible and deserves to be told.
-     */
-    function advSearchRange(filters) {
-      const values = filters !== null && typeof filters === 'object' ? filters : {}
-      const from = advSearchDayStart(values.from)
-      const to = advSearchDayEnd(values.to)
-      if (from !== null && to !== null && from > to) return { ok: false, reason: 'reversed', from, to }
-      return { ok: true, from, to }
-    }
-
-    /**
-     * The exact request one filter set asks for: `any` omitted, days as epochs,
-     * the limit always, the offset only when paging.
-     */
-    function advSearchUrl(filters, offset = 0) {
-      const values = filters !== null && typeof filters === 'object' ? filters : advSearchDefaults()
-      const range = advSearchRange(values)
-      const params = new URLSearchParams()
-      const query = String(values.query ?? '').trim()
-      if (query !== '') params.set('q', query)
-      if (values.sessionId !== 'any' && values.sessionId !== undefined && values.sessionId !== '') {
-        params.set('sessionId', String(values.sessionId))
-      }
-      if (values.role !== 'any' && values.role !== undefined && values.role !== '') {
-        params.set('role', String(values.role))
-      }
-      if (range.from !== null && range.from !== undefined) params.set('from', String(range.from))
-      if (range.to !== null && range.to !== undefined) params.set('to', String(range.to))
-      const limit = ADV_SEARCH_LIMITS.includes(Number(values.limit)) ? Number(values.limit) : 20
-      params.set('limit', String(limit))
-      if (Number(offset) > 0) params.set('offset', String(Number(offset)))
-      return `${SEARCH_ROUTE}?${params.toString()}`
-    }
-
-    /** The result rows from one answer, tolerating the older `messages` name. */
-    function advSearchResults(answer, query) {
-      const source = Array.isArray(answer?.results)
-        ? answer.results
-        : Array.isArray(answer?.messages) ? answer.messages : []
-      const rows = []
-      for (const entry of source) {
-        if (entry === null || typeof entry !== 'object') continue
-        const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
-        if (sessionId === '') continue
-        const matched = typeof entry.matched === 'string' && entry.matched !== '' ? entry.matched : query
-        rows.push({
-          key: `${sessionId}:${String(entry.seq ?? rows.length)}`,
-          sessionId,
-          seq: Number(entry.seq) || 0,
-          title: notifyClampText(entry.sessionTitle, 40),
-          role: typeof entry.role === 'string' ? entry.role : '',
-          time: Number(entry.time) || 0,
-          segments: searchSegments(notifyClampText(entry.snippet, 160), matched),
-          matched,
-        })
-      }
-      return rows
-    }
-
-    /** The page's resting state: nothing asked, nothing shown. */
-    function advSearchInitial() {
-      return { status: 'initial', rows: [], total: 0, truncated: false, indexed: null, error: '', stale: false, paging: false }
-    }
-
-    /**
-     * Fold one runner patch into the page state.
-     *
-     * Two rules are load-bearing here: paging **appends**, and a failure **keeps**
-     * whatever is already on screen, because losing results the reader is looking
-     * at is worse than an error line above them.
-     */
-    function advSearchReduce(state, patch) {
-      const current = state !== null && typeof state === 'object' ? state : advSearchInitial()
-      const kind = String(patch?.status ?? '')
-      if (kind === 'loading') return { ...current, status: current.rows.length > 0 ? 'ready' : 'loading', stale: current.rows.length > 0, paging: patch.paging === true, error: '' }
-      if (kind === 'ready') {
-        const rows = patch.append === true ? [...current.rows, ...patch.rows] : patch.rows
-        return {
-          status: rows.length === 0 ? 'empty' : 'ready',
-          rows,
-          total: Number(patch.total) || rows.length,
-          truncated: patch.truncated === true,
-          indexed: patch.indexed ?? current.indexed,
-          error: '',
-          stale: false,
-          paging: false,
-        }
-      }
-      if (kind === 'unavailable') {
-        return { ...current, status: 'unavailable', stale: false, paging: false, error: String(patch.message ?? ''), rows: [], total: 0 }
-      }
-      if (kind === 'error') {
-        return {
-          ...current,
-          status: current.rows.length > 0 ? 'ready' : 'error',
-          stale: false,
-          paging: false,
-          error: String(patch.message ?? patch.reason ?? ''),
-        }
-      }
-      if (kind === 'refused') return { ...current, stale: false, paging: false, error: String(patch.reason ?? '') }
-      return current
-    }
-
-    /**
-     * The advanced page's request runner: debounced, cancellable, and generation-
-     * guarded so a slow answer for an older filter set can never replace a newer
-     * one. Paging asks with an offset; everything else starts from zero.
-     */
-    function createAdvancedRunner(options = {}) {
-      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
-      const justQuery = options.queryOnly === true
-      const debounceMs = Number.isFinite(Number(options.debounceMs)) ? Number(options.debounceMs) : ADV_SEARCH_DEBOUNCE_MS
-      const onPatch = typeof options.onPatch === 'function' ? options.onPatch : () => {}
-      const log = typeof options.log === 'function' ? options.log : () => {}
-      let generation = 0
-      let timer
-      let controller
-
-      const cancel = () => {
-        generation++
-        if (timer !== undefined) {
-          clearTimeout(timer)
-          timer = undefined
-        }
-        if (controller !== undefined) {
-          try {
-            controller.abort()
-          } catch (error) {
-            // Nothing in flight to abort.
-          }
-          controller = undefined
-        }
-      }
-
-      const run = async (filters, offset, append, mine) => {
-        if (typeof request !== 'function') {
-          onPatch({ status: 'unavailable', message: 'no-fetch' })
-          return
-        }
-        const signal = typeof AbortController === 'function' ? new AbortController() : undefined
-        controller = signal
-        try {
-          const response = await request(advSearchUrl(filters, offset), signal === undefined ? {} : { signal: signal.signal })
-          if (mine !== generation) return
-          if (response === null || typeof response !== 'object' || response.ok !== true) {
-            onPatch({ status: 'error', reason: String(response?.status ?? 'no-response') })
-            log({ phase: 'failed', action: 'advanced', reason: String(response?.status ?? 'no-response') })
-            return
-          }
-          const answer = await response.json()
-          if (mine !== generation) return
-          if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
-            const reason = String(answer?.reason ?? 'refused')
-            const message = String(answer?.message ?? '')
-            if (reason === 'unavailable') onPatch({ status: 'unavailable', message })
-            else onPatch({ status: 'error', reason, message })
-            log({ phase: 'failed', action: 'advanced', reason })
-            return
-          }
-          const rows = advSearchResults(answer, String(filters.query ?? ''))
-          onPatch({
-            status: 'ready',
-            rows,
-            total: Number(answer.total) || rows.length,
-            truncated: answer.truncated === true,
-            indexed: answer.indexed ?? null,
-            append,
-          })
-          log({ phase: 'results', messages: rows.length, total: Number(answer.total) || rows.length })
-        } catch (error) {
-          if (mine !== generation) return
-          onPatch({ status: 'error', reason: messageOf(error) })
-          log({ phase: 'failed', action: 'advanced', reason: messageOf(error) })
-        } finally {
-          if (controller === signal) controller = undefined
-        }
-      }
-
-      const ask = (filters, options2 = {}) => {
-        cancel()
-        const mine = generation
-        const range = advSearchRange(filters)
-        if (!range.ok) {
-          log({ phase: 'refused', reason: range.reason })
-          return false
-        }
-        const append = options2.append === true
-        const offset = append ? Number(options2.offset) || 0 : 0
-        onPatch({ status: 'loading', paging: append })
-        const delay = options2.debounce === false ? 0 : justQuery ? debounceMs : 0
-        if (delay <= 0) {
-          void run(filters, offset, append, mine)
-          return true
-        }
-        timer = setTimeout(() => {
-          timer = undefined
-          void run(filters, offset, append, mine)
-        }, delay)
-        return true
-      }
-
-      return { ask, cancel, generation: () => generation }
-    }
-
-    /**
-     * Register the advanced page and its sidebar destination, gated by the row.
-     *
-     * The two halves are one unit on purpose: `layout.selectPanel(key)` **throws**
-     * for a key with no `main` occupant, and the sidebar row calls it with the
-     * panellist id, so a nav row without its page would be a dead button. `order`
-     * must follow `schedules` (Automation tasks, order 10) for the entry to land
-     * directly under it.
-     * @returns the disposer for both registrations.
-     */
-    function installAdvancedSearch(ctx, controller, options = {}) {
-      const t = typeof options.t === 'function' ? options.t : key => key
-      const id = typeof options.id === 'string' ? options.id : ADV_SEARCH_ID
-      const order = Number.isFinite(Number(options.order)) ? Number(options.order) : ADV_SEARCH_PANEL_ORDER
-      const page = options.page
-      const icon = typeof options.icon === 'function' ? options.icon : advSearchPanelIcon
-      const parts = [
-        { part: 'main', slot: 'main', register: () => ctx.slots.register({ name: 'main', key: id, locale: NS }, page) },
-        {
-          part: 'panellist',
-          slot: 'sidebar.panellist',
-          register: () => ctx.slots.register({ name: 'sidebar.panellist', id, order, locale: NS, label: () => t('advNav') }, icon),
-        },
-      ]
-      const disposers = []
-      for (const { slot, part, register } of parts) {
-        // Each part tracks its own installation: one shared flag would let the
-        // first registration mark the second as already done.
-        let installed = false
-        let dispose
-        const sync = () => {
-          const wanted = rowEnabled(controller.getSnapshot(), SEARCH_MODULE)
-          if (wanted === installed) return
-          if (!wanted) {
-            installed = false
-            if (typeof dispose === 'function') dispose()
-            dispose = undefined
-            return
-          }
-          dispose = ctx.slots.inject(slot, () => {
-            let off
-            try {
-              off = register()
-              installed = true
-              searchWrite({ phase: 'registered', part })
-            } catch (error) {
-              searchWrite({ phase: 'register-failed', part, message: messageOf(error) })
-            }
-            return () => {
-              installed = false
-              if (typeof off === 'function') off()
-            }
-          })
-        }
-        const stop = controller.subscribe(sync)
-        sync()
-        disposers.push(() => {
-          stop()
-          if (typeof dispose === 'function') dispose()
-          dispose = undefined
-        })
-      }
-      return () => {
-        for (const dispose of disposers.reverse()) {
-          try {
-            if (typeof dispose === 'function') dispose()
-          } catch (error) {
-            // Unloading must not depend on any single part unwinding.
-          }
-        }
-      }
-    }
-    /**
-     * The shipped sidebar magnifier's accessible names, in both shipped locales.
-     *
-     * Verified from the installed asar: `dsh-client-ui-workspace` renders its
-     * search trigger as `<button type="button" aria-label={t('search.sessions.aria')}
-     * aria-keyshortcuts=… aria-expanded=…><IconSearchOutlineRegular /></button>`,
-     * and that dictionary entry is "Search sessions" (en) / "搜索会话" (zh). The
-     * accessible name is the only anchor a build is likely to keep — the class
-     * names are hashed (`GAkraW_searchButton`) and the icon is a component.
-     */
-    const SEARCH_TRIGGER_LABELS = ['Search sessions', '搜索会话']
-
-    /**
-     * The shipped magnifier for one click target, or undefined.
-     *
-     * Walks up to the nearest button (the click usually lands on the glyph inside
-     * it) and compares its accessible name, falling back to `title`.
-     * @param target - the event target.
-     * @param labels - the names to accept.
-     */
-    function searchTriggerOf(target, labels = SEARCH_TRIGGER_LABELS) {
-      if (target === null || typeof target !== 'object') return undefined
-      const closest = typeof target.closest === 'function' ? target.closest('button, [role="button"]') : undefined
-      if (closest === undefined || closest === null || typeof closest.getAttribute !== 'function') return undefined
-      const raw = closest.getAttribute('aria-label') ?? closest.getAttribute('title') ?? ''
-      const name = String(raw).trim().toLowerCase()
-      if (name === '') return undefined
-      const wanted = (Array.isArray(labels) ? labels : SEARCH_TRIGGER_LABELS).map(label => String(label).trim().toLowerCase())
-      return wanted.includes(name) ? closest : undefined
-    }
-
-    /**
-     * Make the sidebar's own magnifier open *our* palette instead of the shipped
-     * inline search.
-     *
-     * One delegated capture-phase listener on the document, because the sidebar
-     * re-renders and a one-shot query would go stale: capture runs before the
-     * React root's own listeners, so `stopPropagation` means the shipped button's
-     * `onClick` (which expands the inline field) and its wrapper's `onClick` both
-     * never fire. A click anywhere else is left completely alone; an element that
-     * is not found costs nothing, and Ctrl+K keeps working regardless.
-     * @param options - the document, the names, and what to open.
-     * @returns the disposer.
-     */
-    function installSearchTriggerGuard(options = {}) {
-      const doc = options.document ?? (typeof document === 'undefined' ? undefined : document)
-      if (doc === undefined || doc === null || typeof doc.addEventListener !== 'function') return () => {}
-      const labels = Array.isArray(options.labels) ? options.labels : SEARCH_TRIGGER_LABELS
-      const open = typeof options.open === 'function' ? options.open : () => {}
-      const log = typeof options.log === 'function' ? options.log : searchWrite
-      const onClick = event => {
-        let found
-        try {
-          found = searchTriggerOf(event?.target, labels)
-        } catch (error) {
-          return
-        }
-        if (found === undefined) return
-        if (typeof event.preventDefault === 'function') event.preventDefault()
-        if (typeof event.stopPropagation === 'function') event.stopPropagation()
-        log({ phase: 'intercepted', via: 'magnifier' })
-        open()
-      }
-      doc.addEventListener('click', onClick, true)
-      return () => {
-        try {
-          doc.removeEventListener('click', onClick, true)
-        } catch (error) {
-          // A document already torn down has nothing to detach.
-        }
-      }
-    }
-
-    /** One quiet destination label for the sidebar row. */
-    function advSearchPanelIcon(props = {}) {
-      const size = Number(props?.size) || 16
-      return h('svg', {
-        width: size,
-        height: size,
-        viewBox: '0 0 16 16',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.4,
-        strokeLinecap: 'round',
-        'aria-hidden': 'true',
-      }, [
-        h('path', { key: 'a', d: 'M2.4 4h11.2M4 8h8M6 12h4' }),
-        h('path', { key: 'b', d: 'M12.2 11.4 14.4 13.6' }),
-      ])
-    }
-
-    /**
-     * The page, as a pure tree.
-     *
-     * Pure for the same reason as the palette: the filter bar, the result rows and
-     * every state's copy are what the suite asserts, and none of that needs a
-     * browser.
-     */
-    function advSearchView(view = {}) {
-      const t = typeof view.t === 'function' ? view.t : key => key
-      const filters = view.filters ?? advSearchDefaults()
-      const state = view.state ?? advSearchInitial()
-      const sessions = Array.isArray(view.sessions) ? view.sessions : []
-      const handlers = view.handlers ?? {}
-      const range = advSearchRange(filters)
-      const on = name => (typeof handlers[name] === 'function' ? handlers[name] : undefined)
-      const change = patch => {
-        const handler = on('onFilter')
-        if (handler !== undefined) handler(patch)
-      }
-      const field = (labelText, control, variant) => h('label', {
-        key: labelText,
-        className: variant === undefined ? 'edh-adv-field' : `edh-adv-field edh-adv-field-${variant}`,
-      }, [
-        h('span', { key: 'label', className: 'edh-adv-field-label' }, labelText),
-        control,
-      ])
-
-      const bar = h('div', { key: 'bar', className: 'edh-adv-bar', role: 'search' }, [
-        field(t('advQueryLabel'), h('input', {
-          key: 'query',
-          ref: view.inputRef,
-          className: 'edh-adv-input',
-          type: 'text',
-          value: filters.query,
-          placeholder: t('advQueryPlaceholder'),
-          'aria-label': t('advQueryLabel'),
-          onInput: event => change({ query: event.target.value }),
-          onKeyDown: event => {
-            const handler = on('onQueryKeyDown')
-            if (handler !== undefined) handler(event)
-          },
-        }), 'text'),
-        field(t('advSessionLabel'), h('select', {
-          key: 'session',
-          className: 'edh-adv-select',
-          value: filters.sessionId,
-          'aria-label': t('advSessionLabel'),
-          onChange: event => change({ sessionId: event.target.value }),
-        }, [
-          h('option', { key: 'any', value: 'any' }, t('advAnySession')),
-          ...sessions.map(entry => h('option', { key: entry.id, value: entry.id }, entry.title)),
-        ])),
-        field(t('advRoleLabel'), h('select', {
-          key: 'role',
-          className: 'edh-adv-select',
-          value: filters.role,
-          'aria-label': t('advRoleLabel'),
-          onChange: event => change({ role: event.target.value }),
-        }, [
-          h('option', { key: 'any', value: 'any' }, t('advAnyRole')),
-          h('option', { key: 'user', value: 'user' }, t('advRoleYou')),
-          h('option', { key: 'assistant', value: 'assistant' }, t('advRoleAgent')),
-        ])),
-        field(t('advFromLabel'), h('input', {
-          key: 'from',
-          className: 'edh-adv-date',
-          type: 'date',
-          value: filters.from,
-          'aria-label': t('advFromLabel'),
-          onInput: event => change({ from: event.target.value }),
-        })),
-        field(t('advToLabel'), h('input', {
-          key: 'to',
-          className: 'edh-adv-date',
-          type: 'date',
-          value: filters.to,
-          'aria-label': t('advToLabel'),
-          onInput: event => change({ to: event.target.value }),
-        })),
-        field(t('advCountLabel'), h('select', {
-          key: 'limit',
-          className: 'edh-adv-select',
-          value: String(filters.limit),
-          'aria-label': t('advCountLabel'),
-          onChange: event => change({ limit: Number(event.target.value) }),
-        }, ADV_SEARCH_LIMITS.map(limit => h('option', { key: limit, value: String(limit) }, String(limit))))),
-        h('div', { key: 'buttons', className: 'edh-adv-buttons' }, [
-          h('button', {
-            key: 'search',
-            type: 'button',
-            className: 'edh-adv-button edh-adv-button-primary',
-            disabled: !range.ok,
-            onClick: on('onSearch'),
-          }, t('advSearch')),
-          h('button', {
-            key: 'clear',
-            type: 'button',
-            className: 'edh-adv-button',
-            onClick: on('onClear'),
-          }, t('advClear')),
-        ]),
-      ])
-
-      const rowNodes = state.rows.map(row => h('li', { key: row.key, className: 'edh-adv-row' }, [
-        h('button', {
-          key: 'open',
-          type: 'button',
-          className: 'edh-adv-row-main',
-          title: t('advOpenHint'),
-          onClick: () => {
-            const handler = on('onOpenRow')
-            if (handler !== undefined) handler(row)
-          },
-        }, [
-          h('span', { key: 'snippet', className: 'edh-adv-row-snippet' }, row.segments.length > 0
-            ? row.segments.map((segment, at) => (segment.hit
-              ? h('strong', { key: at, className: 'edh-adv-hit' }, segment.text)
-              : h('span', { key: at }, segment.text)))
-            : row.matched),
-          h('span', { key: 'meta', className: 'edh-adv-row-meta' }, [
-            h('span', { key: 'role', className: 'edh-adv-row-role' }, row.role === 'user' ? t('advRoleYou') : t('advRoleAgent')),
-            h('span', { key: 'time', className: 'edh-adv-row-time' }, searchRelativeTime(row.time, view.now)),
-          ]),
-        ]),
-        row.title === ''
-          ? null
-          : h('span', { key: 'title', className: 'edh-adv-row-title' }, row.title),
-        h('button', {
-          key: 'ask',
-          type: 'button',
-          className: 'edh-adv-row-ask',
-          title: t('advAskHint'),
-          onClick: () => {
-            const handler = on('onAskRow')
-            if (handler !== undefined) handler(row)
-          },
-        }, t('advAsk')),
-      ]))
-
-      const body = []
-      const status = state.status
-      if (status === 'initial') {
-        body.push(h('p', { key: 'initial', className: 'edh-adv-note' }, t('advInitial')))
-      }
-      if (status === 'loading') {
-        body.push(h('p', { key: 'loading', className: 'edh-adv-note' }, t('advSearching')))
-      }
-      if (status === 'unavailable') {
-        body.push(h('p', { key: 'unavailable', className: 'edh-adv-note' }, t('advUnavailable')))
-      }
-      if (status === 'error') {
-        body.push(h('div', { key: 'error', className: 'edh-adv-error' }, [
-          h('p', { key: 'text', className: 'edh-adv-note' }, state.error === '' ? t('advFailed') : state.error),
-          h('button', {
-            key: 'retry',
-            type: 'button',
-            className: 'edh-adv-button',
-            onClick: on('onRetry'),
-          }, t('advRetry')),
-        ]))
-      }
-      if (status === 'empty') {
-        body.push(h('div', { key: 'empty', className: 'edh-adv-error' }, [
-          h('p', { key: 'text', className: 'edh-adv-note' }, t('advNoResults')),
-          h('button', {
-            key: 'clear',
-            type: 'button',
-            className: 'edh-adv-button',
-            onClick: on('onClear'),
-          }, t('advClearFilters')),
-        ]))
-      }
-      if (rowNodes.length > 0) {
-        body.push(h('ol', {
-          key: 'rows',
-          className: `edh-adv-list${state.stale === true ? ' edh-adv-list-stale' : ''}`,
-          'aria-busy': status === 'loading' ? 'true' : 'false',
-        }, rowNodes))
-      }
-      if (status === 'ready' && state.stale === true) {
-        body.push(h('p', { key: 'stale', className: 'edh-adv-note' }, t('advSearching')))
-      }
-
-      const footer = []
-      if (status === 'ready' || status === 'empty') {
-        footer.push(h('span', { key: 'count', className: 'edh-adv-count' }, t('advCount', { total: state.total, shown: state.rows.length })))
-      }
-      if (state.truncated === true) footer.push(h('span', { key: 'trunc', className: 'edh-adv-note-inline' }, t('advTruncated')))
-      if (status === 'ready' && state.rows.length < state.total) {
-        footer.push(h('button', {
-          key: 'more',
-          type: 'button',
-          className: 'edh-adv-button',
-          disabled: state.paging === true,
-          onClick: on('onMore'),
-        }, t('advMore')))
-      }
-      const indexed = searchIndexedNote(state.indexed, t)
-      if (indexed !== '') footer.push(h('span', { key: 'indexed', className: 'edh-adv-note-inline' }, indexed))
-
-      return h('div', { className: 'edh-adv-page' }, [
-        h('div', { key: 'head', className: 'edh-adv-head' }, [
-          h('h2', { key: 'title', className: 'edh-adv-title' }, t('advTitle')),
-          h('p', { key: 'intro', className: 'edh-adv-intro' }, t('advIntro')),
-        ]),
-        range.ok
-          ? null
-          : h('p', { key: 'rangeError', className: 'edh-adv-note edh-adv-note-error' }, t('advRangeReversed')),
-        bar,
-        h('div', { key: 'body', className: 'edh-adv-body' }, body),
-        footer.length === 0 ? null : h('div', { key: 'foot', className: 'edh-adv-foot' }, footer),
-      ])
-    }
-
-    /**
-     * The live page: filters, the runner, the keyboard path, and the two seams it
-     * drives (open a session, seed a chat about one message).
-     */
-    function createAdvancedSearchPage(t, faces = {}) {
-      return function AdvancedSearchPage() {
-        const [filters, setFilters] = React.useState(advSearchDefaults())
-        const [state, setState] = React.useState(advSearchInitial())
-        const inputRef = React.useRef(null)
-        const runner = React.useRef(null)
-
-        const patch = React.useCallback(next => setState(previous => advSearchReduce(previous, next)), [])
-
-        const askNow = React.useCallback((next, options) => {
-          if (runner.current === null) {
-            runner.current = createAdvancedRunner({
-              fetch: faces.fetch,
-              queryOnly: true,
-              debounceMs: ADV_SEARCH_DEBOUNCE_MS,
-              onPatch: patch,
-              log: searchWrite,
-            })
-          }
-          return runner.current.ask(next, options)
-        }, [patch])
-
-        const sessionRows = React.useMemo(() => {
-          const byId = faces.sessions?.list?.getSnapshot?.()?.byId
-          const rows = byId !== null && typeof byId === 'object' ? Object.values(byId) : []
-          const seen = []
-          for (const row of rows) {
-            if (row === null || typeof row !== 'object') continue
-            const id = typeof row.sessionId === 'string' ? row.sessionId : ''
-            const title = typeof row.title === 'string' ? row.title.trim() : ''
-            if (id === '' || title === '') continue
-            seen.push({ id, title, updatedAt: Number(row.updatedAt) || 0 })
-          }
-          seen.sort((left, right) => right.updatedAt - left.updatedAt)
-          return seen
-        }, [state.status])
-
-        const onFilter = next => {
-          setFilters(previous => {
-            const merged = { ...previous, ...next }
-            if ('query' in next) askNow(merged, {})
-            return merged
-          })
-        }
-
-        const runSearch = () => {
-          if (!advSearchRange(filters).ok) return
-          searchWrite({ phase: 'advanced-search', length: String(filters.query ?? '').trim().length })
-          askNow(filters, { debounce: false })
-        }
-
-        const clear = () => {
-          runner.current?.cancel()
-          setFilters(advSearchDefaults())
-          setState(advSearchInitial())
-          searchWrite({ phase: 'advanced-cleared' })
-        }
-
-        const onQueryKeyDown = event => {
-          const key = String(event?.key ?? '')
-          if (key === 'Enter') {
-            if (typeof event.preventDefault === 'function') event.preventDefault()
-            runSearch()
-            return
-          }
-          if (key === 'Escape') {
-            if (typeof event.preventDefault === 'function') event.preventDefault()
-            setFilters(previous => ({ ...previous, query: '' }))
-          }
-        }
-
-        React.useEffect(() => {
-          if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
-          const onKey = event => {
-            const key = String(event?.key ?? '')
-            if (key !== '/' || event.ctrlKey === true || event.metaKey === true || event.altKey === true) return
-            const target = event.target
-            const tag = String(target?.tagName ?? '').toLowerCase()
-            if (tag === 'input' || tag === 'textarea' || target?.isContentEditable === true) return
-            if (typeof event.preventDefault === 'function') event.preventDefault()
-            try {
-              inputRef.current?.focus()
-            } catch (error) {
-              // A page that cannot focus still works with the mouse.
-            }
-          }
-          window.addEventListener('keydown', onKey)
-          return () => {
-            try {
-              window.removeEventListener('keydown', onKey)
-            } catch (error) {
-              // Detached already.
-            }
-          }
-        }, [])
-
-        const openRow = row => {
-          try {
-            const workspace = faces.uiWorkspace
-            if (typeof workspace?.openSession !== 'function') {
-              searchWrite({ phase: 'failed', action: 'open', reason: 'no-workspace' })
-              return
-            }
-            // The harness targets a Session, not a message: `SessionTarget` is an
-            // id or a subagent address, and `openSession` takes no position.
-            workspace.openSession({ kind: 'session', sessionId: row.sessionId })
-            searchWrite({ phase: 'opened-session', sessionId: row.sessionId, seq: row.seq })
-          } catch (error) {
-            searchWrite({ phase: 'failed', action: 'open', reason: messageOf(error) })
-          }
-        }
-
-        const askRow = row => {
-          const question = t('advAskPrompt', { snippet: notifyClampText(row.segments.map(segment => segment.text).join(''), 80) })
-          const started = installChat(faces, question)
-          searchWrite(started.ok
-            ? { phase: 'chatted', via: 'advanced', length: question.length }
-            : { phase: 'failed', action: 'chat', reason: started.reason })
-        }
-
-        return advSearchView({
-          t,
-          filters,
-          state,
-          sessions: sessionRows,
-          inputRef,
-          now: Date.now(),
-          handlers: {
-            onFilter,
-            onQueryKeyDown,
-            onSearch: runSearch,
-            onClear: clear,
-            onRetry: runSearch,
-            onMore: () => askNow(filters, { append: true, offset: state.rows.length, debounce: false }),
-            onOpenRow: openRow,
-            onAskRow: askRow,
-          },
-        })
-      }
-    }
-
-    const ADV_SEARCH_CSS = `
-.edh-adv-page { display: flex; flex-direction: column; gap: 0; padding: 24px 28px 40px; max-width: 960px; }
-.edh-adv-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
-.edh-adv-title { margin: 0; color: var(--dsw-alias-label-primary); font-size: 18px; line-height: 26px; font-weight: 600; }
-.edh-adv-intro { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
-.edh-adv-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; padding-bottom: 14px; border-bottom: 1px solid var(--dsw-alias-border-l); }
-.edh-adv-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-/*
- * The width lives on the *wrapper*, never on the input: this wrapper is a column,
- * so a flex basis on its child would be that child's HEIGHT — which is exactly
- * how the text field became a tall empty box and pushed the rest of the bar onto
- * a second row.
- */
-.edh-adv-field-text { flex: 1 1 320px; min-width: 200px; }
-.edh-adv-field-label { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
-.edh-adv-input, .edh-adv-select, .edh-adv-date {
-  box-sizing: border-box;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 18px;
-}
-.edh-adv-input { width: 100%; }
-.edh-adv-select, .edh-adv-date { flex: none; }
-.edh-adv-input:focus-visible, .edh-adv-select:focus-visible, .edh-adv-date:focus-visible,
-.edh-adv-button:focus-visible, .edh-adv-row-main:focus-visible, .edh-adv-row-ask:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
-.edh-adv-buttons { display: flex; gap: 8px; margin-left: auto; }
-.edh-adv-button {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--dsw-alias-border-l);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 18px;
-  cursor: pointer;
-}
-.edh-adv-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.edh-adv-button:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; background: transparent; }
-.edh-adv-button-primary { background: var(--dsw-alias-button-primary-fill); border-color: transparent; color: var(--dsw-alias-label-primary-foreground); }
-.edh-adv-button-primary:hover { background: var(--dsw-alias-button-primary-hover); }
-.edh-adv-body { padding: 4px 0 0; }
-.edh-adv-note { margin: 10px 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
-.edh-adv-note-error { color: var(--dsw-alias-state-error-primary); }
-.edh-adv-note-inline { color: var(--dsw-alias-label-dimmed); font-size: 11px; line-height: 16px; }
-.edh-adv-error { display: flex; align-items: center; gap: 12px; }
-.edh-adv-list { list-style: none; margin: 0; padding: 0; }
-.edh-adv-list-stale { opacity: 0.55; }
-.edh-adv-row { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--dsw-alias-border-l); }
-.edh-adv-row-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 4px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  text-align: left;
-  font-size: 13px;
-  line-height: 19px;
-  cursor: pointer;
-}
-.edh-adv-row-main:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.edh-adv-row-snippet { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.edh-adv-hit { font-weight: 600; color: inherit; }
-.edh-adv-row-meta { display: flex; gap: 10px; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
-.edh-adv-row-time { font-variant-numeric: tabular-nums; }
-.edh-adv-row-title { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
-.edh-adv-row-ask {
-  flex: none;
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 16px;
-  cursor: pointer;
-}
-.edh-adv-row-ask:hover { border-color: var(--dsw-alias-border-l); color: var(--dsw-alias-label-primary); }
-.edh-adv-foot { display: flex; align-items: center; gap: 14px; padding-top: 12px; }
-.edh-adv-count { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
-@media (prefers-reduced-motion: reduce) {
-  .edh-adv-button, .edh-adv-row-main, .edh-adv-row-ask { transition: none; }
-}
-`
-
-    /** Inject the page's one stylesheet, once. */
-    function installAdvancedSearchStyles() {
-      if (typeof document === 'undefined') return () => {}
-      if (document.getElementById('edh-adv-search-style') !== null) return () => {}
-      const style = document.createElement('style')
-      style.id = 'edh-adv-search-style'
-      style.textContent = ADV_SEARCH_CSS
-      document.head.appendChild(style)
-      return () => {
-        try {
-          style.remove()
-        } catch (error) {
-          // A head that is gone has nothing to remove.
         }
       }
     }
@@ -10881,20 +10190,6 @@ window.__ModuleLoader__.load({
         }
       })
 
-      // advanced search — a sidebar destination under Automation tasks.
-      //
-      // The panellist `id` is the `main` key: the sidebar row calls
-      // `layout.selectPanel(id)` and the keyed registry dispatches that exact key.
-      // A keyed `main` occupant gets no Session binding (only the reserved
-      // `conversation` key does), which is what a search page wants. The two
-      // halves register together: `selectPanel` throws for an unregistered key,
-      // so a nav row without its page would be a dead button.
-      const AdvancedSearchPage = createAdvancedSearchPage(t, searchFaces)
-      ctx.effect(() => installAdvancedSearchStyles(), 'edh: advanced search styles')
-      ctx.effect(
-        () => installAdvancedSearch(ctx, controller, { t, page: AdvancedSearchPage, icon: advSearchPanelIcon }),
-        'edh: advanced search entries',
-      )
 
       // skills — its own Settings page with two tabs.
       //
@@ -11330,19 +10625,6 @@ window.__ModuleLoader__.load({
       searchTriggerOf,
       installSearchTriggerGuard,
       SEARCH_TRIGGER_LABELS,
-      createAdvancedRunner,
-      createAdvancedSearchPage,
-      advSearchView,
-      advSearchDefaults,
-      advSearchDayStart,
-      advSearchDayEnd,
-      advSearchRange,
-      advSearchUrl,
-      advSearchResults,
-      advSearchInitial,
-      advSearchReduce,
-      advSearchPanelIcon,
-      installAdvancedSearch,
       createSkillsPage,
       skillsView,
       skillsScopeOf,
@@ -11364,12 +10646,6 @@ window.__ModuleLoader__.load({
       SKILLS_TABS,
       SKILLS_ROUTE,
       SKILLS_DEBUG_KEY,
-      installAdvancedSearchStyles,
-      ADV_SEARCH_CSS,
-      ADV_SEARCH_ID,
-      ADV_SEARCH_PANEL_ORDER,
-      ADV_SEARCH_LIMITS,
-      ADV_SEARCH_ROLES,
       runSearchAction,
       installSearchStyles,
       SEARCH_CSS,

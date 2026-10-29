@@ -240,21 +240,6 @@ const {
   readNotifyLast,
   raiseNotifyWindow,
   createPaletteBus,
-  installAdvancedSearch,
-  createAdvancedRunner,
-  advSearchView,
-  advSearchDefaults,
-  advSearchDayStart,
-  advSearchDayEnd,
-  advSearchRange,
-  advSearchUrl,
-  advSearchResults,
-  advSearchInitial,
-  advSearchReduce,
-  advSearchPanelIcon,
-  ADV_SEARCH_CSS,
-  ADV_SEARCH_ID,
-  ADV_SEARCH_PANEL_ORDER,
   createSearchRunner,
   createSearchButton,
   searchPaletteView,
@@ -5976,7 +5961,7 @@ function recordingNotification(permission, behaviour) {
   })
   assert.deepEqual(built.sections.map(section => section.id), ['chat', 'sessions', 'messages', 'actions'], 'Chat first, Actions last')
   assert.deepEqual(built.sections.map(section => section.label), ['Chat', 'Sessions', 'Messages', 'Actions'])
-  assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action', 'action'], 'one flat list across sections')
+  assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action'], 'one flat list across sections')
   assert.equal(built.rows[0].label, 'Ask about "parser"', 'the chat row names the query')
   assert.equal(built.sections[1].note, '', 'a section with matches has no note')
   assert.ok(built.sections[2].note.includes('Indexing 4 of 10 sessions'), 'the index progress is one quiet line')
@@ -6214,399 +6199,16 @@ function recordingNotification(permission, behaviour) {
     const copy = ['searchPlaceholder', 'searchChatStart', 'searchChatAsk', 'searchSearching', 'searchNoMessages', 'searchRetry', 'searchHintMove', 'searchHintOpen', 'searchHintClose']
     for (const key of copy) {
       const value = dictionaryOf('en')(key, { query: 'q', ready: 1, total: 2 })
-      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
+      assert.equal(/[\u00b7\u2192]/u.test(value), false, `${key} avoids the forbidden glyph`)
     }
     assert.ok(SEARCH_CSS.includes('border-top: 1px solid'), 'sections are separated by hairlines')
     assert.ok(SEARCH_CSS.includes('edh-palette-row-active'), 'one flat tint marks the selection')
   }
 }
 
-// 62 — the advanced search page: its two registrations, filters, paging, states.
-{
-  const stub = stubPageFactory()
-  const t = dictionaryOf('en')
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-
-  // --- the sidebar destination and the main panel ------------------------
-  {
-    const SHIPPED_SCHEDULES_ORDER = 10
-    const SHIPPED_PLUGINS_ORDER = 0
-    assert.equal(ADV_SEARCH_PANEL_ORDER, SHIPPED_SCHEDULES_ORDER + 1, 'immediately after Automation tasks')
-    assert.ok(ADV_SEARCH_PANEL_ORDER > SHIPPED_PLUGINS_ORDER, 'and after Plugins')
-    assert.equal(ADV_SEARCH_ID, 'edh-search-advanced')
-
-    const registers = []
-    const injections = []
-    let rowOn = true
-    const watchers = []
-    const ctx = {
-      slots: {
-        inject(slot, run) {
-          injections.push(slot)
-          const dispose = run()
-          return typeof dispose === 'function' ? dispose : () => {}
-        },
-        register(options, component) {
-          registers.push({ options, component })
-          return () => {
-            const at = registers.findIndex(entry => entry.options === options)
-            if (at >= 0) registers.splice(at, 1)
-          }
-        },
-      },
-      effect: fn => {
-        const dispose = fn()
-        return typeof dispose === 'function' ? dispose : () => {}
-      },
-    }
-    const controller = {
-      getSnapshot: () => ({ status: 'ready', moduleStates: { [SEARCH_MODULE]: rowOn } }),
-      subscribe(listener) {
-        watchers.push(listener)
-        return () => {}
-      },
-    }
-    const Page = () => null
-    storage.length = 0
-    const dispose = installAdvancedSearch(ctx, controller, { t, page: Page, icon: advSearchPanelIcon })
-
-    assert.deepEqual(injections, ['main', 'sidebar.panellist'], 'both seats are claimed together')
-    const main = registers.find(entry => entry.options.name === 'main')
-    const panel = registers.find(entry => entry.options.name === 'sidebar.panellist')
-    assert.ok(main !== undefined, 'the main key is registered')
-    assert.equal(main.options.key, ADV_SEARCH_ID, 'the key is ours')
-    assert.equal(main.options.id, undefined, 'a keyed seat takes `key`, not `id`')
-    assert.equal(main.component, Page)
-    assert.ok(panel !== undefined, 'the sidebar destination is registered')
-    assert.equal(panel.options.id, ADV_SEARCH_ID, 'the panellist id is the main key, because selectPanel gets the id')
-    assert.equal(panel.options.order, 11, 'order 11, right under Automation tasks at 10')
-    assert.equal(panel.options.label(), 'Advanced search', 'the nav row is labelled')
-    assert.equal(panel.component, advSearchPanelIcon)
-
-    // The row switch withdraws both, and restores both.
-    rowOn = false
-    for (const watch of [...watchers]) watch()
-    assert.equal(registers.length, 0, 'the row off removes the page and its row')
-    rowOn = true
-    for (const watch of [...watchers]) watch()
-    assert.equal(registers.length, 2, 'and both come back together')
-    dispose()
-    assert.equal(registers.length, 0, 'disposal unregisters everything')
-  }
-
-  // --- filters to one exact request -------------------------------------
-  {
-    assert.deepEqual(advSearchDefaults(), { query: '', sessionId: 'any', role: 'any', from: '', to: '', limit: 20 })
-    const bare = advSearchUrl(advSearchDefaults())
-    assert.equal(bare, 'api/edh.search?limit=20', '`any` is omitted entirely, and nothing else is invented')
-    assert.equal(advSearchUrl({ ...advSearchDefaults(), sessionId: 's1', role: 'user' }), 'api/edh.search?sessionId=s1&role=user&limit=20')
-    assert.equal(advSearchUrl({ ...advSearchDefaults(), query: '  parser  ' }), 'api/edh.search?q=parser&limit=20', 'trimmed')
-    assert.equal(advSearchUrl(advSearchDefaults(), 40), 'api/edh.search?limit=20&offset=40', 'offset only when paging')
-    assert.equal(advSearchUrl({ ...advSearchDefaults(), limit: 500 }), 'api/edh.search?limit=20', 'an unknown limit falls back')
-
-    // Dates are epochs, inclusive of the whole chosen day.
-    const from = advSearchDayStart('2026-03-04')
-    const to = advSearchDayEnd('2026-03-04')
-    assert.equal(from, new Date(2026, 2, 4, 0, 0, 0, 0).getTime(), 'from is the first millisecond of that local day')
-    assert.equal(to, new Date(2026, 2, 5, 0, 0, 0, 0).getTime() - 1, 'to is the last')
-    assert.equal(advSearchDayStart(''), null)
-    assert.equal(advSearchDayStart('nope'), null)
-    assert.equal(advSearchDayStart('2026-13-01'), null, 'an impossible month is not a date')
-    assert.equal(advSearchDayEnd('2026-03-04') - advSearchDayStart('2026-03-04'), 86_400_000 - 1, 'one whole day')
-
-    const dated = advSearchUrl({ ...advSearchDefaults(), from: '2026-03-04', to: '2026-03-06' })
-    assert.ok(dated.includes(`from=${from}`), 'from as epoch ms')
-    assert.ok(dated.includes(`to=${advSearchDayEnd('2026-03-06')}`), 'to as epoch ms')
-    assert.equal(advSearchUrl({ ...advSearchDefaults(), from: '2026-03-04' }).includes('to='), false, 'an open end stays off the request')
-
-    // A reversed range is refused, not swapped.
-    const reversed = advSearchRange({ from: '2026-03-06', to: '2026-03-04' })
-    assert.equal(reversed.ok, false)
-    assert.equal(reversed.reason, 'reversed')
-    assert.equal(advSearchRange({ from: '2026-03-04', to: '2026-03-04' }).ok, true, 'one day is a range')
-    assert.equal(advSearchRange(advSearchDefaults()).ok, true)
-  }
-
-  // --- result rows, tolerating the older field name ---------------------
-  {
-    const entry = { sessionId: 's1', sessionTitle: 'Refactor the parser', seq: 7, time: 5, role: 'assistant', snippet: 'the parser is streaming now', matched: 'parser' }
-    const newer = advSearchResults({ results: [entry] }, 'parser')
-    const older = advSearchResults({ messages: [entry] }, 'parser')
-    assert.equal(newer.length, 1)
-    assert.deepEqual(newer, older, 'the older `messages` field is read the same way')
-    assert.deepEqual(newer[0].segments.filter(segment => segment.hit).map(segment => segment.text), ['parser'])
-    assert.equal(newer[0].title, 'Refactor the parser')
-    assert.deepEqual(advSearchResults({}, 'x'), [])
-    assert.deepEqual(advSearchResults({ results: [{ sessionId: '' }] }, 'x'), [])
-  }
-
-  // --- the reducer: paging appends, failure keeps what is on screen ------
-  {
-    const first = advSearchReduce(advSearchInitial(), { status: 'ready', rows: [{ key: 'a' }, { key: 'b' }], total: 5, truncated: true, indexed: { sessions: 1, total: 9, ready: 2 } })
-    assert.equal(first.status, 'ready')
-    assert.equal(first.rows.length, 2)
-    assert.equal(first.total, 5, 'the true total, not the shown count')
-    assert.equal(first.truncated, true)
-
-    const loading = advSearchReduce(first, { status: 'loading' })
-    assert.equal(loading.status, 'ready', 'results stay visible while searching')
-    assert.equal(loading.stale, true, 'and are marked stale rather than blanked')
-
-    const more = advSearchReduce(loading, { status: 'ready', rows: [{ key: 'c' }], total: 5, append: true })
-    assert.deepEqual(more.rows.map(row => row.key), ['a', 'b', 'c'], 'Load more appends')
-    assert.equal(more.stale, false)
-
-    const failed = advSearchReduce(more, { status: 'error', reason: 'boom' })
-    assert.deepEqual(failed.rows.map(row => row.key), ['a', 'b', 'c'], 'a later failure never loses the results')
-    assert.equal(failed.status, 'ready', 'the list stays, with an error line')
-    assert.equal(failed.error, 'boom')
-
-    const nothing = advSearchReduce(advSearchInitial(), { status: 'error', message: 'Host said no' })
-    assert.equal(nothing.status, 'error', 'with nothing on screen, the error state shows')
-    assert.equal(nothing.error, 'Host said no', "with the Host's own sentence")
-
-    const empty = advSearchReduce(first, { status: 'ready', rows: [], total: 0 })
-    assert.equal(empty.status, 'empty')
-    assert.equal(advSearchReduce(first, { status: 'unavailable', message: 'no service' }).status, 'unavailable')
-    assert.equal(advSearchReduce(first, { status: 'refused', reason: 'reversed' }).status, 'ready', 'a refusal keeps the list')
-  }
-
-  // --- the runner: debounce, cancellation, stale discard, unavailable ----
-  {
-    const patches = []
-    const asked = []
-    const runner = createAdvancedRunner({
-      debounceMs: 5,
-      queryOnly: true,
-      onPatch: patch => patches.push(patch),
-      fetch: async url => {
-        asked.push(url)
-        return { ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 's1', seq: 1, snippet: 'hit', matched: 'hit' }] }) }
-      },
-    })
-    runner.ask({ ...advSearchDefaults(), query: 'abc' })
-    assert.equal(patches.at(-1).status, 'loading', 'loading at once')
-    assert.equal(asked.length, 0, 'nothing before the pause')
-    await sleep(25)
-    assert.equal(asked.length, 1)
-    assert.ok(asked[0].startsWith('api/edh.search?q=abc&limit=20'), 'the exact request')
-    assert.equal(patches.at(-1).status, 'ready')
-    assert.equal(patches.at(-1).total, 1)
-    // A reversed range never reaches the wire.
-    patches.length = 0
-    const fired = runner.ask({ ...advSearchDefaults(), from: '2026-03-06', to: '2026-03-04' })
-    assert.equal(fired, false, 'a reversed range is refused before the request')
-    assert.equal(patches.length, 0, 'and emits no patch')
-    runner.cancel()
-  }
-
-  {
-    // The older answer resolving last must not win, and a failure keeps rows.
-    const patches = []
-    const gates = new Map()
-    const runner = createAdvancedRunner({
-      debounceMs: 1,
-      queryOnly: true,
-      onPatch: patch => patches.push(patch),
-      fetch: url => new Promise(resolve => gates.set(new URL(url, 'http://x/').searchParams.get('q'), resolve)),
-    })
-    runner.ask({ ...advSearchDefaults(), query: 'old' })
-    await sleep(10)
-    runner.ask({ ...advSearchDefaults(), query: 'new' })
-    await sleep(10)
-    await gates.get('new')({ ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 'new', seq: 1, snippet: 'new', matched: 'new' }] }) })
-    await sleep(5)
-    assert.equal(patches.at(-1).rows[0].sessionId, 'new')
-    await gates.get('old')({ ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 'old', seq: 1, snippet: 'old', matched: 'old' }] }) })
-    await sleep(5)
-    assert.equal(patches.at(-1).rows[0].sessionId, 'new', 'the stale answer was discarded')
-
-    const failing = createAdvancedRunner({
-      debounceMs: 1,
-      onPatch: patch => patches.push(patch),
-      fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: false, reason: 'unavailable', message: 'no index' }) }),
-    })
-    failing.ask({ ...advSearchDefaults(), query: 'z' }, { debounce: false })
-    await sleep(15)
-    assert.equal(patches.at(-1).status, 'unavailable', 'unavailable is its own state')
-    const refused = createAdvancedRunner({ onPatch: patch => patches.push(patch) })
-    refused.ask({ ...advSearchDefaults(), query: 'y' }, { debounce: false })
-    assert.equal(patches.at(-1).status, 'unavailable', 'no fetch at all is unavailable, not a crash')
-  }
-
-  // --- the tree: bar, rows, and every state's copy ----------------------
-  const sessionList = [{ id: 's1', title: 'Refactor the parser' }, { id: 's2', title: 'notes' }]
-  const row = {
-    key: 's1:7',
-    sessionId: 's1',
-    seq: 7,
-    title: 'Refactor the parser',
-    role: 'assistant',
-    time: Date.now() - 120_000,
-    segments: [{ text: 'the ', hit: false }, { text: 'parser', hit: true }],
-    matched: 'parser',
-  }
-  const render = (state, filters) => stub.advSearchView({
-    t,
-    filters: filters ?? { ...advSearchDefaults(), query: 'parser' },
-    state,
-    sessions: sessionList,
-    now: Date.now(),
-    handlers: {},
-  })
-  {
-    const view = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 3, indexed: { sessions: 40, total: 222, ready: 42 } }))
-    const text = treeText(view)
-    assert.deepEqual(treeByType(view, 'h2').map(node => node.props.children[0]), ['Advanced search'])
-    assert.ok(hasText(view, 'Searches the full text of every conversation on this machine, with filters.'), 'one intro line')
-    // The bar: every control is labelled.
-    const fields = treeByType(view, 'label').filter(label => String(label.props.className).includes('edh-adv-field'))
-    assert.equal(fields.length, 6, 'query, session, role, from, to, count')
-    const inputs = treeByType(view, 'input')
-    // The Text control is one single-line input, never a box: element kind, no
-    // rows, no resize, and the width carried by its wrapper.
-    const textInputs = inputs.filter(input => input.props.type === 'text')
-    assert.equal(textInputs.length, 1, 'the Text control is an <input type="text">')
-    assert.deepEqual(treeByType(view, 'textarea'), [], 'and never a textarea')
-    assert.equal(textInputs[0].props.rows, undefined, 'no rows attribute')
-    assert.equal(textInputs[0].props.resize, undefined, 'no resize handle')
-    assert.equal(textInputs[0].props.className, 'edh-adv-input')
-    assert.equal(inputs.filter(input => input.props.type === 'date').length, 2)
-    // One bar, six controls as its own children: nothing wraps into a second row.
-    const barNode = treeByType(view, 'div').find(node => node.props.className === 'edh-adv-bar')
-    const barFields = barNode.props.children.flat().filter(child => child !== null && child !== undefined
-      && String(child.props?.className ?? '').includes('edh-adv-field'))
-    assert.equal(barFields.length, 6, 'six controls in the one filter bar')
-    assert.equal(barFields[0].props.className, 'edh-adv-field edh-adv-field-text', 'the text field takes its width on the wrapper')
-    assert.deepEqual(barFields.map(field => treeText(field)[0]), ['Text', 'Session', 'Role', 'From', 'To', 'Results'], 'in that order, each labelled')
-    const sessions = treeByType(view, 'select')[0]
-    assert.deepEqual(treeByType(sessions, 'option').map(option => option.props.children[0]), ['Any session', 'Refactor the parser', 'notes'])
-    const roles = treeByType(view, 'select')[1]
-    assert.deepEqual(treeByType(roles, 'option').map(option => option.props.children[0]), ['Any role', 'You', 'Agent'])
-    const counts = treeByType(view, 'select')[2]
-    assert.deepEqual(treeByType(counts, 'option').map(option => option.props.children[0]), ['20', '50', '100'])
-    assert.ok(hasText(view, 'Search') && hasText(view, 'Clear'), 'both buttons')
-    // Rows: snippet is the content, emphasis is structural.
-    assert.equal(treeByType(view, 'li').length, 1)
-    assert.equal(treeByType(view, 'strong').length, 1, 'the matched run is emphasised once')
-    assert.equal(treeByType(view, 'strong')[0].props.className, 'edh-adv-hit')
-    assert.ok(hasText(view, 'Refactor the parser'), 'the session title is the right-hand meta')
-    const ask = treeByType(view, 'button').find(button => button.props.children?.[0] === 'Ask the agent about this')
-    assert.ok(ask !== undefined, 'the per-row Ask action')
-    // Footer: total, not shown count.
-    assert.ok(hasText(view, '1 of 3 results'), 'the true total from the Host')
-    assert.ok(hasText(view, 'Load more'), 'more to come')
-    assert.ok(hasText(view, 'Indexing 42 of 222 sessions'), 'the index line')
-  }
-
-  // States.
-  {
-    const initialTree = render(advSearchInitial())
-    assert.ok(hasText(initialTree, 'Nothing searched yet.'), 'the initial sentence')
-    assert.equal(treeByType(render(advSearchInitial()), 'li').length, 0, 'and no empty table')
-    assert.ok(hasText(render(advSearchReduce(advSearchInitial(), { status: 'loading' })), 'Searching…'))
-    const stale = render(advSearchReduce(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 9 }), { status: 'loading' }))
-    assert.equal(treeByType(stale, 'li').length, 1, 'stale results are kept, not blanked')
-    assert.ok(treeByType(stale, 'ol')[0].props.className.includes('edh-adv-list-stale'), 'and marked stale')
-    const empty = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [], total: 0 }))
-    assert.ok(hasText(empty, 'No messages match these filters'))
-    assert.ok(hasText(empty, 'Clear filters'), 'with a way out')
-    const failed = render(advSearchReduce(advSearchInitial(), { status: 'error', message: 'the index is busy' }))
-    assert.ok(hasText(failed, 'the index is busy'), "the Host's own sentence")
-    assert.ok(hasText(failed, 'Retry'))
-    const unavailable = render(advSearchReduce(advSearchInitial(), { status: 'unavailable' }))
-    assert.ok(hasText(unavailable, 'Search is unavailable'))
-    assert.equal(treeByType(render(advSearchReduce(advSearchInitial(), { status: 'unavailable' })), 'li').length, 0, 'no dead rows')
-    const truncated = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1, truncated: true }))
-    assert.ok(hasText(truncated, 'refine to see more'))
-    // No Load more at the end of the list.
-    const complete = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1 }))
-    assert.equal(hasText(complete, 'Load more'), false, 'Load more disappears at the end')
-    // A reversed range is refused inline, in the copy, and Search is disabled.
-    const reversed = render(advSearchInitial(), { ...advSearchDefaults(), from: '2026-03-06', to: '2026-03-04' })
-    assert.ok(hasText(reversed, 'That range ends before it starts.'))
-    assert.equal(treeByType(reversed, 'button').find(button => button.props.children?.[0] === 'Search').props.disabled, true, 'Search is refused')
-  }
-
-  // --- row activation and the per-row Ask -------------------------------
-  {
-    const seen = []
-    const faces = {
-      uiWorkspace: {
-        openSession: target => seen.push(['open', target]),
-        startSession: (...args) => seen.push(['chat', ...args]),
-      },
-    }
-    const view = stub.advSearchView({
-      t,
-      filters: advSearchDefaults(),
-      state: advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1 }),
-      sessions: [],
-      now: Date.now(),
-      handlers: {
-        onOpenRow: activated => {
-          // The exact call the component makes.
-          faces.uiWorkspace.openSession({ kind: 'session', sessionId: activated.sessionId })
-          seen.push(['seq', activated.seq])
-        },
-        onAskRow: activated => {
-          const question = t('advAskPrompt', { snippet: 'the parser' })
-          installChat(faces, question)
-          seen.push(['asked', activated.sessionId])
-        },
-      },
-    })
-    const openButton = treeByType(view, 'button').find(button => String(button.props.className).includes('edh-adv-row-main'))
-    openButton.props.onClick()
-    assert.deepEqual(seen[0], ['open', { kind: 'session', sessionId: 's1' }], 'the row opens its session')
-    assert.deepEqual(seen[1], ['seq', 7], 'the message seq travels with it, for the breadcrumb')
-    assert.equal(seen.length, 2, 'openSession takes no message position: verified, `SessionTarget` is an id')
-    const askButton = treeByType(view, 'button').find(button => button.props.children?.[0] === 'Ask the agent about this')
-    askButton.props.onClick()
-    const chat = seen.find(entry => entry[0] === 'chat')
-    assert.equal(chat[2].prompt, 'About this from our conversation: "the parser" — could you explain it?', 'the question is seeded, not sent')
-    assert.equal(chat[2].whenDraftExists, 'replace')
-  }
-
-  // --- the stylesheet's promises ----------------------------------------
-  {
-    assert.ok(ADV_SEARCH_CSS.includes('@media (prefers-reduced-motion: reduce)'), 'reduced motion honoured')
-    assert.ok(ADV_SEARCH_CSS.includes(':focus-visible'), 'focus-visible on the controls')
-    assert.ok(ADV_SEARCH_CSS.includes('tabular-nums'), 'tabular numerals for counts and times')
-    assert.ok(ADV_SEARCH_CSS.includes('--dsw-alias-label-primary'), 'tokens only')
-    assert.ok(ADV_SEARCH_CSS.includes('border-bottom: 1px solid'), 'hairlines, not cards')
-    assert.equal(/text-transform:\s*uppercase|::before|border-radius:\s*12px/.test(ADV_SEARCH_CSS), false, 'no caps eyebrows, no cards')
-    for (const glyph of ['·', '→']) assert.equal(ADV_SEARCH_CSS.includes(glyph), false, `no ${glyph} glyph`)
-    for (const key of ['advTitle', 'advIntro', 'advInitial', 'advSearching', 'advNoResults', 'advFailed', 'advUnavailable', 'advTruncated', 'advMore', 'advRangeReversed', 'advAsk', 'advNav']) {
-      const value = t(key, { shown: 1, total: 2, snippet: 'x' })
-      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
-      assert.ok(value.length > 0, `${key} says something`)
-    }
-  }
-}
-
 // 63 — the box fix, the magnifier interception, and the palette's new action row.
 {
   const t = dictionaryOf('en')
-
-  // --- the Text control's CSS, not just its element kind ------------------
-  {
-    const inputRule = /\.edh-adv-input \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
-    assert.ok(inputRule !== null, 'the input has its own rule')
-    assert.equal(inputRule[0].includes('flex'), false, 'the input carries no flex basis — a basis in a column wrapper is a HEIGHT')
-    assert.ok(inputRule[0].includes('width: 100%'), 'its width comes from the wrapper')
-    const wrapperRule = /\.edh-adv-field-text \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
-    assert.ok(wrapperRule !== null, 'the text wrapper has a rule')
-    assert.ok(wrapperRule[0].includes('flex: 1 1 320px'), 'about 320px wide')
-    assert.ok(wrapperRule[0].includes('min-width'), 'and it can shrink on narrow widths')
-    const sharedRule = /\.edh-adv-input, \.edh-adv-select, \.edh-adv-date \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
-    assert.ok(sharedRule !== null)
-    assert.ok(sharedRule[0].includes('height: 30px'), 'the control is 30px tall')
-    assert.ok(sharedRule[0].includes('box-sizing: border-box'), 'and that 30px includes the border')
-    assert.equal(ADV_SEARCH_CSS.includes('resize:'), false, 'no resize handle anywhere')
-    assert.ok(/\.edh-adv-select, \.edh-adv-date \{ flex: none; \}/u.test(ADV_SEARCH_CSS), 'the selects keep their own width')
-    assert.ok(/\.edh-adv-bar \{[^}]*flex-wrap: wrap/u.test(ADV_SEARCH_CSS), 'the bar is the one wrapping row')
-  }
 
   // --- the shipped magnifier ---------------------------------------------
   {
@@ -6725,30 +6327,6 @@ function recordingNotification(permission, behaviour) {
     off()
     dispose()
   }
-
-  // --- the palette's Advanced search action -----------------------------
-  {
-    const rows = searchActionRows(t)
-    const advanced = rows.find(row => row.payload.action === 'advanced')
-    assert.ok(advanced !== undefined, 'the Actions section offers Advanced search')
-    assert.equal(advanced.label, 'Advanced search')
-    assert.equal(advanced.kind, 'action', 'a plain action row, like its neighbours')
-    assert.equal(advanced.meta, '')
-    const keys = rows.map(row => row.key)
-    assert.equal(new Set(keys).size, keys.length, 'every row has its own key')
-
-    const calls = []
-    const faces = { layout: { selectPanel: id => calls.push(id), toggleSidebar: () => calls.push('sidebar') } }
-    assert.deepEqual(runSearchAction(faces, 'advanced'), { ok: true })
-    assert.deepEqual(calls, [ADV_SEARCH_ID], 'navigates by the key we registered')
-    assert.equal(ADV_SEARCH_ID, 'edh-search-advanced', 'the same key the main slot owns')
-    assert.deepEqual(runSearchAction({}, 'advanced'), { ok: false, reason: 'no-layout' })
-    // The action appears in the flat row list too, after the other actions.
-    const built = searchRowsFor({ query: '', sessions: [], messages: { status: 'idle' }, t })
-    const flatAdvanced = built.rows.find(row => row.payload?.action === 'advanced')
-    assert.ok(flatAdvanced !== undefined, 'and it is in the flat keyboard list')
-    assert.equal(built.rows.at(-1).key, flatAdvanced.key, 'last of the Actions rows')
-  }
 }
 
 // 64 — the Skills page: two real tabs, three scope resolutions, and the rows.
@@ -6792,7 +6370,6 @@ function recordingNotification(permission, behaviour) {
     assert.deepEqual(tabs.map(tab => tab.props['aria-controls']), ['edh-skills-panel-global', 'edh-skills-panel-workspace'])
     assert.deepEqual(tabs.map(tab => tab.props['aria-selected']), [true, false], 'the active tab is selected, once')
     assert.deepEqual(tabs.map(tab => tab.props.tabIndex), [0, -1], 'and only it is in the tab order')
-    // Counts sit beside the labels, quiet, not in a pill.
     assert.deepEqual(tabs.map(tab => treeText(tab)), [['Global', '44'], ['This workspace', '1']], 'the count sits beside the label')
     assert.ok(tabs[0].props.className.includes('edh-skills-tab-active'))
     const panel = treeByType(view, 'div').find(node => node.props.role === 'tabpanel')
@@ -6826,7 +6403,6 @@ function recordingNotification(permission, behaviour) {
     assert.ok(text.includes('project'), 'the source as a quiet word')
     assert.ok(text.includes('Copy path'), 'with a path, a Copy control')
 
-    // The source word and its raw value in the title.
     const sourceSpan = treeByType(view, 'span').find(span => span.props.className === 'edh-skills-row-source')
     assert.equal(sourceSpan.props.children[0], 'project')
     assert.equal(sourceSpan.props.title, 'project-agents')
@@ -6840,14 +6416,11 @@ function recordingNotification(permission, behaviour) {
     const buttons = treeByType(rows[1], 'button')
     assert.equal(buttons.length, 0, 'no Copy for a skill with no path')
     assert.ok(treeText(rows[1]).includes('Copy path') === false)
-    // A user-only skill says so; a model-invocable one does not.
     assert.ok(treeText(rows[0]).includes('user only') === false, 'model-invocable skills stay quiet')
     assert.ok(treeText(rows[1]).includes('user only'), 'user only is stated where it applies')
-    // Source words: user-agents reads as global.
     const words = treeByType(view, 'span').filter(span => span.props.className === 'edh-skills-row-source').map(span => span.props.children)
     assert.deepEqual(words, [['global'], ['global']], 'user-agents reads as global')
 
-    // A long description is clamped in the stylesheet and kept whole in the title.
     const desc = treeByType(view, 'div').filter(node => node.props.className === 'edh-skills-row-desc').at(-1)
     assert.ok(desc !== undefined)
     assert.ok(String(desc.props.children[0]).endsWith('…'), 'clamped with a real ellipsis')
@@ -6872,19 +6445,16 @@ function recordingNotification(permission, behaviour) {
     assert.equal(skillsScopeOf({ currentKey: '  ', rows: [{ id: 'x', updatedAt: 5 }] }).sessionId, 'x', 'an id-keyed row still counts')
     assert.equal(skillsScopeOf({}).source, 'default')
 
-    // The request carries exactly that id, or none.
     assert.equal(skillsUrl(live), 'api/edh.skills?sessionId=s-live')
     assert.equal(skillsUrl(recent), 'api/edh.skills?sessionId=s-recent')
     assert.equal(skillsUrl(none), 'api/edh.skills', 'no id, the Host picks the default workspace')
     assert.equal(skillsUrl(undefined), 'api/edh.skills')
 
-    // And the line says which, without claiming a past session is live.
     assert.equal(skillsScopeLine(answer, live, t), 'Workspace: EDH from the open conversation')
     assert.equal(skillsScopeLine(answer, recent, t), 'Workspace: EDH from the most recent conversation')
     assert.equal(skillsScopeLine(answer, none, t), 'Workspace: EDH default workspace')
     assert.equal(skillsScopeLine({ scope: { cwd: 'C:/w/x' } }, none, t), 'Workspace: C:/w/x default workspace', 'cwd when there is no name')
     assert.equal(skillsScopeLine({}, none, t), 'No workspace resolved yet')
-    // Only the workspace tab carries it.
     assert.ok(hasText(render(ready(), 'workspace'), 'Workspace: EDH'))
     assert.equal(hasText(render(ready(), 'global'), 'Workspace: EDH'), false, 'the Global tab does not claim a workspace')
   }
@@ -6925,10 +6495,8 @@ function recordingNotification(permission, behaviour) {
     assert.equal(hasText(unavailable, 'Retry'), false, 'no dead retry')
     assert.equal(treeByType(unavailable, 'input').length, 0, 'and no dead filter box')
     assert.equal(treeByType(unavailable, 'li').length, 0)
-    // complete:false is one quiet line.
     assert.ok(hasText(render(ready(), 'global'), 'Some skill providers could not be read.'))
 
-    // A failed refresh keeps the list it already had.
     const good = ready()
     const afterFailure = skillsReduce(good, { status: 'error', message: 'network down' })
     assert.equal(afterFailure.status, 'ready', 'the list stays')
@@ -6936,7 +6504,6 @@ function recordingNotification(permission, behaviour) {
     assert.equal(afterFailure.error, 'network down', 'and the sentence beside it')
     assert.ok(hasText(render(afterFailure, 'global'), 'network down'))
     assert.equal(treeByType(render(afterFailure, 'global'), 'li').length, 2, 'the rows are still drawn')
-    // With nothing on screen yet, the error state shows instead.
     assert.equal(skillsReduce({ status: 'loading', answer: undefined, error: '' }, { status: 'error', reason: 'boom' }).status, 'error')
     assert.equal(skillsReduce(good, { status: 'unavailable' }).status, 'unavailable', 'unavailable drops the list')
   }
@@ -6949,7 +6516,7 @@ function recordingNotification(permission, behaviour) {
     assert.ok(SKILLS_CSS.includes('--dsw-alias-label-primary'), 'tokens only')
     assert.ok(SKILLS_CSS.includes('border-bottom: 1px solid'), 'hairlines, not cards')
     assert.equal(/text-transform:\s*uppercase|::before/.test(SKILLS_CSS), false, 'no ALL-CAPS eyebrows')
-    for (const glyph of ['·', '→']) assert.equal(SKILLS_CSS.includes(glyph), false, `no ${glyph} glyph`)
+    for (const glyph of ['\u00b7', '\u2192']) assert.equal(SKILLS_CSS.includes(glyph), false, 'no middle-dot or arrow glyph')
     assert.equal(SKILLS_SECTION_ORDER, 20, 'after Notifications at 19')
     assert.equal(SKILLS_MODULE, '@moreweb/edh/skills', 'gated on its own row')
     assert.equal(SKILLS_ROUTE, 'api/edh.skills')
@@ -6957,14 +6524,13 @@ function recordingNotification(permission, behaviour) {
     for (const key of ['skillsTitle', 'skillsIntro', 'skillsTabGlobal', 'skillsTabWorkspace', 'skillsLoading', 'skillsFailed', 'skillsUnavailable', 'skillsEmptyGlobal', 'skillsEmptyWorkspace', 'skillsScopeSession', 'skillsScopeRecent', 'skillsScopeDefault', 'skillsUserOnly', 'skillsCopyPath', 'skillsIncomplete', 'skillsNav']) {
       const value = t(key, { name: 'EDH' })
       assert.ok(value.length > 0, `${key} says something`)
-      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
+      assert.equal(/[\u00b7\u2192]/u.test(value), false, `${key} avoids the forbidden glyph`)
     }
   }
 }
 
 console.log('edh skills: tabs, scope, and row checks passed')
-console.log('edh search: box, magnifier, and menu-action checks passed')
-console.log('edh search: advanced page, filters, and paging checks passed')
+console.log('edh search: magnifier interception checks passed')
 console.log('edh search: palette, sections, and chat checks passed')
 console.log('edh notify: click-to-raise checks passed')
 console.log('edh notify: stored-sound fidelity checks passed')

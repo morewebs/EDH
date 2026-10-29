@@ -228,6 +228,7 @@ const {
   createNotifyPopup,
   createNotifier,
   installNotifier,
+  runNotifyTest,
   notifyPage,
   createNotifyPage,
   NOTIFY_TONES,
@@ -4570,7 +4571,8 @@ function fakeStore(initial = {}) {
   assert.equal(granted.available, true)
   assert.equal(granted.permission(), 'granted')
   assert.equal(granted.show('Turn finished', 'ready'), true)
-  assert.deepEqual(shown, [{ title: 'Turn finished', options: { body: 'ready' } }])
+  assert.deepEqual(shown, [{ title: 'Turn finished', options: { body: 'ready', silent: true } }], 'the popup is asked for silently')
+  assert.equal(shown[0].options.silent, true, 'silent: true, so the OS adds no second sound')
 
   const denied = createNotifyPopup({
     Notification: Object.assign(function FakeNotification() {
@@ -4910,6 +4912,204 @@ function fakeStore(initial = {}) {
   assert.deepEqual(probe, ['two-tone@25'], 'a change on the page is what the next finished turn plays')
 }
 
+/**
+ * A notifier over a counting audio stub: every call that could make a noise is
+ * counted, so "one notification is one sound" is an assertion and not a hope.
+ */
+function countingNotifier(options = {}) {
+  const counts = { tone: 0, system: 0 }
+  const audio = {
+    playTone: (tone, volume) => {
+      counts.tone++
+      return options.toneOk !== false
+    },
+    playSound: async () => {
+      counts.system++
+      return options.systemOk !== false
+    },
+    close() {},
+  }
+  const popup = options.popup ?? createNotifyPopup({})
+  const notifier = createNotifier({
+    audio,
+    popup,
+    settings: options.settings ?? notifyDefaults(),
+    log: () => {},
+  })
+  if (options.catalog !== undefined) notifier.setCatalog(options.catalog)
+  return {
+    notifier,
+    counts,
+    /** Every call that asks the platform for sound: a Web Audio tone or a WAV. */
+    plays: () => counts.tone + counts.system,
+  }
+}
+
+/** A Notification-shaped constructor that records how it was called. */
+function recordingNotification(permission, behaviour) {
+  const shown = []
+  const api = function FakeNotification(title, options) {
+    if (behaviour === 'throw') throw new Error('blocked by policy')
+    shown.push({ title, options })
+  }
+  api.permission = permission
+  api.requestPermission = async () => permission
+  api.shown = shown
+  return api
+}
+
+// 56 — one notification is one sound: every path that could make audio is counted.
+{
+  const windowsCatalog = notifyCatalog({
+    available: true,
+    sounds: [{ id: 'Windows Notify System Generic', label: 'System notification', bytes: 210_000 }],
+  })
+
+  // 1. A tone, with the popup permitted: our tone, and a silent popup.
+  {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    await harness.notifier.fire({ sessionId: 's1', title: 'Turn finished', body: 'ready' })
+    assert.equal(harness.plays(), 1, 'a tone chosen: exactly one play')
+    assert.equal(harness.counts.tone, 1)
+    assert.equal(harness.counts.system, 0)
+    assert.equal(api.shown.length, 1, 'the visual is still shown')
+    assert.equal(api.shown[0].options.silent, true, 'and the OS is asked for no sound')
+  }
+
+  // 2. A Windows sound, with the popup permitted: the WAV, and a silent popup.
+  {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({
+      popup: createNotifyPopup({ Notification: api }),
+      catalog: windowsCatalog,
+      settings: { ...notifyDefaults(), sound: 'Windows Notify System Generic' },
+    })
+    await harness.notifier.fire({ sessionId: 's2', title: 'Turn finished', body: 'ready' })
+    assert.equal(harness.plays(), 1, 'a Windows sound chosen: exactly one play')
+    assert.equal(harness.counts.system, 1)
+    assert.equal(harness.counts.tone, 0, 'the WAV path never adds a tone')
+    assert.equal(api.shown[0].options.silent, true)
+  }
+
+  // 3. Popup permission denied: the sound alone, and nothing constructed.
+  {
+    const api = recordingNotification('denied')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    await harness.notifier.fire({ sessionId: 's3', title: 'Turn finished', body: 'ready' })
+    assert.equal(harness.plays(), 1, 'denied permission: still exactly one play')
+    assert.equal(api.shown.length, 0, 'no popup attempted')
+  }
+
+  // 4. The popup constructor throws: the sound already played, and nothing retries.
+  {
+    const api = recordingNotification('granted', 'throw')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    await harness.notifier.fire({ sessionId: 's4', title: 'Turn finished', body: 'ready' })
+    assert.equal(harness.plays(), 1, 'a throwing popup: still exactly one play')
+  }
+
+  // 5. No Notification at all (the phone over plain HTTP): sound only, no error.
+  {
+    const harness = countingNotifier({ popup: createNotifyPopup({}) })
+    await harness.notifier.fire({ sessionId: 's5', title: 'Turn finished', body: 'ready' })
+    assert.equal(harness.plays(), 1, 'no popup API: still exactly one play')
+  }
+
+  // 6. A decode/play failure stays quiet — it never adds a fallback tone.
+  {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({
+      popup: createNotifyPopup({ Notification: api }),
+      catalog: windowsCatalog,
+      settings: { ...notifyDefaults(), sound: 'Windows Notify System Generic' },
+      systemOk: false,
+    })
+    const outcome = await harness.notifier.fire({ sessionId: 's6', title: '', body: '' })
+    assert.equal(harness.counts.system, 1, 'the one attempt was made')
+    assert.equal(harness.counts.tone, 0, 'and the failure added no second sound')
+    assert.equal(harness.plays(), 1)
+    assert.equal(outcome.played, false, 'the failure is reported, not hidden')
+  }
+
+  // 7. The page's Test: one sound, and a silent popup, through the same helper.
+  {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    const outcome = await runNotifyTest({
+      notifier: harness.notifier,
+      settings: notifyDefaults(),
+      catalog: windowsCatalog,
+      title: 'Turn finished',
+      body: 'ready',
+      requestPermission: async () => api.requestPermission(),
+    })
+    assert.equal(harness.plays(), 1, 'Test: exactly one play')
+    assert.equal(outcome.played, true)
+    assert.equal(outcome.popup, true)
+    assert.equal(api.shown.length, 1, 'Test shows one popup')
+    assert.equal(api.shown[0].options.silent, true, 'and asks it to be silent')
+
+    const denied = recordingNotification('denied')
+    const deniedHarness = countingNotifier({ popup: createNotifyPopup({ Notification: denied }) })
+    const deniedOutcome = await runNotifyTest({
+      notifier: deniedHarness.notifier,
+      settings: notifyDefaults(),
+      catalog: windowsCatalog,
+      requestPermission: async () => denied.requestPermission(),
+    })
+    assert.equal(deniedHarness.plays(), 1, 'Test with denied permission: exactly one play')
+    assert.equal(deniedOutcome.popup, false)
+    assert.equal(deniedOutcome.permission, 'denied')
+  }
+
+  // 8. Measured where the audio really is: one master gain per play, so a
+  //    two-voice tone is one sound rather than two.
+  {
+    const fake = fakeAudioContext()
+    const audio = createNotifyAudio({ AudioContext: class { constructor() { Object.assign(this, fake.context) } } })
+    const chime = NOTIFY_TONES.find(tone => tone.id === 'chime')
+    audio.playTone(chime, 60)
+    assert.equal(fake.counters.gain, chime.voices.length + 1, 'one master gain, plus an envelope per voice')
+    assert.equal(fake.counters.starts, chime.voices.length, 'both voices of the one tone started')
+  }
+
+  // 9. And the watcher fires the engine exactly once per transition.
+  {
+    const harness = countingNotifier({ popup: createNotifyPopup({}) })
+    const handlers = new Map()
+    const ctx = {
+      effect: fn => {
+        fn()
+        return () => {}
+      },
+      remote: {
+        $on(event, handler) {
+          handlers.set(event, handler)
+          return () => handlers.delete(event)
+        },
+      },
+    }
+    const controller = {
+      getSnapshot: () => ({ status: 'ready', moduleStates: { [NOTIFY_MODULE]: true } }),
+      subscribe: () => () => {},
+    }
+    installNotifier(ctx, controller, {
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({}),
+      storage: fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify(notifyDefaults()) }),
+      scope: {},
+      hidden: () => true,
+    })
+    const status = handlers.get('api-session/status')
+    status('s-turn', true)
+    status('s-turn', false)
+    status('s-turn', false)
+    assert.equal(harness.counts.tone, 1, 'one finished turn, one play, even when the finish repeats')
+  }
+}
+
+console.log('edh notify: single-sound and popup-silence checks passed')
 console.log('edh notify: settings, watcher, and sound checks passed')
 console.log('edh mobile: layer, stylesheet, and QR checks passed')
 console.log('edh mcp: page, form, and secret checks passed')

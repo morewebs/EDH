@@ -6423,13 +6423,18 @@ window.__ModuleLoader__.load({
         },
         /**
          * Show one popup, but only when it is already permitted.
+         *
+         * `silent: true` is the whole point: without it the operating system
+         * plays its own notification sound on top of the one this page already
+         * played, so one finished turn was heard as two. The popup is a visual;
+         * the sound is ours, because it is the one the reader chose.
          * @returns whether one was shown.
          */
         show(title, body) {
           if (api === undefined || popup.permission() !== 'granted') return false
           try {
             // eslint-disable-next-line no-new
-            new api(String(title ?? ''), { body: String(body ?? '') })
+            new api(String(title ?? ''), { body: String(body ?? ''), silent: true })
             return true
           } catch (error) {
             return false
@@ -6509,6 +6514,34 @@ window.__ModuleLoader__.load({
           audio.close()
         },
       }
+    }
+
+    /**
+     * The Test button's whole job: exactly one sound, and one popup when allowed.
+     *
+     * Kept out of the component so the suite can count what it does. The order
+     * matters: permission is requested only here, from a gesture; the sound is
+     * ours and always plays once; and the popup is constructed silent, so the
+     * operating system cannot add a second sound of its own.
+     * @param options - the notifier, settings, catalogue, copy, and a permission
+     *   requester.
+     * @returns what actually happened.
+     */
+    async function runNotifyTest(options = {}) {
+      const notifier = options.notifier
+      if (notifier === undefined || notifier === null) return { played: false, popup: false, permission: '' }
+      const settings = options.settings ?? notifyDefaults()
+      if (
+        notifier.popup.available
+        && notifier.popup.permission() === 'default'
+        && typeof options.requestPermission === 'function'
+      ) {
+        await options.requestPermission()
+      }
+      const wanted = notifySoundFor(settings, options.catalog)
+      const played = await notifier.preview(wanted.id)
+      const popped = notifier.popup.show(options.title ?? '', options.body ?? '')
+      return { played: played === true, popup: popped === true, permission: notifier.popup.permission() }
     }
 
     /**
@@ -6876,18 +6909,21 @@ window.__ModuleLoader__.load({
         const onTest = React.useCallback(async () => {
           setBusy('test')
           const live = channel()
-          // The one place permission is ever asked for: a real gesture.
-          if (live.popup.available && live.popup.permission() === 'default') {
-            const granted = await live.popup.request()
-            notifyWrite({ phase: 'saved', field: 'permission', permission: granted })
-          }
-          const wanted = notifySoundFor(settings, catalog)
-          const played = await live.preview(wanted.id)
-          const popped = live.popup.show(t('notifyPopupTitle'), t('notifyPopupBody'))
+          const outcome = await runNotifyTest({
+            notifier: live,
+            settings,
+            catalog,
+            title: t('notifyPopupTitle'),
+            body: t('notifyPopupBody'),
+            requestPermission: async () => {
+              const granted = await live.popup.request()
+              notifyWrite({ phase: 'saved', field: 'permission', permission: granted })
+            },
+          })
           setBusy('')
-          if (!played) setNotice({ text: t('notifyPlayFailed'), tone: 'bad' })
-          else if (popped) setNotice({ text: t('notifyTestDone'), tone: 'ok' })
-          else if (live.popup.available && live.popup.permission() === 'denied') {
+          if (!outcome.played) setNotice({ text: t('notifyPlayFailed'), tone: 'bad' })
+          else if (outcome.popup) setNotice({ text: t('notifyTestDone'), tone: 'ok' })
+          else if (live.popup.available && outcome.permission === 'denied') {
             setNotice({ text: t('notifyPopupDenied'), tone: 'bad' })
           } else setNotice({ text: t('notifyTestSoundOnly'), tone: 'ok' })
         }, [settings, catalog, t])
@@ -8138,6 +8174,7 @@ window.__ModuleLoader__.load({
       createNotifyPopup,
       createNotifier,
       installNotifier,
+      runNotifyTest,
       notifyPage,
       createNotifyPage,
       installNotifyStyles,

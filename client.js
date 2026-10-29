@@ -69,6 +69,8 @@ window.__ModuleLoader__.load({
       mcpIntro: 'Connect a server once and every session can use its tools.',
       mcpLoading: 'Reading servers…',
       mcpLoadFailed: 'The server list could not be read.',
+      mcpReload: 'Reload',
+      mcpReloading: 'Reloading…',
       mcpRetry: 'Retry',
       mcpOff: 'MCP is off. Turn it on with the EDH switch.',
       mcpEmpty: 'No MCP servers yet. Add one to give the model its tools.',
@@ -357,6 +359,8 @@ window.__ModuleLoader__.load({
       mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
       mcpLoading: '正在读取服务器…',
       mcpLoadFailed: '无法读取服务器列表。',
+      mcpReload: '重新载入',
+      mcpReloading: '正在重新载入…',
       mcpRetry: '重试',
       mcpOff: 'MCP 已关闭，请用 EDH 开关打开。',
       mcpEmpty: '还没有 MCP 服务器。添加一个，把它的工具交给模型。',
@@ -2451,6 +2455,73 @@ window.__ModuleLoader__.load({
      * @param target - the page's subject, as `updateSubject` reads it.
      * @param reload - the shared reload face, when the page has one.
      */
+    /**
+     * The Reload control's label: quiet text, never an icon alone.
+     */
+    function mcpReloadLabel(reloading, t) {
+      return reloading === true ? t('mcpReloading') : t('mcpReload')
+    }
+
+    /**
+     * When Reload is unavailable: while it is already running, and while a row
+     * action is in flight — two requests must never race each other.
+     * @param reloading - this control's own request.
+     * @param busy - the page's per-row in-flight map.
+     */
+    function mcpReloadDisabled(reloading, busy) {
+      if (reloading === true) return true
+      return busy !== null && typeof busy === 'object' && Object.keys(busy).length > 0
+    }
+
+    /**
+     * Fold a reload outcome into the page: a good read is adopted whole, and a
+     * failure keeps the list that is already on screen.
+     */
+    function adoptMcpReload(current, outcome) {
+      const state = current !== null && typeof current === 'object'
+        ? current
+        : { status: 'loading', servers: [], failure: '' }
+      if (outcome !== null && typeof outcome === 'object' && outcome.ok === true && outcome.read !== undefined) {
+        return { status: 'ready', servers: outcome.read.servers, failure: '', reloadFailure: '' }
+      }
+      return { ...state, reloadFailure: String(outcome?.failure ?? '') }
+    }
+
+    /**
+     * One reload: exactly one GET, adopting the Host's own view.
+     *
+     * It never restarts, adds, removes or tests anything — a server the Host
+     * reports as failed is simply shown as failed, which is the honest answer a
+     * "re-read the list" button can give.
+     * @param options - the request, the breadcrumb writer, and the state setter.
+     */
+    async function runMcpReload(options = {}) {
+      const write = typeof options.write === 'function' ? options.write : () => {}
+      const apply = typeof options.apply === 'function' ? options.apply : () => {}
+      let answer
+      try {
+        answer = await options.request('GET')
+      } catch (error) {
+        const reason = messageOf(error)
+        write({ phase: 'failed', action: 'reload', reason })
+        const outcome = { ok: false, failure: reason }
+        apply(outcome)
+        return outcome
+      }
+      const read = readMcpView(answer)
+      if (!read.ok) {
+        const reason = String(answer?.reason ?? 'error')
+        write({ phase: 'failed', action: 'reload', reason })
+        const outcome = { ok: false, failure: read.failure }
+        apply(outcome)
+        return outcome
+      }
+      write({ phase: 'reloaded', servers: read.servers.length })
+      const outcome = { ok: true, read }
+      apply(outcome)
+      return { ok: true, servers: read.servers.length }
+    }
+
     function reloadVisible(target, reload) {
       return target !== undefined && typeof reload === 'function'
     }
@@ -2587,6 +2658,7 @@ window.__ModuleLoader__.load({
         const errorId = React.useId()
         const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
         const [busy, setBusy] = React.useState({})
+        const [reloading, setReloading] = React.useState(false)
         const firstField = React.useRef(null)
 
         // Read once on mount and once per retry: the page never polls, because
@@ -2619,6 +2691,22 @@ window.__ModuleLoader__.load({
             current = false
           }
         }, [enabled, attempt])
+
+        // Reload re-reads the list and its state from the Host; it changes nothing
+        // the Host has not already reported.
+        const reload = React.useCallback(async () => {
+          if (reloading) return
+          setReloading(true)
+          try {
+            await runMcpReload({
+              request: requestMcp,
+              write: mcpWrite,
+              apply: outcome => setView(previous => adoptMcpReload(previous, outcome)),
+            })
+          } finally {
+            setReloading(false)
+          }
+        }, [reloading])
 
         const closePanel = React.useCallback(() => {
           setPanel(false)
@@ -2932,13 +3020,39 @@ window.__ModuleLoader__.load({
           // The page frame, in every state including a failed read: the heading
           // and its one line are what the nav cell promised, and they are the
           // only part of the page that cannot depend on the route.
-          h('h2', { className: 'edh-mcp-title' }, t('mcpTitle')),
+          h('div', { className: 'edh-mcp-pagehead' },
+            h('h2', { className: 'edh-mcp-title' }, t('mcpTitle')),
+            // Reload re-reads the server list and its state from the Host. It is
+            // available in every page state, including a failed row: reading is
+            // exactly how you find out whether a failure is still true.
+            h('button', {
+              type: 'button',
+              className: 'edh-mcp-reload',
+              'data-busy': reloading === true,
+              disabled: mcpReloadDisabled(reloading, busy),
+              onClick: () => {
+                void reload()
+              },
+            }, mcpReloadLabel(reloading, t)),
+          ),
           h('p', { className: 'edh-mcp-intro' }, t('mcpIntro')),
           notice.text === '' ? null : h('p', {
             className: 'edh-mcp-notice',
             'data-tone': notice.tone,
             role: notice.tone === 'bad' ? 'alert' : 'status',
           }, notice.text),
+          view.status !== 'error' && (view.reloadFailure ?? '') !== ''
+            ? h('div', { className: 'edh-mcp-error', role: 'alert' },
+              h('p', { className: 'edh-mcp-status' }, view.reloadFailure),
+              h('button', {
+                type: 'button',
+                className: 'edh-mcp-button',
+                onClick: () => {
+                  void reload()
+                },
+              }, t('mcpRetry')),
+            )
+            : null,
           view.status === 'loading'
             ? h('p', { className: 'edh-mcp-status', role: 'status' }, t('mcpLoading'))
             : null,
@@ -2983,7 +3097,12 @@ window.__ModuleLoader__.load({
       '.edh-mcp{color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;max-width:760px;display:flex}',
       // The page frame both shipped sections that draw one use: a title and one
       // introduction line over the content column.
+      '.edh-mcp-pagehead{align-items:center;justify-content:space-between;gap:12px;display:flex}',
       '.edh-mcp-title{margin:0;font-size:16px;font-weight:500;line-height:24px}',
+      '.edh-mcp-reload{border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none;padding:0 10px;font-size:13px;line-height:22px}',
+      '.edh-mcp-reload:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.edh-mcp-reload:disabled{color:var(--dsw-alias-label-dimmed);background:transparent;cursor:default}',
+      '.edh-mcp-reload:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
       '.edh-mcp-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}',
       '.edh-mcp-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
       '.edh-mcp-error,.edh-mcp-empty{flex-direction:column;align-items:flex-start;gap:10px;display:flex}',
@@ -10642,6 +10761,10 @@ window.__ModuleLoader__.load({
       serverActionBody,
       withoutKey,
       reloadVisible,
+      mcpReloadLabel,
+      mcpReloadDisabled,
+      adoptMcpReload,
+      runMcpReload,
       hostStaleness,
       reloadOutcome,
       reloadText,

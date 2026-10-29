@@ -70,6 +70,10 @@ const {
   serverActionBody,
   withoutKey,
   reloadVisible,
+  mcpReloadLabel,
+  mcpReloadDisabled,
+  adoptMcpReload,
+  runMcpReload,
   hostStaleness,
   reloadOutcome,
   reloadText,
@@ -1273,12 +1277,13 @@ function fakeRemote(options = {}) {
   assert.equal(actions[1].options.label(), 'reload', 'one word, read from the dictionary')
   assert.equal(actions[1].options.locale, 'edh', 'and it speaks the plugin dictionary too')
 
-  // The MCP page owns no interface control any more: the button, its toolbar,
-  // and its note live on the update surface, and none of their styling is left
-  // behind in the page's stylesheet.
-  for (const gone of ['edh-mcp-toolbar', 'edh-mcp-reload', 'reloadAvailable']) {
+  // The old toolbar-era control stayed gone: the MCP page's Reload is a page
+  // control of its own (re-reading the server list), not the update surface's
+  // half-reload, so the abandoned names must not come back with it.
+  for (const gone of ['edh-mcp-toolbar', 'reloadAvailable']) {
     assert.equal(source.includes(gone), false, `${gone} is gone from the client`)
   }
+  assert.equal(source.includes('.edh-mcp-reload{'), true, 'the page owns a Reload button of its own')
 
   // The row is the switch: off withdraws the entry, on puts it back, and the nav
   // redraws either way because the slot ledger changed.
@@ -6889,6 +6894,118 @@ console.log('edh notify: title, body, and click checks passed')
 console.log('edh notify: single-sound and popup-silence checks passed')
 console.log('edh notify: settings, watcher, and sound checks passed')
 console.log('edh mobile: layer, stylesheet, and QR checks passed')
+// 67 — the MCP page's Reload: one GET, adopt the view, keep the list on failure.
+{
+  const t = dictionaryOf('en')
+
+  // --- the control's own facts ------------------------------------------
+  assert.equal(mcpReloadLabel(false, t), 'Reload')
+  assert.equal(mcpReloadLabel(true, t), 'Reloading…', 'one word while in flight, never a spinner')
+  assert.equal(mcpReloadDisabled(false, {}), false, 'idle: available')
+  assert.equal(mcpReloadDisabled(true, {}), true, 'while its own request runs')
+  assert.equal(mcpReloadDisabled(false, { srv1: 'test' }), true, 'while a row action is in flight')
+  assert.equal(mcpReloadDisabled(true, { srv1: 'test' }), true)
+  assert.equal(mcpReloadDisabled(false, undefined), false, 'a missing busy map is not a reason to block')
+
+  // The abandoned toolbar-era control stays gone; the page's own button exists.
+  const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+  for (const gone of ['edh-mcp-toolbar', 'reloadAvailable']) {
+    assert.equal(source.includes(gone), false, `${gone} stays gone`)
+  }
+  assert.ok(source.includes('.edh-mcp-reload{'), 'the page head owns a Reload button')
+  assert.ok(source.includes("h('div', { className: 'edh-mcp-pagehead' }"), 'right-aligned beside the heading')
+
+  // --- one GET, and the returned view is adopted ------------------------
+  {
+    const calls = []
+    const applied = []
+    const written = []
+    const request = async method => {
+      calls.push(method)
+      return {
+        ok: true,
+        servers: [
+          { id: 'alpha', status: 'connected', toolCount: 7, enabled: true },
+          { id: 'beta', status: 'error', toolCount: 0, enabled: true, lastError: 'connect ECONNREFUSED' },
+        ],
+      }
+    }
+    const outcome = await runMcpReload({ request, write: payload => written.push(payload), apply: next => applied.push(next) })
+    assert.deepEqual(calls, ['GET'], 'exactly one GET')
+    assert.equal(outcome.ok, true)
+    assert.equal(outcome.servers, 2)
+    assert.deepEqual(written.at(-1), { phase: 'reloaded', servers: 2 }, 'the reloaded breadcrumb carries the count')
+    assert.equal(applied.length, 1, 'the page is set once')
+
+    // Adoption replaces the whole list and its state, not a hand-merge.
+    const before = {
+      status: 'ready',
+      servers: [{ id: 'alpha', status: 'connected', toolCount: 2 }],
+      failure: '',
+    }
+    const after = adoptMcpReload(before, applied[0])
+    assert.deepEqual(after.servers.map(server => [server.id, server.status, server.toolCount]), [
+      ['alpha', 'connected', 7],
+      ['beta', 'error', 0],
+    ], 'a changed tool count and a newly failed server both appear')
+    assert.equal(after.servers[1].failure, 'connect ECONNREFUSED', "the Host's own failure sentence is adopted verbatim")
+    assert.equal(after.status, 'ready')
+    assert.equal(after.reloadFailure, '')
+    assert.notEqual(after.servers, before.servers, 'a fresh array: nothing is mutated in place')
+  }
+
+  // --- a bad read keeps the previous list ------------------------------
+  {
+    const previous = {
+      status: 'ready',
+      servers: [{ id: 'alpha', status: 'connected', toolCount: 3 }],
+      failure: '',
+    }
+    const written = []
+    let applied
+    const refused = await runMcpReload({
+      request: async () => ({ ok: false, reason: 'error', message: 'the Host refused' }),
+      write: payload => written.push(payload),
+      apply: next => {
+        applied = next
+      },
+    })
+    assert.equal(refused.ok, false)
+    assert.deepEqual(written.at(-1), { phase: 'failed', action: 'reload', reason: 'error' }, 'the failure is breadcrumbed as a reload')
+    const kept = adoptMcpReload(previous, applied)
+    assert.deepEqual(kept.servers, previous.servers, 'the list survives')
+    assert.equal(kept.status, 'ready')
+    assert.equal(kept.reloadFailure, applied.failure, 'and the Host sentence is shown beside it')
+
+    // A rejected request is the same shape.
+    const thrown = await runMcpReload({
+      request: async () => {
+        throw new Error('network down')
+      },
+      write: payload => written.push(payload),
+      apply: next => {
+        applied = next
+      },
+    })
+    assert.equal(thrown.ok, false)
+    assert.deepEqual(written.at(-1), { phase: 'failed', action: 'reload', reason: 'network down' })
+    assert.deepEqual(adoptMcpReload(previous, applied).servers, previous.servers, 'a rejection keeps it too')
+  }
+
+  // --- the failure path never claims a change it did not make ----------
+  {
+    const written = []
+    await runMcpReload({
+      request: async () => ({ ok: true, servers: [{ id: 'alpha', status: 'error', toolCount: 0 }] }),
+      write: payload => written.push(payload),
+      apply: () => undefined,
+    })
+    assert.deepEqual(written, [{ phase: 'reloaded', servers: 1 }], 'a server that is still failed is just reported as read')
+    assert.equal(written.some(payload => payload.phase === 'restarted'), false, 'Reload restarts nothing')
+  }
+}
+
+console.log('edh mcp: page reload control checks passed')
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')
 console.log('edh mcp: settings section checks passed')

@@ -1,6 +1,6 @@
 {
   "name": "@moreweb/edh",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "Everything DeepSeek Harness",
   "type": "module",
@@ -17,6 +17,7 @@
     "./usage": "./usage.js",
     "./mobile": "./mobile.js",
     "./notify": "./notify.js",
+    "./search": "./search.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
@@ -33,6 +34,7 @@
     "usage.js",
     "mobile.js",
     "notify.js",
+    "search.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

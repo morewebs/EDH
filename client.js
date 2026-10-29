@@ -154,7 +154,29 @@ window.__ModuleLoader__.load({
       remoteSessions: 'Phones signed in: {count}',
       remoteSessionOne: '1 phone signed in',
       remoteNoSessions: 'No phone signed in',
-      notifyNav: 'Notifications',
+      searchOpen: 'Search',
+      searchPlaceholder: 'Search sessions and messages, or ask the agent',
+      searchEsc: 'Esc',
+      searchChatSection: 'Chat',
+      searchChatStart: 'Start a chat',
+      searchChatAsk: 'Ask about "{query}"',
+      searchSessionsSection: 'Sessions',
+      searchMessagesSection: 'Messages',
+      searchActionsSection: 'Actions',
+      searchSearching: 'Searching…',
+      searchNoMessages: 'No messages match',
+      searchNoSessions: 'No session titles match',
+      searchRetry: 'Search again',
+      searchIndexing: 'Indexing {ready} of {total} sessions',
+      searchTruncated: 'refine to see more',
+      searchHintMove: '↑↓ to move',
+      searchHintOpen: 'Enter to open',
+      searchHintClose: 'Esc to close',
+      searchActionSettings: 'Open Settings',
+      searchActionSidebar: 'Toggle the sidebar',
+      searchActionConversation: 'Show the conversation',
+      searchNoChat: 'The workspace is not ready yet.',
+      searchNone: 'Nothing here.',      notifyNav: 'Notifications',
       notifyTitle: 'Notifications',
       notifyIntro: 'A sound when a turn finishes while you are looking somewhere else.',
       notifyOff: 'Notifications are off. Turn them on with the EDH switch.',
@@ -384,7 +406,29 @@ window.__ModuleLoader__.load({
       remoteSessions: '已登录手机：{count} 台',
       remoteSessionOne: '已登录 1 台手机',
       remoteNoSessions: '没有手机登录',
-      notifyNav: '通知',
+      searchOpen: '搜索',
+      searchPlaceholder: '搜索会话与消息，或直接问 agent',
+      searchEsc: 'Esc',
+      searchChatSection: '对话',
+      searchChatStart: '开始对话',
+      searchChatAsk: '询问「{query}」',
+      searchSessionsSection: '会话',
+      searchMessagesSection: '消息',
+      searchActionsSection: '操作',
+      searchSearching: '正在搜索…',
+      searchNoMessages: '没有匹配的消息',
+      searchNoSessions: '没有匹配的会话标题',
+      searchRetry: '重新搜索',
+      searchIndexing: '正在索引第 {ready} / {total} 个会话',
+      searchTruncated: '缩小范围查看更多',
+      searchHintMove: '↑↓ 移动',
+      searchHintOpen: 'Enter 打开',
+      searchHintClose: 'Esc 关闭',
+      searchActionSettings: '打开设置',
+      searchActionSidebar: '显示或隐藏侧边栏',
+      searchActionConversation: '回到对话',
+      searchNoChat: '工作区尚未就绪。',
+      searchNone: '这里什么都没有。',      notifyNav: '通知',
       notifyTitle: '通知',
       notifyIntro: '当你看别处时，一轮对话结束后播放提示音。',
       notifyOff: '通知已关闭，请用 EDH 开关打开。',
@@ -7449,6 +7493,914 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // -------------------------------------------------------------- search
+    const SEARCH_MODULE = '@moreweb/edh/search'
+    const SEARCH_OVERLAY_SLOT = 'shell.overlay'
+    const SEARCH_BUTTON_SLOT = 'sidebar.footer.action'
+    const SEARCH_ROUTE = 'api/edh.search'
+    const SEARCH_DEBUG_KEY = 'edh:search'
+    const SEARCH_ID = 'edh-search-palette'
+    const SEARCH_BUTTON_ID = 'edh-search'
+    const SEARCH_DEBOUNCE_MS = 200
+    const SEARCH_LIMIT = 50
+    const SEARCH_SESSIONS_SHOWN = 4
+    const SEARCH_MESSAGES_SHOWN = 6
+    const SEARCH_ASK_MAX = 60
+
+    /** Separate breadcrumb for the palette. */
+    function searchWrite(payload) {
+      writeBreadcrumb(SEARCH_DEBUG_KEY, payload)
+    }
+
+    /** Where a case-insensitive match starts, or -1. */
+    function searchMatchAt(text, needle) {
+      const haystack = String(text ?? '')
+      const query = String(needle ?? '').trim()
+      if (query === '' || haystack === '') return -1
+      return haystack.toLowerCase().indexOf(query.toLowerCase())
+    }
+
+    /**
+     * Split one line into structural segments, so emphasis is weight and never
+     * colour: `[{ text, hit }]`, with the first match marked.
+     */
+    function searchSegments(text, needle) {
+      const line = String(text ?? '').replace(/\s+/gu, ' ').trim()
+      const at = searchMatchAt(line, needle)
+      const query = String(needle ?? '').trim()
+      if (at < 0 || query === '') return line === '' ? [] : [{ text: line, hit: false }]
+      const before = line.slice(0, at)
+      const hit = line.slice(at, at + query.length)
+      const after = line.slice(at + query.length)
+      const segments = []
+      if (before !== '') segments.push({ text: before, hit: false })
+      segments.push({ text: hit, hit: true })
+      if (after !== '') segments.push({ text: after, hit: false })
+      return segments
+    }
+
+    /** One quiet right-hand time: how long ago, in the shortest honest form. */
+    function searchRelativeTime(time, now) {
+      const at = Number(time)
+      const base = Number.isFinite(Number(now)) ? Number(now) : Date.now()
+      if (!Number.isFinite(at) || at <= 0) return ''
+      const seconds = Math.max(0, Math.round((base - at) / 1000))
+      if (seconds < 60) return 'now'
+      const minutes = Math.round(seconds / 60)
+      if (minutes < 60) return `${minutes}m`
+      const hours = Math.round(minutes / 60)
+      if (hours < 24) return `${hours}h`
+      const days = Math.round(hours / 24)
+      if (days < 7) return `${days}d`
+      return `${Math.round(days / 7)}w`
+    }
+
+    /**
+     * Session matches from the list projection: cheap, client-side, no request.
+     * @param byId - the session list snapshot's rows, keyed by session id.
+     * @param query - what the reader typed.
+     * @param limit - how many to keep.
+     */
+    function searchSessionRows(byId, query, limit = SEARCH_SESSIONS_SHOWN) {
+      const rows = byId !== null && typeof byId === 'object' ? Object.values(byId) : []
+      const matched = []
+      for (const row of rows) {
+        if (row === null || typeof row !== 'object') continue
+        const id = typeof row.sessionId === 'string' ? row.sessionId : typeof row.id === 'string' ? row.id : ''
+        const title = typeof row.title === 'string' ? row.title.trim() : ''
+        if (id === '' || title === '' || searchMatchAt(title, query) < 0) continue
+        matched.push({ id, title, updatedAt: Number(row.updatedAt) || 0 })
+      }
+      matched.sort((left, right) => right.updatedAt - left.updatedAt)
+      return matched.slice(0, limit)
+    }
+
+    /** The message rows from one Host answer, clipped and ready to render. */
+    function searchMessageRows(answer, query) {
+      const messages = answer !== null && typeof answer === 'object' && Array.isArray(answer.messages)
+        ? answer.messages
+        : []
+      const rows = []
+      for (const entry of messages) {
+        if (entry === null || typeof entry !== 'object') continue
+        const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : ''
+        if (sessionId === '') continue
+        const snippet = typeof entry.snippet === 'string' ? entry.snippet : ''
+        const matched = typeof entry.matched === 'string' && entry.matched !== '' ? entry.matched : query
+        rows.push({
+          kind: 'message',
+          key: `message:${sessionId}:${String(entry.seq ?? rows.length)}`,
+          sessionId,
+          seq: Number(entry.seq) || 0,
+          title: notifyClampText(entry.sessionTitle, 40),
+          role: typeof entry.role === 'string' ? entry.role : '',
+          time: Number(entry.time) || 0,
+          segments: searchSegments(notifyClampText(snippet, 120), matched),
+          hit: matched,
+        })
+        if (rows.length >= SEARCH_MESSAGES_SHOWN) break
+      }
+      return rows
+    }
+
+    /** The quiet line under the Messages section when the index is still building. */
+    function searchIndexedNote(indexed, t) {
+      if (indexed === null || typeof indexed !== 'object') return ''
+      const ready = Number(indexed.ready)
+      const total = Number(indexed.total)
+      if (!Number.isFinite(ready) || !Number.isFinite(total) || total <= 0) return ''
+      if (ready >= total) return ''
+      return t('searchIndexing', { ready, total })
+    }
+
+    /**
+     * Every row the palette shows, as sections for the eye and one flat list for
+     * the arrow keys. Pure: the component only renders and dispatches.
+     * @param context - query, session rows, message state, and the dictionary.
+     */
+    function searchRowsFor(context = {}) {
+      const t = typeof context.t === 'function' ? context.t : key => key
+      const query = String(context.query ?? '').trim()
+      const messages = context.messages ?? {}
+      const now = Number(context.now) || Date.now()
+      const sections = []
+      const rows = []
+      const push = (section, row) => {
+        section.rows.push(row)
+        rows.push(row)
+      }
+
+      // Chat first: the agentic half of the palette, and what was asked for.
+      const chat = { id: 'chat', label: t('searchChatSection'), rows: [], note: '' }
+      push(chat, query === ''
+        ? {
+          kind: 'chat',
+          key: 'chat:start',
+          label: t('searchChatStart'),
+          meta: '',
+          payload: { query: '' },
+        }
+        : {
+          kind: 'chat',
+          key: 'chat:ask',
+          label: t('searchChatAsk', { query: notifyClampText(query, SEARCH_ASK_MAX) }),
+          meta: '',
+          payload: { query },
+        })
+      sections.push(chat)
+
+      // Sessions: title matches, straight off the list projection.
+      if (query !== '') {
+        const sessions = { id: 'sessions', label: t('searchSessionsSection'), rows: [], note: '' }
+        const matched = Array.isArray(context.sessions) ? context.sessions : []
+        for (const entry of matched) {
+          push(sessions, {
+            kind: 'session',
+            key: `session:${entry.id}`,
+            label: entry.title,
+            segments: searchSegments(entry.title, query),
+            meta: searchRelativeTime(entry.updatedAt, now),
+            payload: { sessionId: entry.id },
+          })
+        }
+        if (matched.length === 0) sessions.note = t('searchNoSessions')
+        sections.push(sessions)
+      }
+
+      // Messages: the Host's full-text answers, debounced and cancellable.
+      if (query !== '') {
+        const found = { id: 'messages', label: t('searchMessagesSection'), rows: [], note: '' }
+        const status = typeof messages.status === 'string' ? messages.status : 'idle'
+        if (status === 'loading') {
+          found.note = t('searchSearching')
+        } else if (status === 'error') {
+          push(found, {
+            kind: 'retry',
+            key: 'messages:retry',
+            label: t('searchRetry'),
+            meta: '',
+            payload: { query },
+          })
+        } else if (status === 'ready') {
+          for (const row of Array.isArray(messages.rows) ? messages.rows : []) push(found, row)
+          if (found.rows.length === 0) found.note = t('searchNoMessages')
+        }
+        const note = searchIndexedNote(messages.indexed, t)
+        if (note !== '') found.note = found.note === '' ? note : `${found.note} ${note}`
+        sections.push(found)
+      }
+
+      // Actions: real destinations this panel can actually reach.
+      const actions = { id: 'actions', label: t('searchActionsSection'), rows: [], note: '' }
+      for (const action of searchActionRows(t)) push(actions, action)
+      sections.push(actions)
+
+      return { sections, rows }
+    }
+
+    /** The quiet action destinations, in a deliberate order. */
+    function searchActionRows(t) {
+      return [
+        { kind: 'action', key: 'action:settings', label: t('searchActionSettings'), meta: '', payload: { action: 'settings' } },
+        { kind: 'action', key: 'action:sidebar', label: t('searchActionSidebar'), meta: '', payload: { action: 'sidebar' } },
+        { kind: 'action', key: 'action:conversation', label: t('searchActionConversation'), meta: '', payload: { action: 'conversation' } },
+      ]
+    }
+
+    /**
+     * Does this key event ask for the palette?
+     *
+     * Ctrl+K or Cmd+K, with no Alt, and only when nothing else consumed it. Pure
+     * on purpose: the listener lives in `apply`, but the decision does not.
+     * @param event - a keydown-shaped object.
+     * @returns whether to open or toggle.
+     */
+    function searchShortcutIntent(event) {
+      if (event === null || typeof event !== 'object') return false
+      if (String(event.key ?? '').toLowerCase() !== 'k') return false
+      if (event.ctrlKey !== true && event.metaKey !== true) return false
+      if (event.altKey === true) return false
+      if (event.defaultPrevented === true) return false
+      return true
+    }
+
+    /** The state the palette starts in, on every open: never a stale query. */
+    function searchInitialState(open) {
+      return {
+        open: open === true,
+        query: '',
+        active: 0,
+        messages: { status: 'idle', rows: [], indexed: null, truncated: false },
+        busy: '',
+      }
+    }
+    /** Arrow movement over one flat list, wrapping at both ends. */
+    function searchMoveIndex(index, count, delta) {
+      if (!Number.isFinite(count) || count <= 0) return 0
+      const from = Number.isFinite(index) ? index : 0
+      const next = (from + delta) % count
+      return next < 0 ? next + count : next
+    }
+
+    /**
+     * The debounced, cancellable, stale-proof message search.
+     *
+     * Three facts it owns: a query is asked once after the reader stops typing, a
+     * newer query aborts the older request, and an answer whose generation is no
+     * longer current is discarded — so a slow reply for "abc" can never overwrite
+     * the results for "abcd".
+     * @param options - fetch, the debounce, the limit, and a state listener.
+     */
+    function createSearchRunner(options = {}) {
+      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+      const debounceMs = Number.isFinite(Number(options.debounceMs)) ? Number(options.debounceMs) : SEARCH_DEBOUNCE_MS
+      const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : SEARCH_LIMIT
+      const onChange = typeof options.onChange === 'function' ? options.onChange : () => {}
+      const log = typeof options.log === 'function' ? options.log : () => {}
+      let generation = 0
+      let timer
+      let controller
+
+      const settle = (mine, state) => {
+        if (mine !== generation) return
+        onChange(state)
+      }
+
+      const cancel = () => {
+        generation++
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        if (controller !== undefined) {
+          try {
+            controller.abort()
+          } catch (error) {
+            // An already-finished request has nothing to abort.
+          }
+          controller = undefined
+        }
+      }
+
+      const run = async (query, mine) => {
+        if (typeof request !== 'function') {
+          settle(mine, { status: 'error', query, rows: [], indexed: null, truncated: false, reason: 'no-fetch' })
+          return
+        }
+        const signal = typeof AbortController === 'function' ? new AbortController() : undefined
+        controller = signal
+        try {
+          const url = `${SEARCH_ROUTE}?${new URLSearchParams({ q: query, limit: String(limit) }).toString()}`
+          const response = await request(url, signal === undefined ? {} : { signal: signal.signal })
+          if (response === null || typeof response !== 'object' || response.ok !== true) {
+            log({ phase: 'failed', action: 'search', reason: String(response?.status ?? 'no-response') })
+            settle(mine, { status: 'error', query, rows: [], indexed: null, truncated: false, reason: 'http' })
+            return
+          }
+          const answer = await response.json()
+          if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+            log({ phase: 'failed', action: 'search', reason: String(answer?.reason ?? 'refused') })
+            settle(mine, { status: 'error', query, rows: [], indexed: null, truncated: false, reason: String(answer?.reason ?? 'refused') })
+            return
+          }
+          const rows = searchMessageRows(answer, query)
+          settle(mine, {
+            status: 'ready',
+            query,
+            rows,
+            indexed: answer.indexed ?? null,
+            truncated: answer.truncated === true,
+          })
+          log({ phase: 'results', sessions: 0, messages: rows.length })
+        } catch (error) {
+          if (mine !== generation) return
+          log({ phase: 'failed', action: 'search', reason: messageOf(error) })
+          settle(mine, { status: 'error', query, rows: [], indexed: null, truncated: false, reason: messageOf(error) })
+        } finally {
+          if (controller === signal) controller = undefined
+        }
+      }
+
+      return {
+        /** Ask for one query; empty text resets to idle without a request. */
+        ask(text) {
+          cancel()
+          const mine = generation
+          const query = String(text ?? '').trim()
+          if (query === '') {
+            settle(mine, { status: 'idle', query: '', rows: [], indexed: null, truncated: false })
+            log({ phase: 'query', length: 0 })
+            return
+          }
+          log({ phase: 'query', length: query.length })
+          settle(mine, { status: 'loading', query, rows: [], indexed: null, truncated: false })
+          timer = setTimeout(() => {
+            timer = undefined
+            void run(query, mine)
+          }, debounceMs)
+        },
+        cancel,
+        /** Where the current generation stands, for a diagnostic. */
+        generation: () => generation,
+      }
+    }
+
+    /**
+     * The tiny open/close channel the button, the shortcut and the palette share.
+     *
+     * The two slot entries are separate components, so a closed-over bus keeps
+     * them from needing a store; `open` is idempotent, which is what makes a
+     * second Ctrl+K harmless.
+     */
+    function createPaletteBus() {
+      const listeners = new Set()
+      let open = false
+      let via = ''
+      const publish = () => {
+        for (const listener of [...listeners]) {
+          try {
+            listener(open, via)
+          } catch (error) {
+            // A listener that throws must not break the others.
+          }
+        }
+      }
+      return {
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        open(source) {
+          via = String(source ?? '')
+          if (open) return
+          open = true
+          publish()
+        },
+        close() {
+          if (!open) return
+          open = false
+          publish()
+        },
+        toggle(source) {
+          if (open) this.close()
+          else this.open(source)
+        },
+        isOpen: () => open,
+        via: () => via,
+      }
+    }
+
+    /** The one glyph: a magnifier, at the section scale the harness uses. */
+    function searchGlyph() {
+      return h('svg', {
+        width: 16,
+        height: 16,
+        viewBox: '0 0 16 16',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.4,
+        strokeLinecap: 'round',
+        'aria-hidden': 'true',
+      }, [
+        h('circle', { key: 'lens', cx: 7, cy: 7, r: 4.2 }),
+        h('path', { key: 'handle', d: 'M10.2 10.2 13.4 13.4' }),
+      ])
+    }
+
+    /**
+     * The palette, as a pure tree.
+     *
+     * Pure on purpose: the component holds the state, this decides what the
+     * reader sees, so the suite can assert the layout, the sections, the notes
+     * and the key hints without a browser.
+     * @param view - state, rows, and the handlers.
+     */
+    function searchPaletteView(view = {}) {
+      const t = typeof view.t === 'function' ? view.t : key => key
+      const state = view.state ?? {}
+      const sections = Array.isArray(view.sections) ? view.sections : []
+      const rows = Array.isArray(view.rows) ? view.rows : []
+      const active = Number(view.active) || 0
+      const handlers = view.handlers ?? {}
+      const indexOf = key => rows.findIndex(row => row.key === key)
+
+      const rowNode = row => h('button', {
+        key: row.key,
+        type: 'button',
+        className: `edh-palette-row${indexOf(row.key) === active ? ' edh-palette-row-active' : ''}`,
+        'data-kind': row.kind,
+        role: 'option',
+        'aria-selected': indexOf(row.key) === active,
+        onMouseEnter: typeof handlers.onHover === 'function' ? () => handlers.onHover(indexOf(row.key)) : undefined,
+        onClick: typeof handlers.onActivate === 'function' ? () => handlers.onActivate(row) : undefined,
+      }, [
+        h('span', { key: 'label', className: 'edh-palette-row-label' }, (row.segments ?? []).length > 0
+          ? row.segments.map((segment, at) => (segment.hit
+            ? h('strong', { key: at, className: 'edh-palette-hit' }, segment.text)
+            : h('span', { key: at }, segment.text)))
+          : row.label),
+        row.meta === '' || row.meta === undefined
+          ? null
+          : h('span', { key: 'meta', className: 'edh-palette-row-meta' }, row.meta),
+      ])
+
+      const sectionNode = section => h('section', { key: section.id, className: 'edh-palette-section' }, [
+        h('div', { key: 'head', className: 'edh-palette-section-head' }, [
+          h('span', { key: 'label', className: 'edh-palette-section-label' }, section.label),
+          section.id === 'messages' && state.truncated === true
+            ? h('span', { key: 'trunc', className: 'edh-palette-section-note' }, t('searchTruncated'))
+            : null,
+        ]),
+        ...section.rows.map(rowNode),
+        section.note === '' || section.note === undefined
+          ? null
+          : h('p', { key: 'note', className: 'edh-palette-note' }, section.note),
+      ])
+
+      return h('div', {
+        className: 'edh-palette-layer',
+        onClick: event => {
+          if (event.target === event.currentTarget && typeof handlers.onClose === 'function') handlers.onClose()
+        },
+      }, [
+        h('div', {
+          key: 'panel',
+          className: 'edh-palette',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': t('searchOpen'),
+        }, [
+          h('div', { key: 'search', className: 'edh-palette-search' }, [
+            h('span', { key: 'glyph', className: 'edh-palette-glyph' }, searchGlyph()),
+            h('input', {
+              key: 'input',
+              ref: view.inputRef,
+              className: 'edh-palette-input',
+              type: 'text',
+              value: state.query ?? '',
+              placeholder: t('searchPlaceholder'),
+              'aria-label': t('searchPlaceholder'),
+              autoComplete: 'off',
+              spellCheck: false,
+              onInput: event => {
+                if (typeof handlers.onChange === 'function') handlers.onChange(event.target.value)
+              },
+              onKeyDown: event => {
+                if (typeof handlers.onKeyDown === 'function') handlers.onKeyDown(event)
+              },
+            }),
+            h('button', {
+              key: 'esc',
+              type: 'button',
+              className: 'edh-palette-esc',
+              onClick: typeof handlers.onClose === 'function' ? () => handlers.onClose() : undefined,
+            }, t('searchEsc')),
+          ]),
+          h('div', { key: 'body', className: 'edh-palette-body', role: 'listbox', 'aria-label': t('searchOpen') },
+            sections.map(sectionNode)),
+          h('div', { key: 'foot', className: 'edh-palette-foot' }, [
+            h('span', { key: 'move', className: 'edh-palette-hint' }, t('searchHintMove')),
+            h('span', { key: 'open', className: 'edh-palette-hint' }, t('searchHintOpen')),
+            h('span', { key: 'close', className: 'edh-palette-hint' }, t('searchHintClose')),
+          ]),
+        ]),
+      ])
+    }
+
+    /**
+     * The live palette: state, keys, focus, and the two seams it drives.
+     *
+     * Every visual decision is in `searchPaletteView`; this owns only the state
+     * the view reads, so the suite tests the tree rather than a browser.
+     * @param t - the dictionary.
+     * @param bus - the open/close channel.
+     * @param faces - optional services: sessions, uiWorkspace, layout, shortcuts.
+     */
+    function createSearchPalette(t, bus, faces = {}) {
+      const idle = { status: 'idle', rows: [], indexed: null, truncated: false }
+
+      return function SearchPalette() {
+        const [state, setState] = React.useState(searchInitialState(false))
+        const inputRef = React.useRef(null)
+        const returnTo = React.useRef(null)
+        const runner = React.useRef(null)
+
+        const ask = React.useCallback(text => {
+          if (runner.current === null) {
+            runner.current = createSearchRunner({
+              fetch: faces.fetch,
+              debounceMs: SEARCH_DEBOUNCE_MS,
+              limit: SEARCH_LIMIT,
+              log: searchWrite,
+              onChange: next => setState(previous => ({ ...previous, messages: next, active: 0 })),
+            })
+          }
+          runner.current.ask(text)
+        }, [])
+
+        React.useEffect(() => bus.subscribe((open, via) => {
+          if (open) {
+            // Opening always starts clean: a stale query is never restored.
+            runner.current?.cancel()
+            searchWrite({ phase: 'opened', via: String(via ?? '') })
+            setState(searchInitialState(true))
+            return
+          }
+          setState(previous => (previous.open ? searchInitialState(false) : previous))
+        }), [bus])
+
+        React.useEffect(() => {
+          if (!state.open) return undefined
+          returnTo.current = typeof document === 'undefined' ? null : document.activeElement
+          const focus = () => {
+            try {
+              inputRef.current?.focus()
+            } catch (error) {
+              // A palette that cannot take focus still works with the mouse.
+            }
+          }
+          const frame = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame(focus)
+            : setTimeout(focus, 0)
+          return () => {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+            else clearTimeout(frame)
+            const previous = returnTo.current
+            try {
+              if (previous !== null && typeof previous.focus === 'function') previous.focus()
+            } catch (error) {
+              // Returning focus is best effort.
+            }
+          }
+        }, [state.open])
+
+        const close = React.useCallback(() => bus.close(), [bus])
+
+        const sessions = React.useMemo(
+          () => (state.open
+            ? searchSessionRows(faces.sessions?.list?.getSnapshot?.()?.byId, state.query)
+            : []),
+          [state.query, state.open],
+        )
+        const built = React.useMemo(
+          () => searchRowsFor({ query: state.query, sessions, messages: state.messages, t }),
+          [state.query, sessions, state.messages],
+        )
+
+        const run = row => {
+          if (row === null || typeof row !== 'object') return
+          const payload = row.payload ?? {}
+          if (row.kind === 'chat') {
+            const query = String(payload.query ?? '')
+            close()
+            const started = installChat(faces, query)
+            searchWrite(started.ok
+              ? { phase: 'chatted', via: 'palette', length: query.length }
+              : { phase: 'failed', action: 'chat', reason: started.reason })
+            return
+          }
+          if (row.kind === 'session') {
+            close()
+            try {
+              faces.uiWorkspace?.openSession?.({ kind: 'session', sessionId: payload.sessionId })
+              searchWrite({ phase: 'opened-session', sessionId: String(payload.sessionId ?? '') })
+            } catch (error) {
+              searchWrite({ phase: 'failed', action: 'open', reason: messageOf(error) })
+            }
+            return
+          }
+          if (row.kind === 'retry') {
+            ask(String(payload.query ?? state.query))
+            return
+          }
+          if (row.kind === 'action') {
+            close()
+            const done = runSearchAction(faces, String(payload.action ?? ''))
+            if (!done.ok) searchWrite({ phase: 'failed', action: String(payload.action ?? ''), reason: done.reason })
+          }
+        }
+
+        const onKeyDown = event => {
+          const key = event?.key ?? ''
+          if (key === 'Escape') {
+            if (typeof event.preventDefault === 'function') event.preventDefault()
+            close()
+            return
+          }
+          if (key === 'ArrowDown' || key === 'ArrowUp') {
+            if (typeof event.preventDefault === 'function') event.preventDefault()
+            const delta = key === 'ArrowDown' ? 1 : -1
+            setState(previous => ({ ...previous, active: searchMoveIndex(previous.active, built.rows.length, delta) }))
+            return
+          }
+          if (key === 'Home' || key === 'End') {
+            if (typeof event.preventDefault === 'function') event.preventDefault()
+            setState(previous => ({
+              ...previous,
+              active: key === 'Home' ? 0 : Math.max(0, built.rows.length - 1),
+            }))
+            return
+          }
+          if (key === 'Tab') {
+            // One focusable surface: keep the caret in the input.
+            if (typeof event.preventDefault === 'function') event.preventDefault()
+            return
+          }
+          if (key === 'Enter') {
+            if (typeof event.preventDefault === 'function') event.preventDefault()
+            run(built.rows[state.active] ?? built.rows[0])
+          }
+        }
+
+        if (!state.open) return null
+        return searchPaletteView({
+          t,
+          state: { ...state, truncated: state.messages.truncated === true },
+          sections: built.sections,
+          rows: built.rows,
+          active: state.active,
+          inputRef,
+          handlers: {
+            onChange: text => {
+              setState(previous => ({ ...previous, query: text, active: 0 }))
+              ask(text)
+            },
+            onHover: index => setState(previous => ({ ...previous, active: index })),
+            onActivate: run,
+            onKeyDown,
+            onClose: close,
+          },
+        })
+      }
+    }
+
+    /**
+     * Turn the query into a conversation.
+     *
+     * Verified seam: `uiWorkspace.startSession(workspaceId?, options)` takes a
+     * `prompt` and lands it in the new Session's **unsent draft** — there is no
+     * client API that submits a message, and no seam that seeds the composer of
+     * the session already open (which is why the palette offers one chat row and
+     * not a "continue here" row).
+     * @returns `{ ok }`, or `{ ok:false, reason }` when there is nothing to drive.
+     */
+    function installChat(faces, query) {
+      const text = String(query ?? '').trim()
+      const workspace = faces?.uiWorkspace
+      if (typeof workspace?.startSession !== 'function') return { ok: false, reason: 'no-workspace' }
+      try {
+        if (text === '') workspace.startSession(undefined, {})
+        else workspace.startSession(undefined, { prompt: text, whenDraftExists: 'replace' })
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, reason: messageOf(error) }
+      }
+    }
+
+    /** Run one Actions row, through the services that actually exist. */
+    function runSearchAction(faces, action) {
+      if (action === 'settings') {
+        const shortcuts = faces?.shortcuts
+        if (shortcuts !== undefined && typeof shortcuts.invoke === 'function') {
+          try {
+            shortcuts.invoke('settings.open', { modal: null, source: 'menu' })
+            return { ok: true }
+          } catch (error) {
+            return { ok: false, reason: messageOf(error) }
+          }
+        }
+        return { ok: false, reason: 'no-shortcuts' }
+      }
+      if (action === 'sidebar') {
+        const layout = faces?.layout
+        if (typeof layout?.toggleSidebar === 'function') {
+          try {
+            layout.toggleSidebar()
+            return { ok: true }
+          } catch (error) {
+            return { ok: false, reason: messageOf(error) }
+          }
+        }
+        return { ok: false, reason: 'no-layout' }
+      }
+      if (action === 'conversation') {
+        const layout = faces?.layout
+        if (typeof layout?.selectPanel === 'function') {
+          try {
+            layout.selectPanel(null)
+            return { ok: true }
+          } catch (error) {
+            return { ok: false, reason: messageOf(error) }
+          }
+        }
+        return { ok: false, reason: 'no-layout' }
+      }
+      return { ok: false, reason: 'unknown-action' }
+    }
+
+    /** The sidebar button, in the rail's 56px form and the wide form. */
+    function createSearchButton(t, bus) {
+      return function SearchButton(props) {
+        const wide = props?.wide === true
+        return h('button', {
+          type: 'button',
+          className: `edh-search-button${wide ? ' edh-search-button-wide' : ''}`,
+          title: t('searchOpen'),
+          'aria-label': t('searchOpen'),
+          onClick: () => bus.open('button'),
+        }, [
+          h('span', { key: 'glyph', className: 'edh-search-button-glyph' }, searchGlyph()),
+          wide ? h('span', { key: 'label', className: 'edh-search-button-label' }, t('searchOpen')) : null,
+        ])
+      }
+    }
+
+    const SEARCH_CSS = `
+.edh-search-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.edh-search-button:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.edh-search-button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.edh-search-button-wide { width: auto; height: 28px; padding: 0 8px; justify-content: flex-start; }
+.edh-search-button-glyph { display: inline-flex; align-items: center; justify-content: center; }
+.edh-search-button-label { font-size: 13px; line-height: 16px; }
+
+.edh-palette-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 46%, transparent);
+}
+.edh-palette {
+  width: 640px;
+  max-width: 100%;
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 24px 64px -16px color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent);
+  animation: edh-palette-in 120ms ease-out;
+}
+@keyframes edh-palette-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .edh-palette { animation: none; }
+  .edh-search-button { transition: none; }
+}
+.edh-palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l);
+}
+.edh-palette-glyph { display: inline-flex; color: var(--dsw-alias-label-tertiary); }
+.edh-palette-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 15px;
+  line-height: 22px;
+}
+.edh-palette-input::placeholder { color: var(--dsw-alias-label-tertiary); }
+.edh-palette-esc {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.edh-palette-esc:hover { color: var(--dsw-alias-label-secondary); }
+.edh-palette-body { overflow-y: auto; padding: 6px 0 8px; }
+.edh-palette-section { padding: 6px 8px 4px; }
+.edh-palette-section + .edh-palette-section { border-top: 1px solid var(--dsw-alias-border-l); }
+.edh-palette-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+}
+.edh-palette-section-label { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.edh-palette-section-note { color: var(--dsw-alias-label-dimmed); font-size: 11px; line-height: 16px; }
+.edh-palette-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.edh-palette-row-active { background: var(--dsw-alias-interactive-bg-hover); }
+.edh-palette-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.edh-palette-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edh-palette-hit { font-weight: 600; color: inherit; }
+.edh-palette-row-meta { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.edh-palette-note { margin: 2px 8px 6px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.edh-palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--dsw-alias-border-l);
+}
+.edh-palette-hint { color: var(--dsw-alias-label-dimmed); font-size: 11px; line-height: 16px; }
+`
+
+    /** Inject the palette's one stylesheet, once. */
+    function installSearchStyles() {
+      if (typeof document === 'undefined') return () => {}
+      const existing = document.getElementById('edh-search-style')
+      if (existing !== null) return () => {}
+      const style = document.createElement('style')
+      style.id = 'edh-search-style'
+      style.textContent = SEARCH_CSS
+      document.head.appendChild(style)
+      return () => {
+        try {
+          style.remove()
+        } catch (error) {
+          // A head that is already gone has nothing to remove.
+        }
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -8334,6 +9286,114 @@ window.__ModuleLoader__.load({
       })
       const NotifyPage = createNotifyPage(t, controller, notifyChannel)
       ctx.effect(() => installNotifyStyles(), 'edh: notify styles')
+      // search — the command palette.
+      //
+      // The inline search cannot be removed: it is a private renderer inside the
+      // one occupant of `sidebar.workspaces` (a single slot holding the whole
+      // browsing region — header, search, session list, workspace dialogs), so
+      // shadowing it would mean reimplementing the session list. This adds a
+      // button beside Settings and a shortcut instead, and says so.
+      const searchFaces = { sessions: undefined, uiWorkspace: undefined, layout: undefined, shortcuts: undefined, fetch: undefined }
+      ctx.inject(['sessions', 'uiWorkspace', 'layout'], scope => {
+        scope.effect(() => {
+          searchFaces.sessions = scope.sessions
+          searchFaces.uiWorkspace = scope.uiWorkspace
+          searchFaces.layout = scope.layout
+          return () => {
+            searchFaces.sessions = undefined
+            searchFaces.uiWorkspace = undefined
+            searchFaces.layout = undefined
+          }
+        }, 'edh: search faces')
+      })
+      ctx.inject(['shortcuts'], scope => {
+        scope.effect(() => {
+          searchFaces.shortcuts = scope.shortcuts
+          return () => {
+            searchFaces.shortcuts = undefined
+          }
+        }, 'edh: search shortcuts')
+      })
+      const paletteBus = createPaletteBus()
+      const SearchPalette = createSearchPalette(t, paletteBus, searchFaces)
+      const SearchButton = createSearchButton(t, paletteBus)
+      ctx.effect(() => installSearchStyles(), 'edh: search styles')
+
+      /** Register one palette part, and keep it in step with its row. */
+      const registerPalettePart = (slot, id, order, Component) => () => {
+        let dispose
+        let installed = false
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), SEARCH_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({ name: slot, id, order, locale: NS, label: () => t('searchOpen') }, Component)
+            installed = true
+          } catch (error) {
+            installed = false
+            searchWrite({ phase: 'register-failed', part: slot, message: messageOf(error) })
+          }
+        }
+        const stop = controller.subscribe(sync)
+        sync()
+        return () => {
+          stop()
+          dispose?.()
+          dispose = undefined
+        }
+      }
+      ctx.slots.inject(SEARCH_OVERLAY_SLOT, registerPalettePart(SEARCH_OVERLAY_SLOT, SEARCH_ID, 5, SearchPalette))
+      ctx.slots.inject(SEARCH_BUTTON_SLOT, registerPalettePart(SEARCH_BUTTON_SLOT, SEARCH_BUTTON_ID, 20, SearchButton))
+
+      // The shortcut belongs in the harness's own registry, where it shows up
+      // beside every other one; a refused default falls back to a plain listener.
+      ctx.inject(['shortcuts'], scope => {
+        try {
+          scope.effect(() => scope.shortcuts.register({
+            id: 'edh.search.open',
+            label: () => t('searchOpen'),
+            aliases: ['search', 'palette', 'find'],
+            defaults: {
+              'desktop:macos': { code: 'KeyK', modifiers: ['primary'] },
+              'desktop:windows': { code: 'KeyK', modifiers: ['primary'] },
+              'desktop:linux': { code: 'KeyK', modifiers: ['primary'] },
+              'web:macos': { code: 'KeyK', modifiers: ['primary', 'alt'] },
+              'web:windows': { code: 'KeyK', modifiers: ['primary', 'alt'] },
+              'web:linux': { code: 'KeyK', modifiers: ['primary', 'alt'] },
+            },
+            regions: ['page', 'editable', 'terminal'],
+            resolve: () => ({ status: 'handled', run: () => paletteBus.open('shortcut') }),
+          }), 'edh: search shortcut')
+        } catch (error) {
+          searchWrite({ phase: 'failed', action: 'shortcut', reason: messageOf(error) })
+        }
+      })
+
+      // The fallback that also makes the palette work in a plain browser: the
+      // registry consumes the gesture it handles, so this sees `defaultPrevented`
+      // and stays out of the way.
+      ctx.effect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return () => {}
+        const onKeyDown = event => {
+          if (!searchShortcutIntent(event)) return
+          if (typeof event.preventDefault === 'function') event.preventDefault()
+          paletteBus.toggle('keyboard')
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+          try {
+            window.removeEventListener('keydown', onKeyDown)
+          } catch (error) {
+            // A window already torn down has nothing to detach.
+          }
+        }
+      }, 'edh: search shortcut fallback')
       ctx.slots.inject(NOTIFY_SECTION_SLOT, () => {
         let dispose
         let installed = false
@@ -8658,6 +9718,35 @@ window.__ModuleLoader__.load({
       notifyOpenSession,
       readNotifyLast,
       raiseNotifyWindow,
+      createPaletteBus,
+      createSearchRunner,
+      createSearchPalette,
+      createSearchButton,
+      searchPaletteView,
+      searchRowsFor,
+      searchActionRows,
+      searchSessionRows,
+      searchMessageRows,
+      searchSegments,
+      searchMatchAt,
+      searchRelativeTime,
+      searchMoveIndex,
+      searchShortcutIntent,
+      searchInitialState,
+      searchIndexedNote,
+      installChat,
+      runSearchAction,
+      installSearchStyles,
+      SEARCH_CSS,
+      SEARCH_MODULE,
+      SEARCH_ROUTE,
+      SEARCH_DEBUG_KEY,
+      SEARCH_OVERLAY_SLOT,
+      SEARCH_BUTTON_SLOT,
+      SEARCH_ID,
+      SEARCH_BUTTON_ID,
+      SEARCH_DEBOUNCE_MS,
+      SEARCH_LIMIT,
       NOTIFY_RAISE_ROUTE,
       NOTIFY_RAISE_TIMEOUT_MS,
       NOTIFY_LAST_ROUTE,

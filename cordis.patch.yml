@@ -80,3 +80,11 @@
     - id: edh-notify
       name: '@moreweb/edh/notify'
       config: {}
+
+    # search — full-text search across every stored Session, for the Ctrl+K
+    # palette. A blocking scan is out of the question (761 MB of plaintext, 7.5–15 s
+    # a pass), so this row keeps a derived, incrementally-built index under the
+    # profile and answers queries from memory; the browser half draws the palette.
+    - id: edh-search
+      name: '@moreweb/edh/search'
+      config: {}

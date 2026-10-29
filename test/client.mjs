@@ -239,6 +239,28 @@ const {
   notifyOpenSession,
   readNotifyLast,
   raiseNotifyWindow,
+  createPaletteBus,
+  createSearchRunner,
+  createSearchButton,
+  searchPaletteView,
+  searchRowsFor,
+  searchActionRows,
+  searchSessionRows,
+  searchMessageRows,
+  searchSegments,
+  searchShortcutIntent,
+  searchInitialState,
+  searchRelativeTime,
+  searchMoveIndex,
+  searchIndexedNote,
+  installChat,
+  runSearchAction,
+  SEARCH_CSS,
+  SEARCH_MODULE,
+  SEARCH_ROUTE,
+  SEARCH_DEBUG_KEY,
+  SEARCH_OVERLAY_SLOT,
+  SEARCH_BUTTON_SLOT,
   NOTIFY_LAST_ROUTE,
   NOTIFY_RAISE_ROUTE,
   NOTIFY_RAISE_TIMEOUT_MS,
@@ -5860,6 +5882,312 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 61 — the command palette: opening, sections, keys, and the chat row.
+{
+  // A fresh factory over a React-shaped createElement: the components build
+  // elements, and h is bound per factory call.
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+  const rowsOf = byId => ({ list: { getSnapshot: () => ({ byId }) } })
+
+  // --- the shortcut predicate, and the button ----------------------------
+  assert.equal(searchShortcutIntent({ key: 'k', ctrlKey: true }), true, 'Ctrl+K')
+  assert.equal(searchShortcutIntent({ key: 'k', metaKey: true }), true, 'Cmd+K')
+  assert.equal(searchShortcutIntent({ key: 'K', ctrlKey: true }), true, 'the shifted letter too')
+  assert.equal(searchShortcutIntent({ key: 'k' }), false, 'a bare k is typing')
+  assert.equal(searchShortcutIntent({ key: 'k', ctrlKey: true, altKey: true }), false, 'Alt+K is not ours')
+  assert.equal(searchShortcutIntent({ key: 'k', ctrlKey: true, defaultPrevented: true }), false, 'a consumed gesture is left alone')
+  assert.equal(searchShortcutIntent({ key: 'j', ctrlKey: true }), false)
+  assert.equal(searchShortcutIntent(undefined), false)
+
+  {
+    const bus = createPaletteBus()
+    const seen = []
+    const off = bus.subscribe((open, via) => seen.push([open, via]))
+    const Button = stub.createSearchButton(t, bus)
+    const wide = Button({ wide: true })
+    const rail = Button({ wide: false })
+    assert.equal(wide.type, 'button')
+    assert.equal(wide.props['aria-label'], 'Search')
+    assert.ok(treeText(wide).includes('Search'), 'the wide button is labelled')
+    assert.equal(treeText(rail).includes('Search'), false, 'the rail button is only a glyph')
+    wide.props.onClick()
+    assert.equal(bus.isOpen(), true)
+    assert.deepEqual(seen, [[true, 'button']], 'the button opens it, once')
+    bus.open('button')
+    assert.deepEqual(seen, [[true, 'button']], 'a second open is a no-op')
+    bus.close()
+    assert.deepEqual(seen.at(-1), [false, 'button'], 'and it closes')
+    off()
+    bus.open('shortcut')
+    assert.equal(seen.length, 2, 'an unsubscribed listener hears nothing')
+  }
+
+  // --- the rows: sections, order, and what each state says ---------------
+  const messagesReady = {
+    status: 'ready',
+    rows: [
+      { kind: 'message', key: 'm1', sessionId: 's1', seq: 3, title: 'Refactor', role: 'assistant', time: 0, segments: [{ text: 'the ', hit: false }, { text: 'parser', hit: true }], hit: 'parser' },
+    ],
+    indexed: { sessions: 3, total: 10, ready: 4 },
+    truncated: true,
+  }
+  const built = searchRowsFor({
+    query: 'parser',
+    sessions: [{ id: 's1', title: 'Refactor the parser', updatedAt: Date.now() - 60_000 }],
+    messages: messagesReady,
+    t,
+    now: Date.now(),
+  })
+  assert.deepEqual(built.sections.map(section => section.id), ['chat', 'sessions', 'messages', 'actions'], 'Chat first, Actions last')
+  assert.deepEqual(built.sections.map(section => section.label), ['Chat', 'Sessions', 'Messages', 'Actions'])
+  assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action'], 'one flat list across sections')
+  assert.equal(built.rows[0].label, 'Ask about "parser"', 'the chat row names the query')
+  assert.equal(built.sections[1].note, '', 'a section with matches has no note')
+  assert.ok(built.sections[2].note.includes('Indexing 4 of 10 sessions'), 'the index progress is one quiet line')
+
+  // An empty query: the Chat section invites, and the search sections step aside.
+  const empty = searchRowsFor({ query: '', sessions: [], messages: { status: 'idle' }, t })
+  assert.deepEqual(empty.sections.map(section => section.id), ['chat', 'actions'], 'no Sessions or Messages to search')
+  assert.equal(empty.rows[0].label, 'Start a chat', 'an invitation, not a row about nothing')
+  assert.equal(empty.rows[0].payload.query, '')
+
+  // Loading is not empty: the difference the brief calls out.
+  const loading = searchRowsFor({ query: 'a', messages: { status: 'loading' }, t })
+  assert.equal(loading.sections.find(section => section.id === 'messages').note, 'Searching…')
+  assert.equal(loading.sections.find(section => section.id === 'messages').rows.length, 0, 'no lying empty list')
+  const noMatch = searchRowsFor({ query: 'zz', messages: { status: 'ready', rows: [] }, t })
+  assert.equal(noMatch.sections.find(section => section.id === 'messages').note, 'No messages match')
+  const failed = searchRowsFor({ query: 'a', messages: { status: 'error' }, t })
+  const retry = failed.sections.find(section => section.id === 'messages').rows[0]
+  assert.equal(retry.kind, 'retry', 'a refusal offers a retry row')
+  assert.equal(retry.payload.query, 'a', 'which re-asks the same query')
+
+  // --- movement over the flat list --------------------------------------
+  assert.equal(searchMoveIndex(0, 3, 1), 1)
+  assert.equal(searchMoveIndex(2, 3, 1), 0, 'wraps forward')
+  assert.equal(searchMoveIndex(0, 3, -1), 2, 'wraps backward')
+  assert.equal(searchMoveIndex(0, 0, 1), 0, 'an empty list has nowhere to go')
+  assert.equal(searchMoveIndex(9, 4, 0), 1, 'an out-of-range index is normalised')
+
+  // --- the tree ---------------------------------------------------------
+  {
+    const view = stub.searchPaletteView({
+      t,
+      state: { query: 'parser', truncated: true },
+      sections: built.sections,
+      rows: built.rows,
+      active: 1,
+      handlers: {},
+    })
+    const text = treeText(view)
+    assert.equal(treeByType(view, 'input').length, 1, 'one input')
+    assert.equal(treeByType(view, 'input')[0].props.placeholder, 'Search sessions and messages, or ask the agent')
+    assert.equal(treeByType(view, 'input')[0].props.autoFocus, undefined, 'focus is taken by the effect, not the attribute')
+    assert.equal(view.props.className, 'edh-palette-layer')
+    const panel = treeByType(view, 'div').find(node => node.props.className === 'edh-palette')
+    assert.equal(panel.props.role, 'dialog')
+    assert.equal(panel.props['aria-modal'], 'true')
+    assert.deepEqual(
+      treeByType(view, 'section').map(node => node.props.className),
+      ['edh-palette-section', 'edh-palette-section', 'edh-palette-section', 'edh-palette-section'],
+      'four sections, separated by hairlines rather than cards',
+    )
+    const options = treeByType(view, 'button').filter(button => button.props.role === 'option')
+    assert.equal(options.length, built.rows.length, 'one option per row')
+    assert.deepEqual(options.map(option => option.props['aria-selected']), built.rows.map((_, at) => at === 1), 'exactly one selected')
+    assert.ok(options[1].props.className.includes('edh-palette-row-active'), 'the selected row is marked by a class, not a colour block')
+    // Emphasis is structural: a <strong>, never a colour.
+    const hits = treeByType(view, 'strong')
+    assert.equal(hits.length, 2, 'both matched runs — the session title and the snippet — are emphasised')
+    for (const hit of hits) {
+      assert.equal(hit.props.className, 'edh-palette-hit', 'with a class, not a colour')
+      assert.equal(hit.props.children, 'parser')
+    }
+    // The footer hints are always there.
+    for (const hint of ['↑↓ to move', 'Enter to open', 'Esc to close']) assert.ok(text.includes(hint), `the footer says ${hint}`)
+    assert.ok(text.includes('refine to see more'), 'truncation is stated quietly')
+    assert.ok(text.includes('Esc'), 'the Esc affordance is present')
+  }
+
+  // --- keyboard dispatch through the view's handler ----------------------
+  {
+    const calls = []
+    const handlers = {
+      onKeyDown: event => {
+        calls.push(event.key)
+      },
+      onActivate: row => calls.push(`activate:${row.kind}`),
+      onChange: value => calls.push(`change:${value}`),
+      onClose: () => calls.push('close'),
+    }
+    const view = stub.searchPaletteView({ t, state: { query: '' }, sections: empty.sections, rows: empty.rows, active: 0, handlers })
+    const input = treeByType(view, 'input')[0]
+    input.props.onKeyDown({ key: 'ArrowDown' })
+    assert.deepEqual(calls, ['ArrowDown'], 'keys reach the handler')
+    const first = treeByType(view, 'button').filter(button => button.props.role === 'option')[0]
+    first.props.onClick()
+    assert.deepEqual(calls.at(-1), 'activate:chat', 'a row activates by its own kind')
+    const esc = treeByType(view, 'button').find(button => button.props.className === 'edh-palette-esc')
+    esc.props.onClick()
+    assert.equal(calls.at(-1), 'close')
+  }
+
+  // --- the runner: debounce, cancel, stale discard ----------------------
+  {
+    const states = []
+    const asked = []
+    const runner = createSearchRunner({
+      debounceMs: 5,
+      onChange: state => states.push(state),
+      fetch: async url => {
+        asked.push(url)
+        return { ok: true, status: 200, json: async () => ({ ok: true, messages: [{ sessionId: 's1', seq: 1, snippet: 'x', matched: 'x' }], indexed: { ready: 1, total: 1 } }) }
+      },
+    })
+    runner.ask('abc')
+    assert.equal(states.at(-1).status, 'loading', 'loading is shown immediately')
+    assert.equal(asked.length, 0, 'nothing is sent before the debounce')
+    await sleep(25)
+    assert.equal(asked.length, 1, 'one request after the pause')
+    assert.ok(asked[0].startsWith('api/edh.search?'), 'the route')
+    assert.ok(asked[0].includes('q=abc'), 'with the query')
+    assert.ok(asked[0].includes('limit=50'), 'and the limit')
+    assert.equal(states.at(-1).status, 'ready')
+    runner.ask('')
+    assert.equal(states.at(-1).status, 'idle', 'an empty query resets without a request')
+    runner.cancel()
+  }
+
+  {
+    // Two queries, the older answering last: it must not win.
+    const states = []
+    const gates = new Map()
+    const runner = createSearchRunner({
+      debounceMs: 1,
+      onChange: state => states.push(state),
+      fetch: url => {
+        const query = new URL(url, 'http://x/').searchParams.get('q')
+        return new Promise(resolve => gates.set(query, resolve))
+      },
+    })
+    runner.ask('abc')
+    await sleep(10)
+    runner.ask('abcd')
+    await sleep(10)
+    assert.deepEqual([...gates.keys()], ['abc', 'abcd'], 'both were sent, as the reader kept typing')
+    // The newer answer lands first, then the stale one arrives late.
+    await gates.get('abcd')({ ok: true, status: 200, json: async () => ({ ok: true, messages: [{ sessionId: 'new', seq: 1, snippet: 'new hit', matched: 'hit' }] }) })
+    await sleep(5)
+    const afterNew = states.at(-1)
+    assert.equal(afterNew.status, 'ready')
+    assert.equal(afterNew.rows[0].sessionId, 'new')
+    await gates.get('abc')({ ok: true, status: 200, json: async () => ({ ok: true, messages: [{ sessionId: 'old', seq: 1, snippet: 'old hit', matched: 'hit' }] }) })
+    await sleep(5)
+    assert.equal(states.at(-1).rows[0].sessionId, 'new', 'the stale answer was discarded, not rendered')
+  }
+
+  // A refusal and a missing fetch both end in the error state, never a throw.
+  {
+    const states = []
+    const runner = createSearchRunner({
+      debounceMs: 1,
+      onChange: state => states.push(state),
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: false, reason: 'index-empty', message: 'not yet' }) }),
+    })
+    runner.ask('x')
+    await sleep(15)
+    assert.equal(states.at(-1).status, 'error', 'ok:false is an error state')
+    assert.equal(states.at(-1).reason, 'index-empty', "and it carries the Host's reason")
+    const without = createSearchRunner({ debounceMs: 1, onChange: state => states.push(state) })
+    without.ask('y')
+    await sleep(15)
+    assert.equal(states.at(-1).status, 'error', 'no fetch at all is still an error state')
+  }
+
+  // --- the projections the rows come from --------------------------------
+  {
+    const byId = {
+      a: { sessionId: 'a', title: 'Refactor the parser', updatedAt: 300 },
+      b: { sessionId: 'b', title: 'parser notes', updatedAt: 200 },
+      c: { sessionId: 'c', title: 'unrelated', updatedAt: 400 },
+      d: { title: '' },
+    }
+    const matched = searchSessionRows(byId, 'PARSER')
+    assert.deepEqual(matched.map(row => row.id), ['a', 'b'], 'matched, case-insensitively, newest first')
+    assert.equal(searchSessionRows(byId, 'zzz').length, 0)
+    assert.deepEqual(searchSessionRows(undefined, 'a'), [])
+    assert.deepEqual(searchSegments('a parser b', 'parser'), [{ text: 'a ', hit: false }, { text: 'parser', hit: true }, { text: ' b', hit: false }])
+    assert.deepEqual(searchSegments('none', 'zzz'), [{ text: 'none', hit: false }], 'no match, no emphasis')
+    assert.deepEqual(searchSegments('', 'x'), [])
+    assert.equal(searchRelativeTime(Date.now() - 90_000, Date.now()), '2m')
+    assert.equal(searchRelativeTime(0), '')
+    assert.equal(searchIndexedNote({ ready: 2, total: 5 }, t), 'Indexing 2 of 5 sessions')
+    assert.equal(searchIndexedNote({ ready: 5, total: 5 }, t), '', 'a finished index says nothing')
+    assert.equal(searchIndexedNote(null, t), '')
+    const hostRows = searchMessageRows({ messages: [{ sessionId: 's1', seq: 2, snippet: 'the parser again', matched: 'parser', role: 'assistant', sessionTitle: 'Refactor', time: 5 }] }, 'parser')
+    assert.equal(hostRows[0].kind, 'message')
+    assert.equal(hostRows[0].sessionId, 's1')
+    assert.deepEqual(hostRows[0].segments.filter(segment => segment.hit).map(segment => segment.text), ['parser'])
+    assert.deepEqual(searchMessageRows({ messages: [{ sessionId: '' }] }, 'x'), [], 'a row with no session is dropped')
+  }
+
+  // --- the chat seam, verified against uiWorkspace ----------------------
+  {
+    const calls = []
+    const faces = { uiWorkspace: { startSession: (...args) => calls.push(args) } }
+    assert.deepEqual(installChat(faces, '  how does the parser work  '), { ok: true })
+    assert.deepEqual(calls[0], [undefined, { prompt: 'how does the parser work', whenDraftExists: 'replace' }], 'the query becomes the new session\'s draft')
+    installChat(faces, '')
+    assert.deepEqual(calls[1], [undefined, {}], 'an empty query just starts a chat')
+    assert.deepEqual(installChat({}, 'x'), { ok: false, reason: 'no-workspace' }, 'no workspace, a plain refusal')
+    assert.deepEqual(
+      installChat({ uiWorkspace: { startSession: () => { throw new Error('refused') } } }, 'x'),
+      { ok: false, reason: 'refused' },
+      'a refusing creation is reported',
+    )
+  }
+
+  // --- the actions, through the services that exist ---------------------
+  {
+    const seen = []
+    const faces = {
+      layout: { toggleSidebar: () => seen.push('sidebar'), selectPanel: id => seen.push(`panel:${id}`) },
+      shortcuts: { invoke: (id, context) => seen.push(`invoke:${id}:${context.modal}`) },
+    }
+    assert.deepEqual(runSearchAction(faces, 'settings'), { ok: true })
+    assert.deepEqual(runSearchAction(faces, 'sidebar'), { ok: true })
+    assert.deepEqual(runSearchAction(faces, 'conversation'), { ok: true })
+    assert.deepEqual(seen, ['invoke:settings.open:null', 'sidebar', 'panel:null'], 'each row reaches its own seam')
+    assert.deepEqual(runSearchAction({}, 'settings'), { ok: false, reason: 'no-shortcuts' })
+    assert.deepEqual(runSearchAction({}, 'sidebar'), { ok: false, reason: 'no-layout' })
+    assert.deepEqual(runSearchAction({}, 'nonsense'), { ok: false, reason: 'unknown-action' })
+  }
+
+  // --- the reset, and the stylesheet's promises -------------------------
+  {
+    const fresh = searchInitialState(true)
+    assert.deepEqual(fresh, { open: true, query: '', active: 0, messages: { status: 'idle', rows: [], indexed: null, truncated: false }, busy: '' }, 'opening starts clean')
+    assert.equal(searchInitialState(false).open, false)
+    assert.ok(SEARCH_CSS.includes('@media (prefers-reduced-motion: reduce)'), 'reduced motion is honoured')
+    assert.ok(SEARCH_CSS.includes('width: 640px'), 'the panel is the specified width')
+    assert.ok(SEARCH_CSS.includes('max-height: 72vh'))
+    assert.ok(SEARCH_CSS.includes(':focus-visible'), 'focus-visible is respected')
+    assert.ok(SEARCH_CSS.includes('--dsw-alias-label-primary'), 'tokens, not raw colours')
+    assert.equal(/::before|text-transform:\s*uppercase/.test(SEARCH_CSS), false, 'no all-caps eyebrows')
+    for (const glyph of ['·', '→']) assert.equal(SEARCH_CSS.includes(glyph), false, `no ${glyph} glyph in the stylesheet`)
+    const copy = ['searchPlaceholder', 'searchChatStart', 'searchChatAsk', 'searchSearching', 'searchNoMessages', 'searchRetry', 'searchHintMove', 'searchHintOpen', 'searchHintClose']
+    for (const key of copy) {
+      const value = dictionaryOf('en')(key, { query: 'q', ready: 1, total: 2 })
+      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
+    }
+    assert.ok(SEARCH_CSS.includes('border-top: 1px solid'), 'sections are separated by hairlines')
+    assert.ok(SEARCH_CSS.includes('edh-palette-row-active'), 'one flat tint marks the selection')
+  }
+}
+
+console.log('edh search: palette, sections, and chat checks passed')
 console.log('edh notify: click-to-raise checks passed')
 console.log('edh notify: stored-sound fidelity checks passed')
 console.log('edh notify: host-read fallback checks passed')

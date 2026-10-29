@@ -16,6 +16,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `usage` | Shows where your tokens went: totals, per model and per day across every Session, with streaks and peaks |
 | `mobile` | Serves the web app manifest, so a phone can add the GUI to its home screen and open it without browser chrome |
 | `notify` | Serves a curated few of the real Windows sound files, so a notification plays the sound you already know |
+| `search` | Full-text search across every stored Session, from a Ctrl+K palette — indexed in the background, answered from memory |
 
 A switch in the conversation header turns them all on or off together.
 

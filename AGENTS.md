@@ -343,6 +343,46 @@ Audio, and the watcher that decides when to fire).
   Audio, which has no such rule) but no system notifications. That is a browser
   rule this side cannot work around; do not try to "fix" it in the Host.
 
+## Search
+
+`search.js` answers `GET /api/edh.search?q=…` for the Ctrl+K palette. The whole
+design follows from one measurement: a full pass over this profile is **761 MB of
+plaintext and 7.5–15 s**, so a search can never be a scan.
+
+- **The index is derived, never authoritative.** `<profile>/.edh/search.json`, temp
+  + rename, tolerant of a corrupt or foreign-version file (empty index, one
+  warning, rebuild). The Session log stays the only truth; deleting the index
+  loses nothing but a few seconds of background work.
+- **Truncated text only.** Each stored message is collapsed to single spaces and
+  capped at 600 characters — enough for a snippet, which is why the whole index for
+  222 sessions / 222 MB of logs is **1.7 MB**. `snippet` and `matched` are cut from
+  that same string, so `matched` always appears inside `snippet` verbatim and the
+  client can highlight without re-deriving anything. Whitespace collapsing is also
+  why a phrase written across a newline is found by a query typed with a space.
+- **Incremental by byte offset and `seq`.** Frames are append-only, so a saved
+  offset on a frame boundary stays valid: a pass reads only the bytes after it with
+  `usage.js`'s `readLogTail` + `decodeLogFrames` (the same decoder — this module
+  never splits or decompresses a frame itself) and keeps only messages with
+  `seq > lastSeq`. A torn tail leaves the offset where it was; a log that shrank
+  underneath us starts that Session again. A **live event is folded from the event
+  itself** only when its Session is caught up; otherwise a pass is scheduled,
+  because folding an unfolded Session would drop every lower `seq`.
+- **A user message is the user's only when `data.source.kind` says so.** The same
+  stream carries the runtime context, the agent instructions, the skill catalog, a
+  time stamp and subagent notices — in one real Session 32 of 107 user messages
+  were the human's — so only `user`/`user-approval` are indexed. An assistant
+  message contributes its text blocks only (tool calls, reasoning and tool results
+  are not prose), and a record with a `surfaceOp` is skipped because it replaced a
+  range the conversation no longer shows. Note that a *delegated subagent prompt*
+  is logged as kind `user` (it is a user-role message in that Session), so those do
+  appear in results — that is the transcript, not noise.
+- **Never block.** The build is a couple of Sessions per tick behind a timer —
+  222 sessions in ~8 s of background work — and a query is an in-memory scan
+  capped at 5 000 candidates. `indexed: { sessions, total, ready }` is what the
+  palette shows as `Indexing… 42 of 200`; `ready` is true only when every
+  enumerated Session is indexed through the end of its log, so a torn append is
+  reported honestly as not ready.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -370,6 +410,7 @@ node test/update.mjs
 node test/remote.mjs
 node test/mobile.mjs
 node test/notify.mjs
+node test/search.mjs
 node test/mcp.mjs
 node test/usage.mjs
 ```

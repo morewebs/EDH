@@ -264,6 +264,9 @@ const {
   searchMessageRows,
   searchSegments,
   searchShortcutIntent,
+  searchTriggerOf,
+  installSearchTriggerGuard,
+  SEARCH_TRIGGER_LABELS,
   searchInitialState,
   searchRelativeTime,
   searchMoveIndex,
@@ -5957,7 +5960,7 @@ function recordingNotification(permission, behaviour) {
   })
   assert.deepEqual(built.sections.map(section => section.id), ['chat', 'sessions', 'messages', 'actions'], 'Chat first, Actions last')
   assert.deepEqual(built.sections.map(section => section.label), ['Chat', 'Sessions', 'Messages', 'Actions'])
-  assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action'], 'one flat list across sections')
+  assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action', 'action'], 'one flat list across sections')
   assert.equal(built.rows[0].label, 'Ask about "parser"', 'the chat row names the query')
   assert.equal(built.sections[1].note, '', 'a section with matches has no note')
   assert.ok(built.sections[2].note.includes('Indexing 4 of 10 sessions'), 'the index progress is one quiet line')
@@ -6444,8 +6447,22 @@ function recordingNotification(permission, behaviour) {
     const fields = treeByType(view, 'label').filter(label => String(label.props.className).includes('edh-adv-field'))
     assert.equal(fields.length, 6, 'query, session, role, from, to, count')
     const inputs = treeByType(view, 'input')
-    assert.equal(inputs.filter(input => input.props.type === 'search').length, 1)
+    // The Text control is one single-line input, never a box: element kind, no
+    // rows, no resize, and the width carried by its wrapper.
+    const textInputs = inputs.filter(input => input.props.type === 'text')
+    assert.equal(textInputs.length, 1, 'the Text control is an <input type="text">')
+    assert.deepEqual(treeByType(view, 'textarea'), [], 'and never a textarea')
+    assert.equal(textInputs[0].props.rows, undefined, 'no rows attribute')
+    assert.equal(textInputs[0].props.resize, undefined, 'no resize handle')
+    assert.equal(textInputs[0].props.className, 'edh-adv-input')
     assert.equal(inputs.filter(input => input.props.type === 'date').length, 2)
+    // One bar, six controls as its own children: nothing wraps into a second row.
+    const barNode = treeByType(view, 'div').find(node => node.props.className === 'edh-adv-bar')
+    const barFields = barNode.props.children.flat().filter(child => child !== null && child !== undefined
+      && String(child.props?.className ?? '').includes('edh-adv-field'))
+    assert.equal(barFields.length, 6, 'six controls in the one filter bar')
+    assert.equal(barFields[0].props.className, 'edh-adv-field edh-adv-field-text', 'the text field takes its width on the wrapper')
+    assert.deepEqual(barFields.map(field => treeText(field)[0]), ['Text', 'Session', 'Role', 'From', 'To', 'Results'], 'in that order, each labelled')
     const sessions = treeByType(view, 'select')[0]
     assert.deepEqual(treeByType(sessions, 'option').map(option => option.props.children[0]), ['Any session', 'Refactor the parser', 'notes'])
     const roles = treeByType(view, 'select')[1]
@@ -6552,6 +6569,173 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 63 — the box fix, the magnifier interception, and the palette's new action row.
+{
+  const t = dictionaryOf('en')
+
+  // --- the Text control's CSS, not just its element kind ------------------
+  {
+    const inputRule = /\.edh-adv-input \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
+    assert.ok(inputRule !== null, 'the input has its own rule')
+    assert.equal(inputRule[0].includes('flex'), false, 'the input carries no flex basis — a basis in a column wrapper is a HEIGHT')
+    assert.ok(inputRule[0].includes('width: 100%'), 'its width comes from the wrapper')
+    const wrapperRule = /\.edh-adv-field-text \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
+    assert.ok(wrapperRule !== null, 'the text wrapper has a rule')
+    assert.ok(wrapperRule[0].includes('flex: 1 1 320px'), 'about 320px wide')
+    assert.ok(wrapperRule[0].includes('min-width'), 'and it can shrink on narrow widths')
+    const sharedRule = /\.edh-adv-input, \.edh-adv-select, \.edh-adv-date \{[^}]*\}/u.exec(ADV_SEARCH_CSS)
+    assert.ok(sharedRule !== null)
+    assert.ok(sharedRule[0].includes('height: 30px'), 'the control is 30px tall')
+    assert.ok(sharedRule[0].includes('box-sizing: border-box'), 'and that 30px includes the border')
+    assert.equal(ADV_SEARCH_CSS.includes('resize:'), false, 'no resize handle anywhere')
+    assert.ok(/\.edh-adv-select, \.edh-adv-date \{ flex: none; \}/u.test(ADV_SEARCH_CSS), 'the selects keep their own width')
+    assert.ok(/\.edh-adv-bar \{[^}]*flex-wrap: wrap/u.test(ADV_SEARCH_CSS), 'the bar is the one wrapping row')
+  }
+
+  // --- the shipped magnifier ---------------------------------------------
+  {
+    // The anchor is the accessible name, verified from the asar.
+    assert.deepEqual(SEARCH_TRIGGER_LABELS, ['Search sessions', '搜索会话'], 'both shipped locales')
+    const button = attributes => ({
+      getAttribute: name => (name in attributes ? attributes[name] : null),
+    })
+    const withClosest = closest => ({ closest: () => closest })
+    assert.equal(searchTriggerOf(withClosest(button({ 'aria-label': 'Search sessions' }))).getAttribute('aria-label'), 'Search sessions', 'matched by aria-label')
+    assert.equal(searchTriggerOf(withClosest(button({ 'aria-label': '搜索会话' }))).getAttribute('aria-label'), '搜索会话', 'and in the Chinese UI')
+    assert.equal(searchTriggerOf(withClosest(button({ 'aria-label': '  SEARCH SESSIONS ' }))).getAttribute('aria-label'), '  SEARCH SESSIONS ', 'trimmed and case-insensitive')
+    assert.equal(searchTriggerOf(withClosest(button({ title: 'Search sessions' }))).getAttribute('title'), 'Search sessions', 'title is the fallback')
+    assert.equal(searchTriggerOf(withClosest(button({ 'aria-label': 'New session' }))), undefined, 'some other button is not ours')
+    assert.equal(searchTriggerOf(withClosest(button({})),), undefined, 'a nameless element is not ours')
+    assert.equal(searchTriggerOf(withClosest(undefined)), undefined)
+    assert.equal(searchTriggerOf(null), undefined)
+    assert.equal(searchTriggerOf({}), undefined, 'a target with no closest is not ours')
+  }
+
+  {
+    // The delegated capture listener: intercepts our button, ignores the rest.
+    const listeners = []
+    const fakeDocument = {
+      addEventListener(type, handler, capture) {
+        listeners.push({ type, handler, capture })
+      },
+      removeEventListener(type, handler, capture) {
+        const at = listeners.findIndex(entry => entry.type === type && entry.handler === handler && entry.capture === capture)
+        if (at >= 0) listeners.splice(at, 1)
+      },
+    }
+    const opened = []
+    const written = []
+    const dispose = installSearchTriggerGuard({
+      document: fakeDocument,
+      open: () => opened.push('open'),
+      log: payload => written.push(payload),
+    })
+    assert.equal(listeners.length, 1, 'one delegated listener')
+    assert.equal(listeners[0].type, 'click')
+    assert.equal(listeners[0].capture, true, 'in the capture phase, so React never sees the click')
+    const handler = listeners[0].handler
+
+    const events = []
+    const makeEvent = target => {
+      const event = {
+        target,
+        prevented: 0,
+        stopped: 0,
+        preventDefault: () => {
+          event.prevented++
+        },
+        stopPropagation: () => {
+          event.stopped++
+        },
+      }
+      events.push(event)
+      return event
+    }
+    const magnifier = button => ({ closest: () => button })
+    const ours = makeEvent(magnifier({ getAttribute: name => (name === 'aria-label' ? 'Search sessions' : null) }))
+    handler(ours)
+    assert.equal(ours.prevented, 1, 'the shipped click is cancelled')
+    assert.equal(ours.stopped, 1, 'and never reaches its own handler')
+    assert.deepEqual(opened, ['open'], 'our palette opens instead')
+    assert.equal(written.at(-1).phase, 'intercepted')
+
+    const elsewhere = makeEvent(magnifier({ getAttribute: name => (name === 'aria-label' ? 'Settings' : null) }))
+    handler(elsewhere)
+    assert.equal(elsewhere.prevented, 0, 'another button is left alone')
+    assert.deepEqual(opened, ['open'], 'and opens nothing')
+
+    // A click that throws while reading the DOM must not break the page.
+    handler(makeEvent({ closest: () => { throw new Error('detached') } }))
+    assert.deepEqual(opened, ['open'], 'a torn-down node is swallowed')
+
+    dispose()
+    assert.equal(listeners.length, 0, 'disposal removes the listener')
+    // A later click has nothing left to reach: the document's own registry is empty.
+    for (const entry of [...listeners]) {
+      entry.handler(makeEvent(magnifier({ getAttribute: name => (name === 'aria-label' ? 'Search sessions' : null) })))
+    }
+    assert.deepEqual(opened, ['open'], 'and a late click does nothing')
+
+    // No document at all (the suite, a headless probe): nothing throws.
+    const noop = installSearchTriggerGuard({ document: undefined, open: () => opened.push('never') })
+    assert.equal(typeof noop, 'function')
+    noop()
+    assert.deepEqual(opened, ['open'], 'no document, no listener, no throw')
+  }
+
+  // --- both doors open the same state -----------------------------------
+  {
+    const bus = createPaletteBus()
+    const seen = []
+    const off = bus.subscribe(open => seen.push(open))
+    const listener = []
+    const fakeDocument = {
+      addEventListener: (type, handler) => listener.push(handler),
+      removeEventListener: () => undefined,
+    }
+    const dispose = installSearchTriggerGuard({ document: fakeDocument, open: () => bus.open('magnifier'), log: () => {} })
+    listener[0]({ target: { closest: () => ({ getAttribute: name => (name === 'aria-label' ? 'Search sessions' : null) }) }, preventDefault: () => {}, stopPropagation: () => {} })
+    assert.deepEqual(seen, [true], 'the magnifier opens the palette')
+    assert.equal(bus.via(), 'magnifier', 'and says which door')
+    // The footer button opens the very same bus state.
+    const Button = stubPageFactory().createSearchButton(t, bus)
+    bus.close()
+    Button({ wide: false }).props.onClick()
+    assert.equal(bus.isOpen(), true, 'the footer button opens the same state')
+    assert.equal(bus.via(), 'button')
+    // And Ctrl+K still does, even when the shipped command already consumed it.
+    const intent = searchShortcutIntent({ key: 'k', ctrlKey: true, defaultPrevented: false })
+    assert.equal(intent, true, 'the keyboard path is unchanged')
+    off()
+    dispose()
+  }
+
+  // --- the palette's Advanced search action -----------------------------
+  {
+    const rows = searchActionRows(t)
+    const advanced = rows.find(row => row.payload.action === 'advanced')
+    assert.ok(advanced !== undefined, 'the Actions section offers Advanced search')
+    assert.equal(advanced.label, 'Advanced search')
+    assert.equal(advanced.kind, 'action', 'a plain action row, like its neighbours')
+    assert.equal(advanced.meta, '')
+    const keys = rows.map(row => row.key)
+    assert.equal(new Set(keys).size, keys.length, 'every row has its own key')
+
+    const calls = []
+    const faces = { layout: { selectPanel: id => calls.push(id), toggleSidebar: () => calls.push('sidebar') } }
+    assert.deepEqual(runSearchAction(faces, 'advanced'), { ok: true })
+    assert.deepEqual(calls, [ADV_SEARCH_ID], 'navigates by the key we registered')
+    assert.equal(ADV_SEARCH_ID, 'edh-search-advanced', 'the same key the main slot owns')
+    assert.deepEqual(runSearchAction({}, 'advanced'), { ok: false, reason: 'no-layout' })
+    // The action appears in the flat row list too, after the other actions.
+    const built = searchRowsFor({ query: '', sessions: [], messages: { status: 'idle' }, t })
+    const flatAdvanced = built.rows.find(row => row.payload?.action === 'advanced')
+    assert.ok(flatAdvanced !== undefined, 'and it is in the flat keyboard list')
+    assert.equal(built.rows.at(-1).key, flatAdvanced.key, 'last of the Actions rows')
+  }
+}
+
+console.log('edh search: box, magnifier, and menu-action checks passed')
 console.log('edh search: advanced page, filters, and paging checks passed')
 console.log('edh search: palette, sections, and chat checks passed')
 console.log('edh notify: click-to-raise checks passed')

@@ -205,6 +205,7 @@ window.__ModuleLoader__.load({
       searchActionSettings: 'Open Settings',
       searchActionSidebar: 'Toggle the sidebar',
       searchActionConversation: 'Show the conversation',
+      searchActionAdvanced: 'Advanced search',
       searchNoChat: 'The workspace is not ready yet.',
       searchNone: 'Nothing here.',      notifyNav: 'Notifications',
       notifyTitle: 'Notifications',
@@ -487,6 +488,7 @@ window.__ModuleLoader__.load({
       searchActionSettings: '打开设置',
       searchActionSidebar: '显示或隐藏侧边栏',
       searchActionConversation: '回到对话',
+      searchActionAdvanced: '高级搜索',
       searchNoChat: '工作区尚未就绪。',
       searchNone: '这里什么都没有。',      notifyNav: '通知',
       notifyTitle: '通知',
@@ -7764,6 +7766,7 @@ window.__ModuleLoader__.load({
         { kind: 'action', key: 'action:settings', label: t('searchActionSettings'), meta: '', payload: { action: 'settings' } },
         { kind: 'action', key: 'action:sidebar', label: t('searchActionSidebar'), meta: '', payload: { action: 'sidebar' } },
         { kind: 'action', key: 'action:conversation', label: t('searchActionConversation'), meta: '', payload: { action: 'conversation' } },
+        { kind: 'action', key: 'action:advanced', label: t('searchActionAdvanced'), meta: '', payload: { action: 'advanced' } },
       ]
     }
 
@@ -8295,6 +8298,18 @@ window.__ModuleLoader__.load({
         }
         return { ok: false, reason: 'no-layout' }
       }
+      if (action === 'advanced') {
+        const layout = faces?.layout
+        if (typeof layout?.selectPanel === 'function') {
+          try {
+            layout.selectPanel(ADV_SEARCH_ID)
+            return { ok: true }
+          } catch (error) {
+            return { ok: false, reason: messageOf(error) }
+          }
+        }
+        return { ok: false, reason: 'no-layout' }
+      }
       return { ok: false, reason: 'unknown-action' }
     }
 
@@ -8784,6 +8799,79 @@ window.__ModuleLoader__.load({
         }
       }
     }
+    /**
+     * The shipped sidebar magnifier's accessible names, in both shipped locales.
+     *
+     * Verified from the installed asar: `dsh-client-ui-workspace` renders its
+     * search trigger as `<button type="button" aria-label={t('search.sessions.aria')}
+     * aria-keyshortcuts=… aria-expanded=…><IconSearchOutlineRegular /></button>`,
+     * and that dictionary entry is "Search sessions" (en) / "搜索会话" (zh). The
+     * accessible name is the only anchor a build is likely to keep — the class
+     * names are hashed (`GAkraW_searchButton`) and the icon is a component.
+     */
+    const SEARCH_TRIGGER_LABELS = ['Search sessions', '搜索会话']
+
+    /**
+     * The shipped magnifier for one click target, or undefined.
+     *
+     * Walks up to the nearest button (the click usually lands on the glyph inside
+     * it) and compares its accessible name, falling back to `title`.
+     * @param target - the event target.
+     * @param labels - the names to accept.
+     */
+    function searchTriggerOf(target, labels = SEARCH_TRIGGER_LABELS) {
+      if (target === null || typeof target !== 'object') return undefined
+      const closest = typeof target.closest === 'function' ? target.closest('button, [role="button"]') : undefined
+      if (closest === undefined || closest === null || typeof closest.getAttribute !== 'function') return undefined
+      const raw = closest.getAttribute('aria-label') ?? closest.getAttribute('title') ?? ''
+      const name = String(raw).trim().toLowerCase()
+      if (name === '') return undefined
+      const wanted = (Array.isArray(labels) ? labels : SEARCH_TRIGGER_LABELS).map(label => String(label).trim().toLowerCase())
+      return wanted.includes(name) ? closest : undefined
+    }
+
+    /**
+     * Make the sidebar's own magnifier open *our* palette instead of the shipped
+     * inline search.
+     *
+     * One delegated capture-phase listener on the document, because the sidebar
+     * re-renders and a one-shot query would go stale: capture runs before the
+     * React root's own listeners, so `stopPropagation` means the shipped button's
+     * `onClick` (which expands the inline field) and its wrapper's `onClick` both
+     * never fire. A click anywhere else is left completely alone; an element that
+     * is not found costs nothing, and Ctrl+K keeps working regardless.
+     * @param options - the document, the names, and what to open.
+     * @returns the disposer.
+     */
+    function installSearchTriggerGuard(options = {}) {
+      const doc = options.document ?? (typeof document === 'undefined' ? undefined : document)
+      if (doc === undefined || doc === null || typeof doc.addEventListener !== 'function') return () => {}
+      const labels = Array.isArray(options.labels) ? options.labels : SEARCH_TRIGGER_LABELS
+      const open = typeof options.open === 'function' ? options.open : () => {}
+      const log = typeof options.log === 'function' ? options.log : searchWrite
+      const onClick = event => {
+        let found
+        try {
+          found = searchTriggerOf(event?.target, labels)
+        } catch (error) {
+          return
+        }
+        if (found === undefined) return
+        if (typeof event.preventDefault === 'function') event.preventDefault()
+        if (typeof event.stopPropagation === 'function') event.stopPropagation()
+        log({ phase: 'intercepted', via: 'magnifier' })
+        open()
+      }
+      doc.addEventListener('click', onClick, true)
+      return () => {
+        try {
+          doc.removeEventListener('click', onClick, true)
+        } catch (error) {
+          // A document already torn down has nothing to detach.
+        }
+      }
+    }
+
     /** One quiet destination label for the sidebar row. */
     function advSearchPanelIcon(props = {}) {
       const size = Number(props?.size) || 16
@@ -8821,7 +8909,10 @@ window.__ModuleLoader__.load({
         const handler = on('onFilter')
         if (handler !== undefined) handler(patch)
       }
-      const field = (labelText, control) => h('label', { key: labelText, className: 'edh-adv-field' }, [
+      const field = (labelText, control, variant) => h('label', {
+        key: labelText,
+        className: variant === undefined ? 'edh-adv-field' : `edh-adv-field edh-adv-field-${variant}`,
+      }, [
         h('span', { key: 'label', className: 'edh-adv-field-label' }, labelText),
         control,
       ])
@@ -8831,7 +8922,7 @@ window.__ModuleLoader__.load({
           key: 'query',
           ref: view.inputRef,
           className: 'edh-adv-input',
-          type: 'search',
+          type: 'text',
           value: filters.query,
           placeholder: t('advQueryPlaceholder'),
           'aria-label': t('advQueryLabel'),
@@ -8840,7 +8931,7 @@ window.__ModuleLoader__.load({
             const handler = on('onQueryKeyDown')
             if (handler !== undefined) handler(event)
           },
-        })),
+        }), 'text'),
         field(t('advSessionLabel'), h('select', {
           key: 'session',
           className: 'edh-adv-select',
@@ -9165,8 +9256,16 @@ window.__ModuleLoader__.load({
 .edh-adv-intro { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
 .edh-adv-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; padding-bottom: 14px; border-bottom: 1px solid var(--dsw-alias-border-l); }
 .edh-adv-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/*
+ * The width lives on the *wrapper*, never on the input: this wrapper is a column,
+ * so a flex basis on its child would be that child's HEIGHT — which is exactly
+ * how the text field became a tall empty box and pushed the rest of the bar onto
+ * a second row.
+ */
+.edh-adv-field-text { flex: 1 1 320px; min-width: 200px; }
 .edh-adv-field-label { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
 .edh-adv-input, .edh-adv-select, .edh-adv-date {
+  box-sizing: border-box;
   height: 30px;
   padding: 0 8px;
   border: 1px solid var(--dsw-alias-border-l);
@@ -9176,7 +9275,8 @@ window.__ModuleLoader__.load({
   font-size: 13px;
   line-height: 18px;
 }
-.edh-adv-input { flex: 1 1 240px; min-width: 160px; }
+.edh-adv-input { width: 100%; }
+.edh-adv-select, .edh-adv-date { flex: none; }
 .edh-adv-input:focus-visible, .edh-adv-select:focus-visible, .edh-adv-date:focus-visible,
 .edh-adv-button:focus-visible, .edh-adv-row-main:focus-visible, .edh-adv-row-ask:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
@@ -10181,6 +10281,9 @@ window.__ModuleLoader__.load({
       const SearchPalette = createSearchPalette(t, paletteBus, searchFaces)
       const SearchButton = createSearchButton(t, paletteBus)
       ctx.effect(() => installSearchStyles(), 'edh: search styles')
+      // The sidebar's own magnifier is the primary door: one delegated capture
+      // listener turns it into this palette instead of the shipped inline search.
+      ctx.effect(() => installSearchTriggerGuard({ open: () => paletteBus.open('magnifier') }), 'edh: search trigger guard')
 
       /** Register one palette part, and keep it in step with its row. */
       const registerPalettePart = (slot, id, order, Component, label) => () => {
@@ -10258,7 +10361,19 @@ window.__ModuleLoader__.load({
       ctx.effect(() => {
         if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return () => {}
         const onKeyDown = event => {
-          if (!searchShortcutIntent(event)) return
+          // The Harness's own `session.search` command already claims KeyK with
+          // the primary modifier and consumes the gesture from a capture-phase
+          // listener on `window` — which nothing below it can pre-empt. So this
+          // deliberately ignores `defaultPrevented`: the palette opens anyway,
+          // on top of whatever the shipped inline field did underneath.
+          const intent = {
+            key: event?.key,
+            ctrlKey: event?.ctrlKey,
+            metaKey: event?.metaKey,
+            altKey: event?.altKey,
+            defaultPrevented: false,
+          }
+          if (!searchShortcutIntent(intent)) return
           if (typeof event.preventDefault === 'function') event.preventDefault()
           paletteBus.toggle('keyboard')
         }
@@ -10612,6 +10727,9 @@ window.__ModuleLoader__.load({
       searchInitialState,
       searchIndexedNote,
       installChat,
+      searchTriggerOf,
+      installSearchTriggerGuard,
+      SEARCH_TRIGGER_LABELS,
       createAdvancedRunner,
       createAdvancedSearchPage,
       advSearchView,

@@ -6621,7 +6621,8 @@ function recordingNotification(permission, behaviour) {
     assert.deepEqual(failed.rows.slice(0, 1).map(row => row.kind), ['ask-retry'], 'a Retry row')
     assert.equal(failed.rows[0].label, 'Retry')
     assert.equal(searchAskFailure('too-short', '', t), 'Type a few more words first.')
-    assert.equal(searchAskFailure('unavailable', '', t), 'The agent is not available in this build.')
+    assert.equal(searchAskFailure('unavailable', '', t), 'Your conversation index has not been built yet. It builds in the background after a restart; search messages meanwhile.')
+    assert.equal(searchAskFailure('no-fetch', '', t), 'The agent is not available in this build.', 'no fetch at all is its own shape')
     assert.equal(searchAskFailure('error', 'the Host said no', t), 'the Host said no', "the Host's own sentence wins")
 
     // The Messages section is untouched by a failed lookup.
@@ -6740,7 +6741,7 @@ function recordingNotification(permission, behaviour) {
     const without = createAskRunner({ log: () => {}, onPatch: patch => patches.push(patch) })
     without.submit('q')
     await sleep(5)
-    assert.equal(patches.at(-1).reason, 'unavailable', 'no fetch is unavailable, not a crash')
+    assert.equal(patches.at(-1).reason, 'no-fetch', 'no fetch is its own shape, not a crash')
   }
 
   // --- navigation and the escape hatches -------------------------------
@@ -6774,6 +6775,109 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 66 — the ask failure mapping: each shape names its own remedy.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  const RESTART = 'This build does not have the ask service yet. Restart the app, then try again.'
+  const UNEXPECTED = "The ask service answered unexpectedly. Stop the app's Remote page and try again."
+  const NO_INDEX = 'Your conversation index has not been built yet. It builds in the background after a restart; search messages meanwhile.'
+  const NO_MODEL = 'No model is configured, so the agent cannot search for you. Set one in the harness settings.'
+  const BUSY = 'One search is already running. Give it a moment.'
+  const TIMEOUT = 'The agent took too long and gave up.'
+
+  /** Run one scripted ask answer through the runner and return its last patch. */
+  const askWith = async response => {
+    const patches = []
+    const runner = createAskRunner({
+      log: () => {},
+      onPatch: patch => patches.push(patch),
+      timeoutMs: 500,
+      stepMs: 500,
+      fetch: async () => response(),
+    })
+    runner.submit('streaming parser')
+    await sleep(15)
+    runner.cancel()
+    return patches.at(-1)
+  }
+  const http = status => () => ({ ok: false, status, json: async () => ({}) })
+  const answered = (body, status = 200) => () => ({ ok: true, status, json: async () => body })
+  const html = () => () => ({ ok: true, status: 200, json: async () => { throw new Error('not JSON') } })
+
+  // --- the runner's own reasons -----------------------------------------
+  assert.equal((await askWith(http(404))).reason, 'route-missing', 'a 404 is a route this build does not have')
+  assert.equal((await askWith(http(405))).reason, 'unexpected', 'a 405 is the wrong route')
+  assert.equal((await askWith(http(429))).reason, 'busy', 'a 429 is a queue')
+  assert.equal((await askWith(html())).reason, 'unexpected', 'an HTML body is not ours to read')
+  assert.equal((await askWith(http(500))).reason, 'http-500', 'a plain server error keeps its status')
+
+  // --- the sentences ----------------------------------------------------
+  assert.equal(searchAskFailure('route-missing', '', t), RESTART)
+  assert.equal(searchAskFailure('unexpected', '', t), UNEXPECTED)
+  assert.equal(searchAskFailure('no-model', '', t), NO_MODEL)
+  assert.equal(searchAskFailure('busy', '', t), BUSY)
+  assert.equal(searchAskFailure('timeout', '', t), TIMEOUT)
+  assert.equal(searchAskFailure('unavailable', '', t), NO_INDEX, 'no message at all is an unbuilt index')
+  assert.equal(searchAskFailure('unavailable', 'the conversation index is empty', t), NO_INDEX, 'an index message is the same shape')
+  assert.equal(searchAskFailure('unavailable', 'build in progress', t), NO_INDEX)
+  assert.equal(searchAskFailure('unavailable', 'the provider refused', t), 'the provider refused', "the Host's own sentence wins")
+  assert.equal(searchAskFailure('http-500', 'boom', t), 'boom', 'an unknown shape still carries its message')
+  assert.equal(searchAskFailure('http-500', '', t), 'The agent could not search your conversations.', 'and falls back honestly')
+  assert.equal(searchAskFailure('no-fetch', '', t), 'The agent is not available in this build.')
+
+  // --- end to end: the state, the sentence, Retry, and the fast path ----
+  {
+    const messageRow = { kind: 'message', key: 'm1', sessionId: 's1', seq: 3, title: 'Refactor', role: 'assistant', time: 0, segments: [{ text: 'parser', hit: true }], hit: 'parser' }
+    const states = [
+      ['a 404 from the running build', http(404), RESTART],
+      ['an HTML answer', html(), UNEXPECTED],
+      ['an unbuilt index', answered({ ok: false, reason: 'unavailable', message: 'conversation index not built' }), NO_INDEX],
+      ['no model', answered({ ok: false, reason: 'no-model' }), NO_MODEL],
+      ['a busy service', answered({ ok: false, reason: 'busy' }), BUSY],
+      ['a busy status only', http(429), BUSY],
+      ['a timeout', answered({ ok: false, reason: 'timeout' }), TIMEOUT],
+    ]
+    for (const [label, response, sentence] of states) {
+      const patch = await askWith(response)
+      const built = searchRowsFor({
+        query: 'parser',
+        sessions: [],
+        messages: { status: 'ready', rows: [messageRow], indexed: null, truncated: false },
+        ask: patch,
+        t,
+      })
+      const chat = built.sections[0]
+      assert.equal(chat.note, sentence, `${label}: the exact sentence`)
+      assert.equal(chat.rows.length, 1, `${label}: one Retry row`)
+      assert.equal(chat.rows[0].kind, 'ask-retry')
+      assert.equal(chat.rows[0].label, 'Retry', `${label}: Retry is present`)
+      const messages = built.sections.find(section => section.id === 'messages')
+      assert.equal(messages.rows.length, 1, `${label}: the Messages results survive`)
+      assert.deepEqual(built.rows.filter(row => row.kind === 'message').map(row => row.key), ['m1'])
+
+      // And the view draws it: the sentence, a Retry, and the message row.
+      const view = stub.searchPaletteView({ t, state: { query: 'parser' }, sections: built.sections, rows: built.rows, active: 0, handlers: {} })
+      assert.ok(hasText(view, sentence), `${label}: the sentence is on screen`)
+      assert.ok(hasText(view, 'Retry'))
+      assert.equal(treeByType(view, 'button').filter(button => button.props.role === 'option').length, built.rows.length, `${label}: every row is reachable`)
+    }
+  }
+
+  // --- and a timeout still says what it said before ---------------------
+  {
+    const patches = []
+    const runner = createAskRunner({ log: () => {}, onPatch: patch => patches.push(patch), timeoutMs: 10, stepMs: 500, fetch: () => new Promise(() => {}) })
+    runner.submit('slow')
+    await sleep(40)
+    assert.equal(patches.at(-1).reason, 'timeout')
+    runner.cancel()
+  }
+}
+
+console.log('edh search: ask failure mapping checks passed')
 console.log('edh search: agentic chat section checks passed')
 console.log('edh skills: tabs, scope, and row checks passed')
 console.log('edh search: magnifier interception checks passed')

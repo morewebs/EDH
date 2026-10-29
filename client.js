@@ -190,6 +190,11 @@ window.__ModuleLoader__.load({
       searchAskFailed: 'The agent could not search your conversations.',
       searchAskTimeout: 'The agent took too long and gave up.',
       searchAskTooShort: 'Type a few more words first.',
+      searchAskRestart: 'This build does not have the ask service yet. Restart the app, then try again.',
+      searchAskUnexpected: 'The ask service answered unexpectedly. Stop the app\'s Remote page and try again.',
+      searchAskNoIndex: 'Your conversation index has not been built yet. It builds in the background after a restart; search messages meanwhile.',
+      searchAskNoModel: 'No model is configured, so the agent cannot search for you. Set one in the harness settings.',
+      searchAskBusy: 'One search is already running. Give it a moment.',
       searchAskUnavailable: 'The agent is not available in this build.',
       searchChatRetry: 'Retry',
       searchChatSection: 'Chat',
@@ -473,6 +478,11 @@ window.__ModuleLoader__.load({
       searchAskFailed: 'agent 无法检索你的对话。',
       searchAskTimeout: 'agent 花的时间太长，放弃了。',
       searchAskTooShort: '再多输入几个词。',
+      searchAskRestart: '这个构建还没有 ask 服务。请重启应用后再试。',
+      searchAskUnexpected: 'ask 服务返回了意料之外的响应。请先停用应用的 Remote 页面再试。',
+      searchAskNoIndex: '对话索引还没有建好。重启后它会在后台构建；期间可以先用消息搜索。',
+      searchAskNoModel: '没有配置模型，agent 无法替你检索。请在 harness 设置里选择一个。',
+      searchAskBusy: '已经有一个检索在运行，稍等一下。',
       searchAskUnavailable: '这个构建里没有 agent。',
       searchChatRetry: '重试',
       searchChatSection: '对话',
@@ -7885,7 +7895,7 @@ window.__ModuleLoader__.load({
 
       const run = async (text, mine) => {
         if (typeof request !== 'function') {
-          settle(mine, { status: 'error', reason: 'unavailable' })
+          settle(mine, { status: 'error', reason: 'no-fetch' })
           return
         }
         const signal = typeof AbortController === 'function' ? new AbortController() : undefined
@@ -7899,11 +7909,26 @@ window.__ModuleLoader__.load({
           })
           if (mine !== generation) return
           if (response === null || typeof response !== 'object' || response.ok !== true) {
-            settle(mine, { status: 'error', reason: String(response?.status ?? 'no-response') })
-            log({ phase: 'failed', action: 'ask', reason: String(response?.status ?? 'no-response') })
+            // The shape of the refusal decides the sentence: a route this build
+            // does not have is a restart, a wrong route or a proxy answer is not
+            // ours to read, and a 429 is a queue rather than a fault.
+            const status = Number(response?.status) || 0
+            const reason = status === 404
+              ? 'route-missing'
+              : status === 429 ? 'busy' : status === 405 ? 'unexpected' : `http-${status}`
+            settle(mine, { status: 'error', reason, message: '' })
+            log({ phase: 'failed', action: 'ask', reason: `http-${status}` })
             return
           }
-          const answer = await response.json()
+          let answer
+          try {
+            answer = await response.json()
+          } catch (error) {
+            // A body we cannot parse is HTML, a proxy page, or a dev server.
+            settle(mine, { status: 'error', reason: 'unexpected', message: '' })
+            log({ phase: 'failed', action: 'ask', reason: 'unparsable' })
+            return
+          }
           if (mine !== generation) return
           if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
             const reason = String(answer?.reason ?? 'error')
@@ -7990,12 +8015,32 @@ window.__ModuleLoader__.load({
     }
 
     /** What the sentence under the section says for one failed lookup. */
+    /**
+     * The sentence under the Chat section for one failed lookup.
+     *
+     * One generic "could not search" told the reader nothing. Each shape a
+     * failure can take now names the actual remedy: a missing route is a restart
+     * (the running build predates the row), an index that has not been built is
+     * a wait, a missing model is a setting. The Host's own sentence still wins
+     * whenever it gives one — except for `unavailable` with an index message,
+     * where its text ("index not built") is exactly what the long sentence says.
+     */
     function searchAskFailure(reason, message, t) {
-      if (reason === 'too-short') return t('searchAskTooShort')
-      if (reason === 'unavailable') return t('searchAskUnavailable')
-      if (reason === 'timeout') return t('searchAskTimeout')
-      if (message !== '' && message !== undefined) return message
-      return t('searchAskFailed')
+      const shape = String(reason ?? '')
+      const text = typeof message === 'string' ? message.trim() : ''
+      if (shape === 'too-short') return t('searchAskTooShort')
+      if (shape === 'timeout') return t('searchAskTimeout')
+      if (shape === 'no-model') return t('searchAskNoModel')
+      if (shape === 'busy') return t('searchAskBusy')
+      // `POST api/edh.ask` is not mounted: the app is running a build without it.
+      if (shape === 'route-missing') return t('searchAskRestart')
+      // 405, an HTML body, a proxy page: an answer that is not ours to read.
+      if (shape === 'unexpected') return t('searchAskUnexpected')
+      if (shape === 'unavailable') {
+        return text === '' || /index|build/iu.test(text) ? t('searchAskNoIndex') : text
+      }
+      if (shape === 'no-fetch') return t('searchAskUnavailable')
+      return text === '' ? t('searchAskFailed') : text
     }
 
     /** The first Messages row, so "Search messages instead" can move the caret there. */

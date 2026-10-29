@@ -96,3 +96,11 @@
     - id: edh-skills
       name: '@moreweb/edh/skills'
       config: {}
+
+    # ask — "which of my past conversations is about X?", answered by the model
+    # over EDH's own search index. Two model calls (plan, then synthesise) around
+    # one memory scan, and no Session created or resumed: no `sessionId` is ever
+    # passed to the model service.
+    - id: edh-ask
+      name: '@moreweb/edh/ask'
+      config: {}

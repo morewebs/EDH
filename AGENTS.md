@@ -449,6 +449,43 @@ own `invalidateCache()` when it exists — the same call the Harness makes after
 registration change — and is a plain re-read when it does not, which is honest because
 providers are watcher-driven.
 
+## Ask
+
+`ask.js` answers `POST /api/edh.ask { q, limit? }` — "which of my past conversations
+is about X?" — by asking the model to search EDH's own index, **without creating or
+resuming a Session**. Two model calls around one memory scan:
+
+```
+plan       → {"queries": ["zstd frame", "decompressSync"]}     maxTokens 300, no tools
+search     → search.js's index, one row per Session, top 10     no model, no Session
+synthesise → ANSWER: … / SESSIONS: id1 (reason), id2 (reason)   maxTokens 1500
+```
+
+Four traps of the `llm` service, all of which are load-bearing:
+
+- **Never pass `sessionId` or `purpose`.** `GenerateOptions` accepts both, and a
+  Session id is exactly how a "search" would create or resume one. `test/ask.mjs`
+  asserts the option object has neither, and that it carries no `tools`.
+- **`maxTokens` must be explicit** — omitted, this profile materialises a 200 000
+  token cap. We ask for 300 and 1500, `temperature: 0`.
+- **`reasoningEffort` defaults to `max` here.** It is always overridden from
+  `resolveModelInfo(...).reasoning.efforts` (the least one — `'off'` on this
+  machine), because a thinking round cannot fit in 28 s. `resolveModelInfo` also
+  preflights `NO_ADAPTER`, which becomes `no-model` rather than `llm-error`.
+- **`prepareCall` is one-shot**, so a multi-round flow calls `stream()` per round.
+  There is no non-streaming call and no JSON mode: `text-delta` chunks are
+  concatenated and the structure is parsed from the prompt's own request
+  (`firstJsonObject`, then `parseSynthesis`).
+
+Two calls and not a tool loop: a loop is N+1 round trips that can each spend the
+whole budget, and `tools` support through a custom gateway route is unproven. The
+budget is 28 s with the client cancelling at 25 s; a `finish` of `error`/`aborted`
+is `llm-error` with the provider's own code (`QUOTA`, `RATE_LIMIT`, `AUTH`, …), and
+`max-tokens` on either round is a truncation, not a failure — a cut plan falls back
+to the question's own words, and a cut synthesis still returns the index hits with
+`Matches "<query>"`. Nothing here is retried; the `llm/stream` waterfall has no
+listeners, so nothing throttles a Host route.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -478,6 +515,7 @@ node test/mobile.mjs
 node test/notify.mjs
 node test/search.mjs
 node test/skills.mjs
+node test/ask.mjs
 node test/mcp.mjs
 node test/usage.mjs
 ```

@@ -18,6 +18,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `notify` | Serves a curated few of the real Windows sound files, so a notification plays the sound you already know |
 | `search` | Full-text search across every stored Session, from a Ctrl+K palette — indexed in the background, answered from memory |
 | `skills` | Lists the skills the agent can actually see, split into the ones this workspace adds and the ones the Harness brings |
+| `ask` | Answers "which conversation is about X?" by asking the model over the search index — two calls, and no Session is created |
 
 A switch in the conversation header turns them all on or off together.
 

@@ -179,9 +179,20 @@ window.__ModuleLoader__.load({
       searchOpen: 'Search',
       searchPlaceholder: 'Search sessions and messages, or ask the agent',
       searchEsc: 'Esc',
+      searchAskIdle: 'Ask the agent to find this conversation',
+      searchAskEmpty: 'Ask the agent what you were working on',
+      searchAskSearching: 'Searching your conversations…',
+      searchAskReading: 'Reading your conversations…',
+      searchAskCancel: 'Cancel',
+      searchAskAgain: 'Ask again',
+      searchAskMessages: 'Search messages instead',
+      searchAskNone: 'The agent did not find a conversation for that.',
+      searchAskFailed: 'The agent could not search your conversations.',
+      searchAskTimeout: 'The agent took too long and gave up.',
+      searchAskTooShort: 'Type a few more words first.',
+      searchAskUnavailable: 'The agent is not available in this build.',
+      searchChatRetry: 'Retry',
       searchChatSection: 'Chat',
-      searchChatStart: 'Start a chat',
-      searchChatAsk: 'Ask about "{query}"',
       searchSessionsSection: 'Sessions',
       searchMessagesSection: 'Messages',
       searchActionsSection: 'Actions',
@@ -197,8 +208,6 @@ window.__ModuleLoader__.load({
       searchActionSettings: 'Open Settings',
       searchActionSidebar: 'Toggle the sidebar',
       searchActionConversation: 'Show the conversation',
-      searchNoChat: 'The workspace is not ready yet.',
-      searchNone: 'Nothing here.',      notifyNav: 'Notifications',
       notifyTitle: 'Notifications',
       notifyIntro: 'A sound when a turn finishes while you are looking somewhere else.',
       notifyOff: 'Notifications are off. Turn them on with the EDH switch.',
@@ -453,9 +462,20 @@ window.__ModuleLoader__.load({
       searchOpen: '搜索',
       searchPlaceholder: '搜索会话与消息，或直接问 agent',
       searchEsc: 'Esc',
+      searchAskIdle: '让 agent 找出这段对话',
+      searchAskEmpty: '问 agent 你之前在做哪件事',
+      searchAskSearching: '正在检索你的对话…',
+      searchAskReading: '正在阅读你的对话…',
+      searchAskCancel: '取消',
+      searchAskAgain: '再问一次',
+      searchAskMessages: '改为搜索消息',
+      searchAskNone: 'agent 没有找到对应的对话。',
+      searchAskFailed: 'agent 无法检索你的对话。',
+      searchAskTimeout: 'agent 花的时间太长，放弃了。',
+      searchAskTooShort: '再多输入几个词。',
+      searchAskUnavailable: '这个构建里没有 agent。',
+      searchChatRetry: '重试',
       searchChatSection: '对话',
-      searchChatStart: '开始对话',
-      searchChatAsk: '询问「{query}」',
       searchSessionsSection: '会话',
       searchMessagesSection: '消息',
       searchActionsSection: '操作',
@@ -471,8 +491,6 @@ window.__ModuleLoader__.load({
       searchActionSettings: '打开设置',
       searchActionSidebar: '显示或隐藏侧边栏',
       searchActionConversation: '回到对话',
-      searchNoChat: '工作区尚未就绪。',
-      searchNone: '这里什么都没有。',      notifyNav: '通知',
       notifyTitle: '通知',
       notifyIntro: '当你看别处时，一轮对话结束后播放提示音。',
       notifyOff: '通知已关闭，请用 EDH 开关打开。',
@@ -7674,24 +7692,44 @@ window.__ModuleLoader__.load({
         rows.push(row)
       }
 
-      // Chat first: the agentic half of the palette, and what was asked for.
-      const chat = { id: 'chat', label: t('searchChatSection'), rows: [], note: '' }
-      push(chat, query === ''
-        ? {
-          kind: 'chat',
-          key: 'chat:start',
-          label: t('searchChatStart'),
-          meta: '',
-          payload: { query: '' },
+      // Chat first: agentic lookup inside the menu. It never creates a session —
+      // it asks the agent which existing conversation the words belong to, and the
+      // palette offers those conversations as rows.
+      const ask = context.ask ?? { status: 'idle' }
+      const chat = { id: 'chat', label: t('searchChatSection'), rows: [], note: '', answer: '', live: false, cancel: false }
+      if (ask.status === 'running') {
+        chat.note = ask.step === 'reading' ? t('searchAskReading') : t('searchAskSearching')
+        chat.live = true
+        chat.cancel = true
+      } else if (ask.status === 'result') {
+        chat.answer = String(ask.answer ?? '')
+        for (const candidate of Array.isArray(ask.candidates) ? ask.candidates : []) {
+          push(chat, {
+            kind: 'candidate',
+            key: `candidate:${candidate.sessionId}`,
+            label: candidate.title === '' ? candidate.sessionId : candidate.title,
+            segments: searchSegments(candidate.title, query),
+            meta: candidate.reason,
+            payload: { sessionId: candidate.sessionId, title: candidate.title, snippet: candidate.snippet },
+          })
         }
-        : {
+        if (chat.rows.length === 0) chat.note = t('searchAskNone')
+        push(chat, { kind: 'ask-again', key: 'ask:again', label: t('searchAskAgain'), meta: '', payload: { query } })
+        push(chat, { kind: 'messages', key: 'ask:messages', label: t('searchAskMessages'), meta: '', payload: {} })
+      } else if (ask.status === 'error') {
+        chat.note = searchAskFailure(String(ask.reason ?? ''), ask.message, t)
+        push(chat, { kind: 'ask-retry', key: 'ask:retry', label: t('searchChatRetry'), meta: '', payload: { query } })
+      } else {
+        push(chat, {
           kind: 'chat',
           key: 'chat:ask',
-          label: t('searchChatAsk', { query: notifyClampText(query, SEARCH_ASK_MAX) }),
+          label: query === '' ? t('searchAskEmpty') : t('searchAskIdle'),
           meta: '',
           payload: { query },
         })
+      }
       sections.push(chat)
+
 
       // Sessions: title matches, straight off the list projection.
       if (query !== '') {
@@ -7775,6 +7813,7 @@ window.__ModuleLoader__.load({
         query: '',
         active: 0,
         messages: { status: 'idle', rows: [], indexed: null, truncated: false },
+        ask: { status: 'idle' },
         busy: '',
       }
     }
@@ -7830,6 +7869,17 @@ window.__ModuleLoader__.load({
 
       const settle = (mine, patch) => {
         if (mine !== generation) return
+        // A finished lookup owns the block: no later step line may overwrite it.
+        if (patch.status === 'result' || patch.status === 'error') {
+          if (timer !== undefined) {
+            clearTimeout(timer)
+            timer = undefined
+          }
+          if (stepper !== undefined) {
+            clearTimeout(stepper)
+            stepper = undefined
+          }
+        }
         onPatch(patch)
       }
 
@@ -8258,18 +8308,37 @@ window.__ModuleLoader__.load({
           : h('span', { key: 'meta', className: 'edh-palette-row-meta' }, row.meta),
       ])
 
-      const sectionNode = section => h('section', { key: section.id, className: 'edh-palette-section' }, [
-        h('div', { key: 'head', className: 'edh-palette-section-head' }, [
+      const sectionNode = section => {
+        const note = section.note === '' || section.note === undefined
+          ? null
+          : h('p', {
+            key: 'note',
+            className: 'edh-palette-note',
+            // The running line is the only thing that changes without a keypress.
+            ...(section.live === true ? { 'aria-live': 'polite', role: 'status' } : {}),
+          }, section.note)
+        const head = h('div', { key: 'head', className: 'edh-palette-section-head' }, [
           h('span', { key: 'label', className: 'edh-palette-section-label' }, section.label),
           section.id === 'messages' && state.truncated === true
             ? h('span', { key: 'trunc', className: 'edh-palette-section-note' }, t('searchTruncated'))
             : null,
-        ]),
-        ...section.rows.map(rowNode),
-        section.note === '' || section.note === undefined
+          section.cancel === true
+            ? h('button', {
+              key: 'cancel',
+              type: 'button',
+              className: 'edh-palette-cancel',
+              onClick: typeof handlers.onCancelAsk === 'function' ? () => handlers.onCancelAsk() : undefined,
+            }, t('searchAskCancel'))
+            : null,
+        ])
+        const answer = section.answer === '' || section.answer === undefined
           ? null
-          : h('p', { key: 'note', className: 'edh-palette-note' }, section.note),
-      ])
+          // Plain text, exactly as the model wrote it: never markdown, never HTML.
+          : h('p', { key: 'answer', className: 'edh-palette-answer' }, section.answer)
+        return h('section', { key: section.id, className: 'edh-palette-section' }, section.id === 'chat'
+          ? [head, answer, note, ...section.rows.map(rowNode)]
+          : [head, ...section.rows.map(rowNode), note])
+      }
 
       return h('div', {
         className: 'edh-palette-layer',
@@ -8338,6 +8407,7 @@ window.__ModuleLoader__.load({
         const inputRef = React.useRef(null)
         const returnTo = React.useRef(null)
         const runner = React.useRef(null)
+        const askRunner = React.useRef(null)
 
         const ask = React.useCallback(text => {
           if (runner.current === null) {
@@ -8356,10 +8426,12 @@ window.__ModuleLoader__.load({
           if (open) {
             // Opening always starts clean: a stale query is never restored.
             runner.current?.cancel()
+            askRunner.current?.cancel()
             searchWrite({ phase: 'opened', via: String(via ?? '') })
             setState(searchInitialState(true))
             return
           }
+          askRunner.current?.cancel()
           setState(previous => (previous.open ? searchInitialState(false) : previous))
         }), [bus])
 
@@ -8397,30 +8469,42 @@ window.__ModuleLoader__.load({
           [state.query, state.open],
         )
         const built = React.useMemo(
-          () => searchRowsFor({ query: state.query, sessions, messages: state.messages, t }),
-          [state.query, sessions, state.messages],
+          () => searchRowsFor({ query: state.query, sessions, messages: state.messages, ask: state.ask, t }),
+          [state.query, sessions, state.messages, state.ask],
         )
+
+        /** Ask the agent which existing conversation the words belong to. */
+        const submitAsk = text => {
+          if (askRunner.current === null) {
+            askRunner.current = createAskRunner({
+              fetch: faces.fetch,
+              onPatch: patch => setState(previous => ({ ...previous, ask: patch, active: 0 })),
+              log: searchWrite,
+            })
+          }
+          askRunner.current.submit(text)
+        }
 
         const run = row => {
           if (row === null || typeof row !== 'object') return
           const payload = row.payload ?? {}
-          if (row.kind === 'chat') {
-            const query = String(payload.query ?? '')
-            close()
-            const started = installChat(faces, query)
-            searchWrite(started.ok
-              ? { phase: 'chatted', via: 'palette', length: query.length }
-              : { phase: 'failed', action: 'chat', reason: started.reason })
+          if (row.kind === 'chat' || row.kind === 'ask-again' || row.kind === 'ask-retry') {
+            const query = String(payload.query ?? state.query ?? '')
+            if (query.trim() !== '') {
+              setState(previous => ({ ...previous, query }))
+              submitAsk(query)
+            }
             return
           }
-          if (row.kind === 'session') {
+          if (row.kind === 'messages') {
+            // Move the caret to the first message row rather than opening anything.
+            setState(previous => ({ ...previous, active: searchFirstMessageIndex(built.rows) }))
+            return
+          }
+          if (row.kind === 'candidate' || row.kind === 'session') {
             close()
-            try {
-              faces.uiWorkspace?.openSession?.({ kind: 'session', sessionId: payload.sessionId })
-              searchWrite({ phase: 'opened-session', sessionId: String(payload.sessionId ?? '') })
-            } catch (error) {
-              searchWrite({ phase: 'failed', action: 'open', reason: messageOf(error) })
-            }
+            const opened = openSessionRow(faces, String(payload.sessionId ?? ''), searchWrite)
+            if (!opened.ok) searchWrite({ phase: 'failed', action: 'open', reason: opened.reason })
             return
           }
           if (row.kind === 'retry') {
@@ -8483,31 +8567,13 @@ window.__ModuleLoader__.load({
             onActivate: run,
             onKeyDown,
             onClose: close,
+            onCancelAsk: () => {
+              askRunner.current?.cancel()
+              setState(previous => ({ ...previous, ask: { status: 'idle' }, active: 0 }))
+              searchWrite({ phase: 'ask-cancelled' })
+            },
           },
         })
-      }
-    }
-
-    /**
-     * Turn the query into a conversation.
-     *
-     * Verified seam: `uiWorkspace.startSession(workspaceId?, options)` takes a
-     * `prompt` and lands it in the new Session's **unsent draft** — there is no
-     * client API that submits a message, and no seam that seeds the composer of
-     * the session already open (which is why the palette offers one chat row and
-     * not a "continue here" row).
-     * @returns `{ ok }`, or `{ ok:false, reason }` when there is nothing to drive.
-     */
-    function installChat(faces, query) {
-      const text = String(query ?? '').trim()
-      const workspace = faces?.uiWorkspace
-      if (typeof workspace?.startSession !== 'function') return { ok: false, reason: 'no-workspace' }
-      try {
-        if (text === '') workspace.startSession(undefined, {})
-        else workspace.startSession(undefined, { prompt: text, whenDraftExists: 'replace' })
-        return { ok: true }
-      } catch (error) {
-        return { ok: false, reason: messageOf(error) }
       }
     }
 
@@ -8686,6 +8752,20 @@ window.__ModuleLoader__.load({
 .edh-palette-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edh-palette-hit { font-weight: 600; color: inherit; }
 .edh-palette-row-meta { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.edh-palette-answer { margin: 2px 8px 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.edh-palette-cancel {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.edh-palette-cancel:hover { color: var(--dsw-alias-label-primary); }
+.edh-palette-cancel:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .edh-palette-note { margin: 2px 8px 6px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .edh-palette-foot {
   display: flex;
@@ -10607,6 +10687,14 @@ window.__ModuleLoader__.load({
       raiseNotifyWindow,
       createPaletteBus,
       createSearchRunner,
+      createAskRunner,
+      searchAskCandidates,
+      searchAskFailure,
+      searchFirstMessageIndex,
+      openSessionRow,
+      SEARCH_ASK_ROUTE,
+      SEARCH_ASK_LIMIT,
+      SEARCH_ASK_TIMEOUT_MS,
       createSearchPalette,
       createSearchButton,
       searchPaletteView,
@@ -10621,7 +10709,6 @@ window.__ModuleLoader__.load({
       searchShortcutIntent,
       searchInitialState,
       searchIndexedNote,
-      installChat,
       searchTriggerOf,
       installSearchTriggerGuard,
       SEARCH_TRIGGER_LABELS,

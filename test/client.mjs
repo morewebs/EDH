@@ -241,6 +241,14 @@ const {
   raiseNotifyWindow,
   createPaletteBus,
   createSearchRunner,
+  createAskRunner,
+  searchAskCandidates,
+  searchAskFailure,
+  searchFirstMessageIndex,
+  openSessionRow,
+  SEARCH_ASK_ROUTE,
+  SEARCH_ASK_LIMIT,
+  SEARCH_ASK_TIMEOUT_MS,
   createSearchButton,
   searchPaletteView,
   searchRowsFor,
@@ -272,7 +280,6 @@ const {
   searchRelativeTime,
   searchMoveIndex,
   searchIndexedNote,
-  installChat,
   runSearchAction,
   SEARCH_CSS,
   SEARCH_MODULE,
@@ -5962,14 +5969,14 @@ function recordingNotification(permission, behaviour) {
   assert.deepEqual(built.sections.map(section => section.id), ['chat', 'sessions', 'messages', 'actions'], 'Chat first, Actions last')
   assert.deepEqual(built.sections.map(section => section.label), ['Chat', 'Sessions', 'Messages', 'Actions'])
   assert.deepEqual(built.rows.map(row => row.kind), ['chat', 'session', 'message', 'action', 'action', 'action'], 'one flat list across sections')
-  assert.equal(built.rows[0].label, 'Ask about "parser"', 'the chat row names the query')
+  assert.equal(built.rows[0].label, 'Ask the agent to find this conversation', 'a search, not a new chat')
   assert.equal(built.sections[1].note, '', 'a section with matches has no note')
   assert.ok(built.sections[2].note.includes('Indexing 4 of 10 sessions'), 'the index progress is one quiet line')
 
   // An empty query: the Chat section invites, and the search sections step aside.
   const empty = searchRowsFor({ query: '', sessions: [], messages: { status: 'idle' }, t })
   assert.deepEqual(empty.sections.map(section => section.id), ['chat', 'actions'], 'no Sessions or Messages to search')
-  assert.equal(empty.rows[0].label, 'Start a chat', 'an invitation, not a row about nothing')
+  assert.equal(empty.rows[0].label, 'Ask the agent what you were working on', 'an invitation to ask, not a new chat')
   assert.equal(empty.rows[0].payload.query, '')
 
   // Loading is not empty: the difference the brief calls out.
@@ -6152,19 +6159,21 @@ function recordingNotification(permission, behaviour) {
     assert.deepEqual(searchMessageRows({ messages: [{ sessionId: '' }] }, 'x'), [], 'a row with no session is dropped')
   }
 
-  // --- the chat seam, verified against uiWorkspace ----------------------
+  // --- the Chat section creates nothing: it only opens existing sessions --
   {
-    const calls = []
-    const faces = { uiWorkspace: { startSession: (...args) => calls.push(args) } }
-    assert.deepEqual(installChat(faces, '  how does the parser work  '), { ok: true })
-    assert.deepEqual(calls[0], [undefined, { prompt: 'how does the parser work', whenDraftExists: 'replace' }], 'the query becomes the new session\'s draft')
-    installChat(faces, '')
-    assert.deepEqual(calls[1], [undefined, {}], 'an empty query just starts a chat')
-    assert.deepEqual(installChat({}, 'x'), { ok: false, reason: 'no-workspace' }, 'no workspace, a plain refusal')
+    // The section has no create-a-chat path at all any more: the helper that
+    // seeded a draft is gone, and opening is the only outward move.
+    assert.equal(typeof mod.__test.installChat, 'undefined', 'no chat-seeding helper survives')
+    const opened = []
+    const faces = { uiWorkspace: { openSession: target => opened.push(target) } }
+    assert.deepEqual(openSessionRow(faces, 's1', () => {}), { ok: true })
+    assert.deepEqual(opened, [{ kind: 'session', sessionId: 's1' }], 'a candidate opens its conversation')
+    assert.deepEqual(openSessionRow({}, 's1', () => {}), { ok: false, reason: 'no-workspace' })
+    assert.deepEqual(openSessionRow(faces, '', () => {}), { ok: false, reason: 'no-session' })
     assert.deepEqual(
-      installChat({ uiWorkspace: { startSession: () => { throw new Error('refused') } } }, 'x'),
+      { ...openSessionRow({ uiWorkspace: { openSession: () => { throw new Error('refused') } } }, 's1', () => {}) },
       { ok: false, reason: 'refused' },
-      'a refusing creation is reported',
+      'a refusing opener is reported, never thrown',
     )
   }
 
@@ -6187,7 +6196,7 @@ function recordingNotification(permission, behaviour) {
   // --- the reset, and the stylesheet's promises -------------------------
   {
     const fresh = searchInitialState(true)
-    assert.deepEqual(fresh, { open: true, query: '', active: 0, messages: { status: 'idle', rows: [], indexed: null, truncated: false }, busy: '' }, 'opening starts clean')
+    assert.deepEqual(fresh, { open: true, query: '', active: 0, messages: { status: 'idle', rows: [], indexed: null, truncated: false }, ask: { status: 'idle' }, busy: '' }, 'opening starts clean')
     assert.equal(searchInitialState(false).open, false)
     assert.ok(SEARCH_CSS.includes('@media (prefers-reduced-motion: reduce)'), 'reduced motion is honoured')
     assert.ok(SEARCH_CSS.includes('width: 640px'), 'the panel is the specified width')
@@ -6196,7 +6205,7 @@ function recordingNotification(permission, behaviour) {
     assert.ok(SEARCH_CSS.includes('--dsw-alias-label-primary'), 'tokens, not raw colours')
     assert.equal(/::before|text-transform:\s*uppercase/.test(SEARCH_CSS), false, 'no all-caps eyebrows')
     for (const glyph of ['·', '→']) assert.equal(SEARCH_CSS.includes(glyph), false, `no ${glyph} glyph in the stylesheet`)
-    const copy = ['searchPlaceholder', 'searchChatStart', 'searchChatAsk', 'searchSearching', 'searchNoMessages', 'searchRetry', 'searchHintMove', 'searchHintOpen', 'searchHintClose']
+    const copy = ['searchPlaceholder', 'searchAskIdle', 'searchAskEmpty', 'searchAskSearching', 'searchSearching', 'searchNoMessages', 'searchRetry', 'searchHintMove', 'searchHintOpen', 'searchHintClose']
     for (const key of copy) {
       const value = dictionaryOf('en')(key, { query: 'q', ready: 1, total: 2 })
       assert.equal(/[\u00b7\u2192]/u.test(value), false, `${key} avoids the forbidden glyph`)
@@ -6529,6 +6538,243 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 65 — the agentic Chat section: four states, cancel, and no session created.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  const candidate = { sessionId: 's-proxy', sessionTitle: 'Refactor the proxy', reason: 'you rewrote the streaming parser here', snippet: 'the streaming parser now reports torn frames', time: 1_700_000_000_000 }
+  const answer = { ok: true, answer: 'Probably "Refactor the proxy" — it is where you rewrote the streaming parser', candidates: [candidate], usedTool: false, turns: 3, elapsedMs: 1200 }
+
+  const chatSection = (ask, query = 'streaming parser') => searchRowsFor({
+    query,
+    sessions: [],
+    messages: { status: 'idle' },
+    ask,
+    t,
+  })
+
+  // --- idle -------------------------------------------------------------
+  {
+    const idle = chatSection({ status: 'idle' })
+    assert.deepEqual(idle.rows.map(row => row.kind), ['chat', 'action', 'action', 'action'], 'one Chat row, then Actions')
+    assert.equal(idle.rows[0].label, 'Ask the agent to find this conversation', 'clearly a search, not a new chat')
+    assert.equal(/chat/i.test(idle.rows[0].label.replace(/^Ask the agent/, '')), false, 'and "chat" is not used as a verb')
+    assert.equal(idle.sections[0].label, 'Chat')
+    const blank = chatSection({ status: 'idle' }, '')
+    assert.equal(blank.rows[0].label, 'Ask the agent what you were working on', 'an invitation when the box is empty')
+    assert.deepEqual(blank.rows[0].payload, { query: '' })
+  }
+
+  // --- running ----------------------------------------------------------
+  {
+    const running = chatSection({ status: 'running', step: 'searching', query: 'x' })
+    assert.equal(running.rows.some(row => row.kind === 'chat'), false, 'the row is replaced, not duplicated')
+    assert.equal(running.sections[0].note, 'Searching your conversations…')
+    assert.equal(running.sections[0].live, true, 'the status block is live')
+    assert.equal(running.sections[0].cancel, true, 'and offers Cancel')
+    const reading = chatSection({ status: 'running', step: 'reading', query: 'x' })
+    assert.equal(reading.sections[0].note, 'Reading your conversations…', 'the second step names itself')
+
+    const view = stub.searchPaletteView({ t, state: { query: 'x' }, sections: running.sections, rows: running.rows, active: 0, handlers: {} })
+    const live = treeByType(view, 'p').find(node => node.props['aria-live'] === 'polite')
+    assert.ok(live !== undefined, 'aria-live="polite" is on the status line')
+    assert.equal(live.props.role, 'status')
+    assert.ok(hasText(view, 'Searching your conversations…'))
+    const cancel = treeByType(view, 'button').find(button => button.props.className === 'edh-palette-cancel')
+    assert.ok(cancel !== undefined, 'a Cancel control')
+    assert.equal(cancel.props.children[0], 'Cancel')
+  }
+
+  // --- result -----------------------------------------------------------
+  {
+    const done = chatSection({ status: 'result', answer: answer.answer, candidates: searchAskCandidates(answer), usedTool: false, turns: 3 })
+    assert.deepEqual(
+      done.rows.map(row => row.kind),
+      ['candidate', 'ask-again', 'messages', 'action', 'action', 'action'],
+      'the candidate, then Ask again, then Search messages instead',
+    )
+    assert.equal(done.rows[0].label, 'Refactor the proxy', 'the candidate is the conversation title')
+    assert.equal(done.rows[0].meta, 'you rewrote the streaming parser here', 'with its one-line reason')
+    assert.equal(done.rows[0].payload.sessionId, 's-proxy')
+    assert.equal(done.rows[1].label, 'Ask again')
+    assert.equal(done.rows[2].label, 'Search messages instead')
+    assert.equal(done.sections[0].answer, answer.answer, 'the answer sentence rides with the section')
+
+    const view = stub.searchPaletteView({ t, state: { query: 'streaming parser' }, sections: done.sections, rows: done.rows, active: 0, handlers: {} })
+    const sentence = treeByType(view, 'p').find(node => node.props.className === 'edh-palette-answer')
+    assert.ok(sentence !== undefined, 'the answer is shown as a sentence')
+    assert.equal(sentence.props.children[0], answer.answer, 'as plain text, exactly as written')
+    assert.equal(sentence.props.dangerouslySetInnerHTML, undefined, 'never as HTML')
+    // When the title contains the query, the match is emphasised structurally.\n    const withHit = chatSection({ status: 'result', answer: 'a', candidates: searchAskCandidates(answer) }, 'proxy')\n    const hitView = stub.searchPaletteView({ t, state: { query: 'proxy' }, sections: withHit.sections, rows: withHit.rows, active: 0, handlers: {} })\n    assert.equal(treeByType(hitView, 'strong').length, 1, 'the matched run in the candidate title is a <strong>')\n    assert.equal(treeByType(hitView, 'strong')[0].props.className, 'edh-palette-hit', 'weight, not colour')
+    // A result with no candidates still says something.
+    const nothing = chatSection({ status: 'result', answer: 'I could not tell.', candidates: [] })
+    assert.equal(nothing.sections[0].note, 'The agent did not find a conversation for that.')
+    assert.deepEqual(nothing.rows.map(row => row.kind), ['ask-again', 'messages', 'action', 'action', 'action'], 'the two escape hatches remain')
+  }
+
+  // --- failure, with the fast path still visible ------------------------
+  {
+    const failed = chatSection({ status: 'error', reason: 'timeout' })
+    assert.equal(failed.sections[0].note, 'The agent took too long and gave up.')
+    assert.deepEqual(failed.rows.slice(0, 1).map(row => row.kind), ['ask-retry'], 'a Retry row')
+    assert.equal(failed.rows[0].label, 'Retry')
+    assert.equal(searchAskFailure('too-short', '', t), 'Type a few more words first.')
+    assert.equal(searchAskFailure('unavailable', '', t), 'The agent is not available in this build.')
+    assert.equal(searchAskFailure('error', 'the Host said no', t), 'the Host said no', "the Host's own sentence wins")
+
+    // The Messages section is untouched by a failed lookup.
+    const both = searchRowsFor({
+      query: 'parser',
+      sessions: [],
+      messages: {
+        status: 'ready',
+        rows: [{ kind: 'message', key: 'm1', sessionId: 's1', seq: 3, title: 'Refactor', role: 'assistant', time: 0, segments: [{ text: 'parser', hit: true }], hit: 'parser' }],
+        indexed: null,
+        truncated: false,
+      },
+      ask: { status: 'error', reason: 'timeout' },
+      t,
+    })
+    assert.deepEqual(both.sections.map(section => section.id), ['chat', 'sessions', 'messages', 'actions'], 'the slow path survives a failed lookup')
+    assert.equal(both.sections[2].rows.length, 1, 'and keeps its results')
+  }
+
+  // --- the runner: submit, supersede, cancel, timeout -------------------
+  {
+    const patches = []
+    const sent = []
+    let release
+    const runner = createAskRunner({
+      log: () => {},
+      onPatch: patch => patches.push(patch),
+      stepMs: 5,
+      timeoutMs: 500,
+      fetch: async (url, init) => {
+        sent.push({ url, init, body: JSON.parse(init.body) })
+        return new Promise(resolve => {
+          release = resolve
+        })
+      },
+    })
+    assert.equal(runner.submit('   '), false, 'an empty question is refused')
+    assert.equal(patches.at(-1).reason, 'too-short')
+
+    assert.equal(runner.submit('streaming parser'), true)
+    assert.equal(sent.length, 1, 'one request')
+    assert.equal(sent[0].url, SEARCH_ASK_ROUTE, 'the exact route')
+    assert.equal(sent[0].init.method, 'POST')
+    assert.equal(sent[0].body.q, 'streaming parser')
+    assert.equal(sent[0].body.limit, SEARCH_ASK_LIMIT)
+    assert.equal(patches.at(-1).status, 'running', 'a submission goes straight to running')
+    assert.equal(patches.at(-1).step, 'searching', 'the first step names itself')
+    await sleep(15)
+    assert.equal(patches.at(-1).step, 'reading', 'and the second step follows while it runs')
+
+    // A second submit supersedes the first: the first answer must never paint.
+    const firstRelease = release
+    runner.submit('proxy rewrite')
+    assert.equal(sent.length, 2, 'the second submission was sent')
+    const secondRelease = release
+    await secondRelease({ ok: true, status: 200, json: async () => answer })
+    await sleep(5)
+    assert.equal(patches.at(-1).status, 'result')
+    assert.equal(patches.at(-1).candidates[0].sessionId, 's-proxy')
+    const before = patches.length
+    await firstRelease({ ok: true, status: 200, json: async () => ({ ok: true, answer: 'stale', candidates: [] }) })
+    await sleep(5)
+    assert.equal(patches.length, before, 'the superseded answer never paints')
+    runner.cancel()
+  }
+
+  {
+    // Cancel aborts and the palette goes back to idle.
+    const patches = []
+    let aborted = 0
+    const runner = createAskRunner({
+      log: () => {},
+      onPatch: patch => patches.push(patch),
+      timeoutMs: 1000,
+      fetch: (url, init) => {
+        init.signal?.addEventListener?.('abort', () => {
+          aborted++
+        })
+        return new Promise(() => {})
+      },
+    })
+    runner.submit('anything')
+    assert.equal(patches.at(-1).status, 'running')
+    runner.cancel()
+    assert.equal(aborted, 1, 'the request was aborted')
+    assert.equal(patches.at(-1).status, 'running', 'cancel itself paints nothing: the component returns to idle')
+
+    // Timeout: the client gives up before the Host does.
+    const timed = []
+    const timeoutRunner = createAskRunner({
+      log: () => {},
+      onPatch: patch => timed.push(patch),
+      stepMs: 1000,
+      timeoutMs: 10,
+      fetch: () => new Promise(() => {}),
+    })
+    timeoutRunner.submit('slow question')
+    await sleep(40)
+    assert.equal(timed.at(-1).status, 'error')
+    assert.equal(timed.at(-1).reason, 'timeout', 'a timeout is its own reason')
+    timeoutRunner.cancel()
+  }
+
+  {
+    // A refusal from the Host carries its own reason and sentence.
+    const patches = []
+    const runner = createAskRunner({
+      log: () => {},
+      onPatch: patch => patches.push(patch),
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: false, reason: 'unavailable', message: 'no model here' }) }),
+    })
+    runner.submit('question')
+    await sleep(10)
+    assert.equal(patches.at(-1).status, 'error')
+    assert.equal(patches.at(-1).reason, 'unavailable')
+    const without = createAskRunner({ log: () => {}, onPatch: patch => patches.push(patch) })
+    without.submit('q')
+    await sleep(5)
+    assert.equal(patches.at(-1).reason, 'unavailable', 'no fetch is unavailable, not a crash')
+  }
+
+  // --- navigation and the escape hatches -------------------------------
+  {
+    const rows = searchRowsFor({
+      query: 'parser',
+      sessions: [],
+      messages: {
+        status: 'ready',
+        rows: [
+          { kind: 'action', key: 'a', label: 'x', payload: {} },
+          { kind: 'message', key: 'm1', sessionId: 's1', seq: 1, title: '', role: 'user', time: 0, segments: [] },
+        ],
+      },
+      ask: { status: 'result', answer: 'a', candidates: [] },
+      t,
+    }).rows
+    const at = searchFirstMessageIndex(rows)
+    assert.equal(rows[at].kind, 'message', 'Search messages instead lands on the first message row')
+    assert.equal(searchFirstMessageIndex([{ kind: 'chat' }]), 0, 'and falls back to the top')
+  }
+
+  // --- nothing here creates a session ---------------------------------
+  {
+    const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+    const section = source.slice(source.indexOf('function searchAskCandidates'), source.indexOf('function openSessionRow'))
+    assert.equal(section.includes('startSession'), false, 'the lookup path holds no startSession call')
+    assert.equal(source.includes('installChat'), false, 'and the chat-seeding helper is gone entirely')
+    // openSession is the only outward move the section makes.
+    assert.ok(source.includes('openSessionRow'), 'candidates open an existing conversation')
+  }
+}
+
+console.log('edh search: agentic chat section checks passed')
 console.log('edh skills: tabs, scope, and row checks passed')
 console.log('edh search: magnifier interception checks passed')
 console.log('edh search: palette, sections, and chat checks passed')

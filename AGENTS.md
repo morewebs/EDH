@@ -382,6 +382,31 @@ plaintext and 7.5–15 s**, so a search can never be a scan.
   palette shows as `Indexing… 42 of 200`; `ready` is true only when every
   enumerated Session is indexed through the end of its log, so a torn append is
   reported honestly as not ready.
+- **The route is a real query surface, not one text box.** `q` (required, once,
+  ≥ 2 characters) plus `limit` (1…100, default 20, clamped), `offset` (0…10 000,
+  **refused** past the cap rather than silently clamped), `sessionId` (`any`/empty
+  for every Session; ids are shape-checked and then resolved against the index, so
+  an unknown one is `not-found` rather than an empty result set that reads as "no
+  matches"; a Session enumerated but not folded yet is *known*, and answers an
+  empty page with the build still running), `role` (`any`/`user`/`assistant`, where
+  `user` means the `source.kind` rule above), inclusive `from`/`to` epoch-ms bounds
+  (a reversed range is `bad-input`, never a silent swap), and `sort`
+  (`relevance`/`recent`). Every parameter is validated in `parseSearchQuery`, one
+  place, so the handler stays a switch.
+- **`total` is exact unless `truncated` says otherwise.** The scan counts matches
+  as it collects them, so `total` is the real number before paging — the pages add
+  up to it. The 5 000-candidate cap is the only exception: when it stops the scan,
+  `truncated: true` means *the total is a lower bound*, and the answer says so
+  rather than showing a number that later pages contradict.
+- **Paging is stable because the order is total.** Relevance rank, then `time`
+  descending, then **session id, then `seq`** — `seq` is the index's own watermark,
+  so no two rows in one Session share it and every row has exactly one place in
+  the order. A page boundary therefore always falls between the same two rows, a
+  page past the end is an empty `results` with the right `total`, and consecutive
+  pages never overlap (`compareHits` is asserted to give the same order however
+  the input is shuffled). A *new* match arriving at the front of `recent` still
+  shifts page numbers — inherent to offset paging — but it cannot reorder the rows
+  already there.
 
 ## Styling
 

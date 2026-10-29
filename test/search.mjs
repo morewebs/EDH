@@ -8,22 +8,28 @@ import {
   apply,
   boundaryIndex,
   clampText,
+  compareHits,
   createSearch,
   createSearchStore,
   DEFAULT_LIMIT,
   emptyIndex,
   indexableMessage,
   inject,
+  isSafeKey,
   limitOf,
   locateMatch,
+  MAX_CANDIDATES,
   MAX_LIMIT,
+  MAX_OFFSET,
   MAX_QUERY,
+  MAX_SESSION_ID,
   MAX_TEXT,
   MIN_QUERY,
   name,
   normalizeIndex,
   normalizeQuery,
   normalizeSessionRecord,
+  parseSearchQuery,
   queryOf,
   rankOf,
   resolveSearchStorePath,
@@ -375,11 +381,11 @@ function indexOf(sessions) {
   assert.equal(file.reads[0].from, 0, 'a first pass starts at zero')
 
   const found = search.search('alpha', 10)
-  assert.equal(found.messages.length, 2, 'both messages are searchable')
-  assert.equal(found.messages.some(message => message.snippet.includes('noise')), false, 'the runtime context was not indexed')
-  assert.equal(found.messages[0].role, 'assistant')
-  assert.equal(found.messages[0].sessionTitle, 'First session')
-  assert.equal(found.messages[0].sessionId, 'session-a')
+  assert.equal(found.results.length, 2, 'both messages are searchable')
+  assert.equal(found.results.some(message => message.snippet.includes('noise')), false, 'the runtime context was not indexed')
+  assert.equal(found.results[0].role, 'assistant')
+  assert.equal(found.results[0].sessionTitle, 'First session')
+  assert.equal(found.results[0].sessionId, 'session-a')
 
   // One more append: only the new frame is read, and nothing is indexed twice.
   const grown = Buffer.concat([first, artifactOf([[human(5, 'a second alpha question')]])])
@@ -388,7 +394,7 @@ function indexOf(sessions) {
   await pump()
   assert.equal(file.reads.length, 2)
   assert.equal(file.reads[1].from, first.length, 'the delta starts at the saved frame boundary')
-  assert.equal(search.search('alpha', 10).messages.length, 3, 'exactly one new message')
+  assert.equal(search.search('alpha', 10).results.length, 3, 'exactly one new message')
   assert.equal(search.indexed().ready, true)
 
   // Nothing appended: a pass reads the tail, finds no bytes, and stays ready
@@ -396,7 +402,7 @@ function indexOf(sessions) {
   search.refresh()
   await pump()
   assert.equal(file.reads[2].from, grown.length)
-  assert.equal(search.search('alpha', 10).messages.length, 3)
+  assert.equal(search.search('alpha', 10).results.length, 3)
 
   // A torn append: the offset stays on the last complete frame and `ready` is
   // honest about it, then the finished frame is picked up once.
@@ -406,12 +412,12 @@ function indexOf(sessions) {
   search.refresh()
   await pump()
   assert.equal(search.indexed().ready, false, 'a torn append is not indexed yet')
-  assert.equal(search.search('alpha', 10).messages.length, 3, 'and nothing half-written was indexed')
+  assert.equal(search.search('alpha', 10).results.length, 3, 'and nothing half-written was indexed')
   file.grow(Buffer.concat([grown, whole]))
   search.refresh()
   await pump()
   assert.equal(search.indexed().ready, true)
-  assert.equal(search.search('torn', 10).messages.length, 1, 'the completed frame is indexed exactly once')
+  assert.equal(search.search('torn', 10).results.length, 1, 'the completed frame is indexed exactly once')
 
   // The artifact shrank underneath us: that Session starts again, cleanly.
   const smaller = artifactOf([[titled(1, 'Replaced'), human(2, 'a fresh alpha start')]])
@@ -419,9 +425,9 @@ function indexOf(sessions) {
   search.refresh()
   await pump()
   const afterShrink = search.search('alpha', 10)
-  assert.equal(afterShrink.messages.length, 1, 'no duplicates from the previous generation')
-  assert.equal(afterShrink.messages[0].snippet.includes('fresh'), true)
-  assert.equal(search.search('answer', 10).messages.length, 0, 'the old text is gone with the log')
+  assert.equal(afterShrink.results.length, 1, 'no duplicates from the previous generation')
+  assert.equal(afterShrink.results[0].snippet.includes('fresh'), true)
+  assert.equal(search.search('answer', 10).results.length, 0, 'the old text is gone with the log')
 
   search.dispose()
 }
@@ -441,22 +447,22 @@ function indexOf(sessions) {
   const reads = file.reads.length
   assert.equal(search.nudge({ id: 'session-a' }, human(3, 'live folded words')), true)
   assert.equal(file.reads.length, reads, 'a live fold does not read the log')
-  assert.equal(search.search('folded', 10).messages.length, 1)
-  assert.equal(search.search('folded', 10).messages[0].seq, 3)
+  assert.equal(search.search('folded', 10).results.length, 1)
+  assert.equal(search.search('folded', 10).results[0].seq, 3)
 
   // The same event twice is folded once: `seq` is the watermark.
   assert.equal(search.nudge({ id: 'session-a' }, human(3, 'live folded words')), false)
-  assert.equal(search.search('folded', 10).messages.length, 1)
+  assert.equal(search.search('folded', 10).results.length, 1)
 
   // A newer title lands live too.
   assert.equal(search.nudge({ id: 'session-a' }, titled(4, 'Live title')), true)
-  assert.equal(search.search('words', 10).messages[0].sessionTitle, 'Live title')
+  assert.equal(search.search('words', 10).results[0].sessionTitle, 'Live title')
 
   // A Session that no pass has folded is not folded from an event — its earlier
   // `seq`s are missing — so a pass is scheduled instead.
   const pendingBefore = undefined
   assert.equal(search.nudge({ id: 'unknown-session' }, human(1, 'never folded')), false)
-  assert.equal(search.search('never', 10).messages.length, 0)
+  assert.equal(search.search('never', 10).results.length, 0)
   await pump()
   assert.equal(pendingBefore, undefined)
 
@@ -488,7 +494,7 @@ function indexOf(sessions) {
   ])
   const ranked = searchIndex(index, 'session log', { limit: 10 })
   assert.deepEqual(
-    ranked.messages.map(message => message.snippet),
+    ranked.results.map(message => message.snippet),
     ['the session log is here', 'log of the session', 'only the session'],
     'phrase first, then all words, then one word',
   )
@@ -500,28 +506,32 @@ function indexOf(sessions) {
     'same words',
     { limit: 10 },
   )
-  assert.deepEqual(byRecency.messages.map(message => message.sessionId), ['session-b', 'session-a'], 'a tie is broken by recency')
+  assert.deepEqual(byRecency.results.map(message => message.sessionId), ['session-b', 'session-a'], 'a tie is broken by recency')
 
-  // limit and truncated.
+  // Paging: `total` is the real number of matches, and the page is a slice of it.
   const many = indexOf([['session-a', Array.from({ length: 30 }, (_, position) => ({ text: `alpha ${position}`, seq: position + 1 }))]])
   const two = searchIndex(many, 'alpha', { limit: 2 })
-  assert.equal(two.messages.length, 2)
-  assert.equal(two.truncated, true, 'more matches than shown is truncated')
+  assert.equal(two.results.length, 2)
+  assert.equal(two.total, 30, 'total counts every match, before paging')
+  assert.equal(two.truncated, false, 'the scan finished, so the total is final')
   const all = searchIndex(many, 'alpha', { limit: 100 })
-  assert.equal(all.messages.length, 30)
+  assert.equal(all.results.length, 30)
+  assert.equal(all.total, 30)
   assert.equal(all.truncated, false)
-  assert.equal(searchIndex(many, 'alpha', {}).messages.length, DEFAULT_LIMIT, 'the default limit applies')
+  assert.equal(searchIndex(many, 'alpha', {}).results.length, DEFAULT_LIMIT, 'the default limit applies')
 
-  // The candidate cap: a query that matches everything stops scanning.
+  // The candidate cap: a query that matches everything stops scanning, so `total`
+  // is a lower bound and `truncated` says so.
   const huge = indexOf([
     ['session-a', Array.from({ length: 5200 }, (_, position) => ({ text: `filler number ${position}`, seq: position + 1 }))],
   ])
   const capped = searchIndex(huge, 'filler', { limit: 100 })
-  assert.equal(capped.messages.length, 100)
+  assert.equal(capped.results.length, 100)
+  assert.equal(capped.total, MAX_CANDIDATES, 'the count found so far')
   assert.equal(capped.truncated, true, 'the scan cap is reported')
 
   // An empty index and a nonsense query are quiet.
-  assert.deepEqual(searchIndex(emptyIndex(), 'anything', { limit: 5 }), { messages: [], truncated: false })
+  assert.deepEqual(searchIndex(emptyIndex(), 'anything', { limit: 5 }), { results: [], total: 0, truncated: false })
   assert.equal(normalizeQuery('  a  '), undefined, 'one character is too short')
   assert.equal(normalizeQuery(''), undefined)
   assert.equal(normalizeQuery('  hello   world  '), 'hello world', 'whitespace is collapsed')
@@ -571,11 +581,19 @@ function indexOf(sessions) {
 // ---------------------------------------------------------------------------
 {
   const fakeSearch = {
-    search(query, limit) {
-      return { messages: [{ sessionId: 'session-a', sessionTitle: 'T', seq: 3, time: 9, role: 'user', snippet: '…x…', matched: 'x' }].slice(0, limit), truncated: false }
+    seen: [],
+    search(query, options) {
+      fakeSearch.seen.push({ query, options })
+      const results = [
+        { sessionId: 'session-a', sessionTitle: 'T', seq: 3, time: 9, role: 'user', snippet: '…x…', matched: 'x' },
+        { sessionId: 'session-a', sessionTitle: 'T', seq: 1, time: 8, role: 'assistant', snippet: '…y…', matched: 'y' },
+      ]
+      const offset = options?.offset ?? 0
+      return { results: results.slice(offset, offset + (options?.limit ?? DEFAULT_LIMIT)), total: 2, truncated: false }
     },
     indexed: () => ({ sessions: 4, total: 7, ready: false }),
     available: () => true,
+    knows: id => id === 'session-a',
   }
   const answer = async (url, method = 'GET', search = fakeSearch) => {
     const response = searchResponse({ method, url }, { search })
@@ -584,11 +602,14 @@ function indexOf(sessions) {
 
   const found = await answer('/api/edh.search?q=proxy')
   assert.equal(found.status, 200)
-  assert.deepEqual(Object.keys(found.body).sort(), ['indexed', 'messages', 'ok', 'q', 'truncated'])
+  assert.deepEqual(Object.keys(found.body).sort(), ['indexed', 'ok', 'q', 'results', 'total', 'truncated'])
   assert.equal(found.body.ok, true)
   assert.equal(found.body.q, 'proxy')
+  assert.equal(found.body.total, 2)
   assert.deepEqual(found.body.indexed, { sessions: 4, total: 7, ready: false })
   assert.equal(found.body.truncated, false)
+  assert.equal(found.body.results.length, 2)
+  assert.deepEqual(Object.keys(found.body.results[0]).sort(), ['matched', 'role', 'seq', 'sessionId', 'sessionTitle', 'snippet', 'time'])
 
   // A query still being typed is `too-short` and is not an error status.
   const short = await answer('/api/edh.search?q=a')
@@ -665,7 +686,7 @@ function indexOf(sessions) {
   await pump()
   assert.deepEqual(search.indexed(), { sessions: 0, total: 0, ready: true })
   assert.equal(search.available(), false, 'without persistence the route says unavailable')
-  assert.deepEqual(search.search('anything', 5), { messages: [], truncated: false })
+  assert.deepEqual(search.search('anything', { limit: 5 }), { results: [], total: 0, truncated: false })
   search.dispose()
 
   // A store that throws on read: the indexer starts empty rather than failing.
@@ -797,6 +818,253 @@ function indexOf(sessions) {
   for (const args of joins) {
     assert.equal(/\bq\b|\bquery\b|\blimit\b|searchParams/u.test(args), false, `join(${args.trim()}) takes no request value`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// 11 — filters: session, role, and the inclusive date bounds
+// ---------------------------------------------------------------------------
+{
+  const index = indexOf([
+    [
+      'session-a',
+      [
+        { text: 'alpha from a human', role: 'user', time: 100 },
+        { text: 'alpha from the model', role: 'assistant', time: 200 },
+        { text: 'alpha late', role: 'assistant', time: 300 },
+      ],
+    ],
+    ['session-b', [{ text: 'alpha elsewhere', role: 'user', time: 400 }]],
+  ])
+  const ids = found => found.results.map(row => `${row.sessionId}:${row.seq}`)
+
+  // One session.
+  const onlyA = searchIndex(index, 'alpha', { sessionId: 'session-a', limit: 10 })
+  assert.deepEqual(onlyA.results.map(row => row.sessionId), ['session-a', 'session-a', 'session-a'])
+  assert.equal(onlyA.total, 3, 'total counts the filtered set, not the whole index')
+  const onlyB = searchIndex(index, 'alpha', { sessionId: 'session-b', limit: 10 })
+  assert.equal(onlyB.total, 1)
+  assert.equal(searchIndex(index, 'alpha', { sessionId: 'nobody', limit: 10 }).total, 0, 'an unknown session matches nothing here')
+
+  // Role: user means a person wrote it, assistant means model text.
+  assert.equal(searchIndex(index, 'alpha', { role: 'user', limit: 10 }).total, 2)
+  assert.equal(searchIndex(index, 'alpha', { role: 'assistant', limit: 10 }).total, 2)
+  assert.deepEqual(
+    searchIndex(index, 'alpha', { role: 'assistant', limit: 10 }).results.map(row => row.seq),
+    [3, 2],
+    'and the order is still most-recent first within the role',
+  )
+  assert.equal(searchIndex(index, 'alpha', { role: undefined, limit: 10 }).total, 4, 'no role means every role')
+
+  // Date bounds are inclusive on both edges.
+  assert.deepEqual(searchIndex(index, 'alpha', { from: 200, limit: 10 }).results.map(row => row.time), [400, 300, 200])
+  assert.deepEqual(searchIndex(index, 'alpha', { to: 200, limit: 10 }).results.map(row => row.time), [200, 100])
+  assert.deepEqual(searchIndex(index, 'alpha', { from: 200, to: 300, limit: 10 }).results.map(row => row.time), [300, 200])
+  assert.deepEqual(searchIndex(index, 'alpha', { from: 200, to: 200, limit: 10 }).results.map(row => row.time), [200], 'an exact millisecond is one row')
+  assert.equal(searchIndex(index, 'alpha', { from: 401, limit: 10 }).total, 0)
+  assert.equal(searchIndex(index, 'alpha', { to: 99, limit: 10 }).total, 0)
+
+  // Everything at once.
+  const combined = searchIndex(index, 'alpha', { sessionId: 'session-a', role: 'assistant', from: 150, to: 250, limit: 10 })
+  assert.deepEqual(ids(combined), ['session-a:2'])
+  assert.equal(combined.total, 1)
+}
+
+// ---------------------------------------------------------------------------
+// 12 — paging is stable, under both sorts
+// ---------------------------------------------------------------------------
+{
+  const messages = Array.from({ length: 10 }, (_, position) => ({
+    text: `alpha message ${position}`,
+    role: position % 2 === 0 ? 'user' : 'assistant',
+    time: 1_000 + position,
+    seq: position + 1,
+  }))
+  const index = indexOf([['session-a', messages]])
+
+  const page = (offset, sort = 'relevance') => searchIndex(index, 'alpha', { limit: 3, offset, sort })
+  const first = page(0)
+  const second = page(3)
+  const third = page(6)
+  const last = page(9)
+  assert.equal(first.total, 10)
+  assert.deepEqual([first, second, third, last].map(found => found.results.length), [3, 3, 3, 1])
+  assert.equal(last.total, 10, 'the last page still reports the full total')
+
+  const all = searchIndex(index, 'alpha', { limit: 100 })
+  const paged = [...first.results, ...second.results, ...third.results, ...last.results]
+  assert.deepEqual(
+    paged.map(row => row.seq),
+    all.results.map(row => row.seq),
+    'the pages concatenate to exactly the unpaged result',
+  )
+  // No overlap between consecutive pages, under both sorts.
+  for (const sort of ['relevance', 'recent']) {
+    for (const [left, right] of [[page(0, sort), page(3, sort)], [page(3, sort), page(6, sort)]]) {
+      const seen = new Set(left.results.map(row => row.seq))
+      assert.equal(right.results.some(row => seen.has(row.seq)), false, `${sort}: no row appears twice`)
+      assert.equal(left.total, right.total, `${sort}: total does not depend on the page`)
+    }
+  }
+
+  // A page past the end is empty with the correct total.
+  const beyond = page(20)
+  assert.deepEqual(beyond.results, [])
+  assert.equal(beyond.total, 10)
+
+  // `sort=recent` is time-descending, whatever the rank order says.
+  const recent = searchIndex(index, 'alpha', { limit: 100, sort: 'recent' })
+  assert.deepEqual(recent.results.map(row => row.time), [...recent.results.map(row => row.time)].sort((left, right) => right - left))
+  assert.equal(recent.results[0].time, 1_009)
+
+  // Relevance orders by rank first; recent ignores it, so a rank-3 row with the
+  // newest time leads.
+  const mixed = indexOf([
+    [
+      'session-a',
+      [
+        { text: 'alpha in words', time: 10, seq: 1 },
+        { text: 'alphabet soup', time: 20, seq: 2 },
+      ],
+    ],
+  ])
+  assert.deepEqual(searchIndex(mixed, 'alpha', { limit: 5 }).results.map(row => row.seq), [1, 2], 'a word beats a substring')
+  assert.deepEqual(
+    searchIndex(mixed, 'alpha', { limit: 5, sort: 'recent' }).results.map(row => row.seq),
+    [2, 1],
+    'recent puts the newer row first even though it ranks lower',
+  )
+
+  // The comparator is a strict total order: equal rank and equal time still sort
+  // deterministically, by session and then `seq`.
+  const tied = [
+    { sessionId: 'session-b', message: { time: 5, seq: 2 }, rank: 0 },
+    { sessionId: 'session-a', message: { time: 5, seq: 9 }, rank: 0 },
+    { sessionId: 'session-a', message: { time: 5, seq: 1 }, rank: 0 },
+  ]
+  const ordered = [...tied].sort(compareHits('relevance'))
+  assert.deepEqual(
+    ordered.map(hit => `${hit.sessionId}:${hit.message.seq}`),
+    ['session-a:1', 'session-a:9', 'session-b:2'],
+    'ties break by session, then seq — so a boundary always lands in the same place',
+  )
+  const shuffled = [tied[1], tied[2], tied[0]].sort(compareHits('relevance'))
+  assert.deepEqual(shuffled, ordered, 'and the order does not depend on insertion order')
+
+  // Rows present in two scans keep their relative order when the corpus grows: a
+  // newer match at the front shifts page numbers, never the rows' own order.
+  const grown = indexOf([['session-a', [...messages, { text: 'alpha brand new', time: 2_000, seq: 11 }]]])
+  const before = searchIndex(index, 'alpha', { limit: 100, sort: 'recent' }).results.map(row => row.seq)
+  const after = searchIndex(grown, 'alpha', { limit: 100, sort: 'recent' }).results.map(row => row.seq)
+  assert.equal(after[0], 11, 'the new row leads')
+  assert.deepEqual(after.slice(1), before, 'and every older row keeps its place behind it')
+}
+
+// ---------------------------------------------------------------------------
+// 13 — the query-string contract, parameter by parameter
+// ---------------------------------------------------------------------------
+{
+  const parse = url => parseSearchQuery({ url })
+  const good = parse('/api/edh.search?q=proxy')
+  assert.equal(good.ok, true)
+  assert.deepEqual(
+    { query: good.query, limit: good.limit, offset: good.offset, role: good.role, from: good.from, to: good.to, sort: good.sort },
+    { query: 'proxy', limit: DEFAULT_LIMIT, offset: 0, role: undefined, from: undefined, to: undefined, sort: 'relevance' },
+    'every default in one place',
+  )
+  assert.equal(good.sessionId, undefined)
+
+  // q: required and given once; an empty value (with or without `=`) is a box
+  // that has not been typed into yet, which is `too-short` rather than an error.
+  for (const url of ['/api/edh.search', '/api/edh.search?q=one&q=two']) {
+    const bad = parse(url)
+    assert.equal(bad.ok, false, url)
+    assert.equal(bad.reason, 'bad-input')
+    assert.equal(bad.status, 400)
+  }
+  for (const url of ['/api/edh.search?q=a', '/api/edh.search?q=%20%20', '/api/edh.search?q', '/api/edh.search?q=']) {
+    const short = parse(url)
+    assert.equal(short.reason, 'too-short', url)
+    assert.equal(short.status, 200, 'still typing is not an error')
+  }
+
+  // limit and offset.
+  assert.equal(parse('/api/edh.search?q=ok&limit=7').limit, 7)
+  assert.equal(parse('/api/edh.search?q=ok&limit=5000').limit, MAX_LIMIT, 'a big limit clamps')
+  assert.equal(parse('/api/edh.search?q=ok&offset=10000').offset, MAX_OFFSET)
+  for (const url of ['/api/edh.search?q=ok&limit=0', '/api/edh.search?q=ok&limit=abc', '/api/edh.search?q=ok&limit=-1']) {
+    assert.equal(parse(url).reason, 'bad-input', url)
+  }
+  for (const url of ['/api/edh.search?q=ok&offset=10001', '/api/edh.search?q=ok&offset=abc', '/api/edh.search?q=ok&offset=-2']) {
+    const bad = parse(url)
+    assert.equal(bad.ok, false, url)
+    assert.equal(bad.reason, 'bad-input', 'an impossible page is refused, never silently clamped')
+  }
+
+  // role and sort.
+  assert.equal(parse('/api/edh.search?q=ok&role=user').role, 'user')
+  assert.equal(parse('/api/edh.search?q=ok&role=ASSISTANT').role, 'assistant', 'case-insensitive')
+  assert.equal(parse('/api/edh.search?q=ok&role=any').role, undefined)
+  assert.equal(parse('/api/edh.search?q=ok&role=').role, undefined, 'an empty field means any')
+  assert.equal(parse('/api/edh.search?q=ok&role=admin').reason, 'bad-input')
+  assert.equal(parse('/api/edh.search?q=ok&sort=recent').sort, 'recent')
+  assert.equal(parse('/api/edh.search?q=ok&sort=RELEVANCE').sort, 'relevance')
+  assert.equal(parse('/api/edh.search?q=ok&sort=random').reason, 'bad-input')
+
+  // sessionId.
+  assert.equal(parse('/api/edh.search?q=ok&sessionId=session-a').sessionId, 'session-a')
+  assert.equal(parse('/api/edh.search?q=ok&sessionId=any').sessionId, undefined)
+  assert.equal(parse('/api/edh.search?q=ok&sessionId=').sessionId, undefined)
+  for (const value of ['../../win.ini', 'C:\\x', 'a:b', 'a/b', 'x'.repeat(MAX_SESSION_ID + 1)]) {
+    assert.equal(parse(`/api/edh.search?q=ok&sessionId=${encodeURIComponent(value)}`).reason, 'bad-input', value)
+  }
+  assert.equal(parse('/api/edh.search?q=ok&sessionId=a&sessionId=b').reason, 'bad-input')
+  assert.equal(isSafeKey('session-a'), true)
+
+  // date bounds: inclusive integers, no silent swap.
+  assert.equal(parse('/api/edh.search?q=ok&from=100&to=200').from, 100)
+  assert.equal(parse('/api/edh.search?q=ok&from=100&to=200').to, 200)
+  assert.equal(parse('/api/edh.search?q=ok&from=').from, undefined, 'an empty field is no bound')
+  for (const url of ['/api/edh.search?q=ok&from=200&to=100', '/api/edh.search?q=ok&from=abc', '/api/edh.search?q=ok&to=-5']) {
+    assert.equal(parse(url).reason, 'bad-input', url)
+  }
+  assert.equal(parse('/api/edh.search?q=ok&from=1.5').reason, 'bad-input')
+
+  // The route hands the parsed filters straight to the indexer.
+  const seen = []
+  const fake = {
+    search(query, options) {
+      seen.push({ query, options })
+      return { results: [], total: 0, truncated: false }
+    },
+    indexed: () => ({ sessions: 0, total: 0, ready: true }),
+    available: () => true,
+    knows: () => true,
+  }
+  const call = async url => {
+    const response = searchResponse({ method: 'GET', url }, { search: fake })
+    return { status: response.status, body: await response.json() }
+  }
+  await call('/api/edh.search?q=proxy&limit=5&offset=10&role=user&from=100&to=200&sort=recent&sessionId=session-a')
+  assert.deepEqual(seen[0], {
+    query: 'proxy',
+    options: { limit: 5, offset: 10, sessionId: 'session-a', role: 'user', from: 100, to: 200, sort: 'recent' },
+  })
+
+  // An unknown session is `not-found`, not an empty result set.
+  const unknown = await searchResponse(
+    { method: 'GET', url: '/api/edh.search?q=proxy&sessionId=session-z' },
+    { search: { ...fake, knows: id => id === 'session-a' } },
+  )
+  assert.equal(unknown.status, 404)
+  const unknownBody = await unknown.json()
+  assert.equal(unknownBody.ok, false)
+  assert.equal(unknownBody.reason, 'not-found')
+  assert.equal(JSON.stringify(unknownBody).includes('session-z'), false, 'the id is not echoed back')
+
+  // A known session is filtered, not refused.
+  const known = await call('/api/edh.search?q=proxy&sessionId=session-a')
+  assert.equal(known.status, 200)
+  assert.equal(known.body.ok, true)
 }
 
 console.log('edh search: all checks passed')

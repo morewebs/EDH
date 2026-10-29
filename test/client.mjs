@@ -240,6 +240,21 @@ const {
   readNotifyLast,
   raiseNotifyWindow,
   createPaletteBus,
+  installAdvancedSearch,
+  createAdvancedRunner,
+  advSearchView,
+  advSearchDefaults,
+  advSearchDayStart,
+  advSearchDayEnd,
+  advSearchRange,
+  advSearchUrl,
+  advSearchResults,
+  advSearchInitial,
+  advSearchReduce,
+  advSearchPanelIcon,
+  ADV_SEARCH_CSS,
+  ADV_SEARCH_ID,
+  ADV_SEARCH_PANEL_ORDER,
   createSearchRunner,
   createSearchButton,
   searchPaletteView,
@@ -6187,6 +6202,357 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 62 — the advanced search page: its two registrations, filters, paging, states.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  // --- the sidebar destination and the main panel ------------------------
+  {
+    const SHIPPED_SCHEDULES_ORDER = 10
+    const SHIPPED_PLUGINS_ORDER = 0
+    assert.equal(ADV_SEARCH_PANEL_ORDER, SHIPPED_SCHEDULES_ORDER + 1, 'immediately after Automation tasks')
+    assert.ok(ADV_SEARCH_PANEL_ORDER > SHIPPED_PLUGINS_ORDER, 'and after Plugins')
+    assert.equal(ADV_SEARCH_ID, 'edh-search-advanced')
+
+    const registers = []
+    const injections = []
+    let rowOn = true
+    const watchers = []
+    const ctx = {
+      slots: {
+        inject(slot, run) {
+          injections.push(slot)
+          const dispose = run()
+          return typeof dispose === 'function' ? dispose : () => {}
+        },
+        register(options, component) {
+          registers.push({ options, component })
+          return () => {
+            const at = registers.findIndex(entry => entry.options === options)
+            if (at >= 0) registers.splice(at, 1)
+          }
+        },
+      },
+      effect: fn => {
+        const dispose = fn()
+        return typeof dispose === 'function' ? dispose : () => {}
+      },
+    }
+    const controller = {
+      getSnapshot: () => ({ status: 'ready', moduleStates: { [SEARCH_MODULE]: rowOn } }),
+      subscribe(listener) {
+        watchers.push(listener)
+        return () => {}
+      },
+    }
+    const Page = () => null
+    storage.length = 0
+    const dispose = installAdvancedSearch(ctx, controller, { t, page: Page, icon: advSearchPanelIcon })
+
+    assert.deepEqual(injections, ['main', 'sidebar.panellist'], 'both seats are claimed together')
+    const main = registers.find(entry => entry.options.name === 'main')
+    const panel = registers.find(entry => entry.options.name === 'sidebar.panellist')
+    assert.ok(main !== undefined, 'the main key is registered')
+    assert.equal(main.options.key, ADV_SEARCH_ID, 'the key is ours')
+    assert.equal(main.options.id, undefined, 'a keyed seat takes `key`, not `id`')
+    assert.equal(main.component, Page)
+    assert.ok(panel !== undefined, 'the sidebar destination is registered')
+    assert.equal(panel.options.id, ADV_SEARCH_ID, 'the panellist id is the main key, because selectPanel gets the id')
+    assert.equal(panel.options.order, 11, 'order 11, right under Automation tasks at 10')
+    assert.equal(panel.options.label(), 'Advanced search', 'the nav row is labelled')
+    assert.equal(panel.component, advSearchPanelIcon)
+
+    // The row switch withdraws both, and restores both.
+    rowOn = false
+    for (const watch of [...watchers]) watch()
+    assert.equal(registers.length, 0, 'the row off removes the page and its row')
+    rowOn = true
+    for (const watch of [...watchers]) watch()
+    assert.equal(registers.length, 2, 'and both come back together')
+    dispose()
+    assert.equal(registers.length, 0, 'disposal unregisters everything')
+  }
+
+  // --- filters to one exact request -------------------------------------
+  {
+    assert.deepEqual(advSearchDefaults(), { query: '', sessionId: 'any', role: 'any', from: '', to: '', limit: 20 })
+    const bare = advSearchUrl(advSearchDefaults())
+    assert.equal(bare, 'api/edh.search?limit=20', '`any` is omitted entirely, and nothing else is invented')
+    assert.equal(advSearchUrl({ ...advSearchDefaults(), sessionId: 's1', role: 'user' }), 'api/edh.search?sessionId=s1&role=user&limit=20')
+    assert.equal(advSearchUrl({ ...advSearchDefaults(), query: '  parser  ' }), 'api/edh.search?q=parser&limit=20', 'trimmed')
+    assert.equal(advSearchUrl(advSearchDefaults(), 40), 'api/edh.search?limit=20&offset=40', 'offset only when paging')
+    assert.equal(advSearchUrl({ ...advSearchDefaults(), limit: 500 }), 'api/edh.search?limit=20', 'an unknown limit falls back')
+
+    // Dates are epochs, inclusive of the whole chosen day.
+    const from = advSearchDayStart('2026-03-04')
+    const to = advSearchDayEnd('2026-03-04')
+    assert.equal(from, new Date(2026, 2, 4, 0, 0, 0, 0).getTime(), 'from is the first millisecond of that local day')
+    assert.equal(to, new Date(2026, 2, 5, 0, 0, 0, 0).getTime() - 1, 'to is the last')
+    assert.equal(advSearchDayStart(''), null)
+    assert.equal(advSearchDayStart('nope'), null)
+    assert.equal(advSearchDayStart('2026-13-01'), null, 'an impossible month is not a date')
+    assert.equal(advSearchDayEnd('2026-03-04') - advSearchDayStart('2026-03-04'), 86_400_000 - 1, 'one whole day')
+
+    const dated = advSearchUrl({ ...advSearchDefaults(), from: '2026-03-04', to: '2026-03-06' })
+    assert.ok(dated.includes(`from=${from}`), 'from as epoch ms')
+    assert.ok(dated.includes(`to=${advSearchDayEnd('2026-03-06')}`), 'to as epoch ms')
+    assert.equal(advSearchUrl({ ...advSearchDefaults(), from: '2026-03-04' }).includes('to='), false, 'an open end stays off the request')
+
+    // A reversed range is refused, not swapped.
+    const reversed = advSearchRange({ from: '2026-03-06', to: '2026-03-04' })
+    assert.equal(reversed.ok, false)
+    assert.equal(reversed.reason, 'reversed')
+    assert.equal(advSearchRange({ from: '2026-03-04', to: '2026-03-04' }).ok, true, 'one day is a range')
+    assert.equal(advSearchRange(advSearchDefaults()).ok, true)
+  }
+
+  // --- result rows, tolerating the older field name ---------------------
+  {
+    const entry = { sessionId: 's1', sessionTitle: 'Refactor the parser', seq: 7, time: 5, role: 'assistant', snippet: 'the parser is streaming now', matched: 'parser' }
+    const newer = advSearchResults({ results: [entry] }, 'parser')
+    const older = advSearchResults({ messages: [entry] }, 'parser')
+    assert.equal(newer.length, 1)
+    assert.deepEqual(newer, older, 'the older `messages` field is read the same way')
+    assert.deepEqual(newer[0].segments.filter(segment => segment.hit).map(segment => segment.text), ['parser'])
+    assert.equal(newer[0].title, 'Refactor the parser')
+    assert.deepEqual(advSearchResults({}, 'x'), [])
+    assert.deepEqual(advSearchResults({ results: [{ sessionId: '' }] }, 'x'), [])
+  }
+
+  // --- the reducer: paging appends, failure keeps what is on screen ------
+  {
+    const first = advSearchReduce(advSearchInitial(), { status: 'ready', rows: [{ key: 'a' }, { key: 'b' }], total: 5, truncated: true, indexed: { sessions: 1, total: 9, ready: 2 } })
+    assert.equal(first.status, 'ready')
+    assert.equal(first.rows.length, 2)
+    assert.equal(first.total, 5, 'the true total, not the shown count')
+    assert.equal(first.truncated, true)
+
+    const loading = advSearchReduce(first, { status: 'loading' })
+    assert.equal(loading.status, 'ready', 'results stay visible while searching')
+    assert.equal(loading.stale, true, 'and are marked stale rather than blanked')
+
+    const more = advSearchReduce(loading, { status: 'ready', rows: [{ key: 'c' }], total: 5, append: true })
+    assert.deepEqual(more.rows.map(row => row.key), ['a', 'b', 'c'], 'Load more appends')
+    assert.equal(more.stale, false)
+
+    const failed = advSearchReduce(more, { status: 'error', reason: 'boom' })
+    assert.deepEqual(failed.rows.map(row => row.key), ['a', 'b', 'c'], 'a later failure never loses the results')
+    assert.equal(failed.status, 'ready', 'the list stays, with an error line')
+    assert.equal(failed.error, 'boom')
+
+    const nothing = advSearchReduce(advSearchInitial(), { status: 'error', message: 'Host said no' })
+    assert.equal(nothing.status, 'error', 'with nothing on screen, the error state shows')
+    assert.equal(nothing.error, 'Host said no', "with the Host's own sentence")
+
+    const empty = advSearchReduce(first, { status: 'ready', rows: [], total: 0 })
+    assert.equal(empty.status, 'empty')
+    assert.equal(advSearchReduce(first, { status: 'unavailable', message: 'no service' }).status, 'unavailable')
+    assert.equal(advSearchReduce(first, { status: 'refused', reason: 'reversed' }).status, 'ready', 'a refusal keeps the list')
+  }
+
+  // --- the runner: debounce, cancellation, stale discard, unavailable ----
+  {
+    const patches = []
+    const asked = []
+    const runner = createAdvancedRunner({
+      debounceMs: 5,
+      queryOnly: true,
+      onPatch: patch => patches.push(patch),
+      fetch: async url => {
+        asked.push(url)
+        return { ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 's1', seq: 1, snippet: 'hit', matched: 'hit' }] }) }
+      },
+    })
+    runner.ask({ ...advSearchDefaults(), query: 'abc' })
+    assert.equal(patches.at(-1).status, 'loading', 'loading at once')
+    assert.equal(asked.length, 0, 'nothing before the pause')
+    await sleep(25)
+    assert.equal(asked.length, 1)
+    assert.ok(asked[0].startsWith('api/edh.search?q=abc&limit=20'), 'the exact request')
+    assert.equal(patches.at(-1).status, 'ready')
+    assert.equal(patches.at(-1).total, 1)
+    // A reversed range never reaches the wire.
+    patches.length = 0
+    const fired = runner.ask({ ...advSearchDefaults(), from: '2026-03-06', to: '2026-03-04' })
+    assert.equal(fired, false, 'a reversed range is refused before the request')
+    assert.equal(patches.length, 0, 'and emits no patch')
+    runner.cancel()
+  }
+
+  {
+    // The older answer resolving last must not win, and a failure keeps rows.
+    const patches = []
+    const gates = new Map()
+    const runner = createAdvancedRunner({
+      debounceMs: 1,
+      queryOnly: true,
+      onPatch: patch => patches.push(patch),
+      fetch: url => new Promise(resolve => gates.set(new URL(url, 'http://x/').searchParams.get('q'), resolve)),
+    })
+    runner.ask({ ...advSearchDefaults(), query: 'old' })
+    await sleep(10)
+    runner.ask({ ...advSearchDefaults(), query: 'new' })
+    await sleep(10)
+    await gates.get('new')({ ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 'new', seq: 1, snippet: 'new', matched: 'new' }] }) })
+    await sleep(5)
+    assert.equal(patches.at(-1).rows[0].sessionId, 'new')
+    await gates.get('old')({ ok: true, status: 200, json: async () => ({ ok: true, total: 1, results: [{ sessionId: 'old', seq: 1, snippet: 'old', matched: 'old' }] }) })
+    await sleep(5)
+    assert.equal(patches.at(-1).rows[0].sessionId, 'new', 'the stale answer was discarded')
+
+    const failing = createAdvancedRunner({
+      debounceMs: 1,
+      onPatch: patch => patches.push(patch),
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: false, reason: 'unavailable', message: 'no index' }) }),
+    })
+    failing.ask({ ...advSearchDefaults(), query: 'z' }, { debounce: false })
+    await sleep(15)
+    assert.equal(patches.at(-1).status, 'unavailable', 'unavailable is its own state')
+    const refused = createAdvancedRunner({ onPatch: patch => patches.push(patch) })
+    refused.ask({ ...advSearchDefaults(), query: 'y' }, { debounce: false })
+    assert.equal(patches.at(-1).status, 'unavailable', 'no fetch at all is unavailable, not a crash')
+  }
+
+  // --- the tree: bar, rows, and every state's copy ----------------------
+  const sessionList = [{ id: 's1', title: 'Refactor the parser' }, { id: 's2', title: 'notes' }]
+  const row = {
+    key: 's1:7',
+    sessionId: 's1',
+    seq: 7,
+    title: 'Refactor the parser',
+    role: 'assistant',
+    time: Date.now() - 120_000,
+    segments: [{ text: 'the ', hit: false }, { text: 'parser', hit: true }],
+    matched: 'parser',
+  }
+  const render = (state, filters) => stub.advSearchView({
+    t,
+    filters: filters ?? { ...advSearchDefaults(), query: 'parser' },
+    state,
+    sessions: sessionList,
+    now: Date.now(),
+    handlers: {},
+  })
+  {
+    const view = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 3, indexed: { sessions: 40, total: 222, ready: 42 } }))
+    const text = treeText(view)
+    assert.deepEqual(treeByType(view, 'h2').map(node => node.props.children[0]), ['Advanced search'])
+    assert.ok(hasText(view, 'Searches the full text of every conversation on this machine, with filters.'), 'one intro line')
+    // The bar: every control is labelled.
+    const fields = treeByType(view, 'label').filter(label => String(label.props.className).includes('edh-adv-field'))
+    assert.equal(fields.length, 6, 'query, session, role, from, to, count')
+    const inputs = treeByType(view, 'input')
+    assert.equal(inputs.filter(input => input.props.type === 'search').length, 1)
+    assert.equal(inputs.filter(input => input.props.type === 'date').length, 2)
+    const sessions = treeByType(view, 'select')[0]
+    assert.deepEqual(treeByType(sessions, 'option').map(option => option.props.children[0]), ['Any session', 'Refactor the parser', 'notes'])
+    const roles = treeByType(view, 'select')[1]
+    assert.deepEqual(treeByType(roles, 'option').map(option => option.props.children[0]), ['Any role', 'You', 'Agent'])
+    const counts = treeByType(view, 'select')[2]
+    assert.deepEqual(treeByType(counts, 'option').map(option => option.props.children[0]), ['20', '50', '100'])
+    assert.ok(hasText(view, 'Search') && hasText(view, 'Clear'), 'both buttons')
+    // Rows: snippet is the content, emphasis is structural.
+    assert.equal(treeByType(view, 'li').length, 1)
+    assert.equal(treeByType(view, 'strong').length, 1, 'the matched run is emphasised once')
+    assert.equal(treeByType(view, 'strong')[0].props.className, 'edh-adv-hit')
+    assert.ok(hasText(view, 'Refactor the parser'), 'the session title is the right-hand meta')
+    const ask = treeByType(view, 'button').find(button => button.props.children?.[0] === 'Ask the agent about this')
+    assert.ok(ask !== undefined, 'the per-row Ask action')
+    // Footer: total, not shown count.
+    assert.ok(hasText(view, '1 of 3 results'), 'the true total from the Host')
+    assert.ok(hasText(view, 'Load more'), 'more to come')
+    assert.ok(hasText(view, 'Indexing 42 of 222 sessions'), 'the index line')
+  }
+
+  // States.
+  {
+    const initialTree = render(advSearchInitial())
+    assert.ok(hasText(initialTree, 'Nothing searched yet.'), 'the initial sentence')
+    assert.equal(treeByType(render(advSearchInitial()), 'li').length, 0, 'and no empty table')
+    assert.ok(hasText(render(advSearchReduce(advSearchInitial(), { status: 'loading' })), 'Searching…'))
+    const stale = render(advSearchReduce(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 9 }), { status: 'loading' }))
+    assert.equal(treeByType(stale, 'li').length, 1, 'stale results are kept, not blanked')
+    assert.ok(treeByType(stale, 'ol')[0].props.className.includes('edh-adv-list-stale'), 'and marked stale')
+    const empty = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [], total: 0 }))
+    assert.ok(hasText(empty, 'No messages match these filters'))
+    assert.ok(hasText(empty, 'Clear filters'), 'with a way out')
+    const failed = render(advSearchReduce(advSearchInitial(), { status: 'error', message: 'the index is busy' }))
+    assert.ok(hasText(failed, 'the index is busy'), "the Host's own sentence")
+    assert.ok(hasText(failed, 'Retry'))
+    const unavailable = render(advSearchReduce(advSearchInitial(), { status: 'unavailable' }))
+    assert.ok(hasText(unavailable, 'Search is unavailable'))
+    assert.equal(treeByType(render(advSearchReduce(advSearchInitial(), { status: 'unavailable' })), 'li').length, 0, 'no dead rows')
+    const truncated = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1, truncated: true }))
+    assert.ok(hasText(truncated, 'refine to see more'))
+    // No Load more at the end of the list.
+    const complete = render(advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1 }))
+    assert.equal(hasText(complete, 'Load more'), false, 'Load more disappears at the end')
+    // A reversed range is refused inline, in the copy, and Search is disabled.
+    const reversed = render(advSearchInitial(), { ...advSearchDefaults(), from: '2026-03-06', to: '2026-03-04' })
+    assert.ok(hasText(reversed, 'That range ends before it starts.'))
+    assert.equal(treeByType(reversed, 'button').find(button => button.props.children?.[0] === 'Search').props.disabled, true, 'Search is refused')
+  }
+
+  // --- row activation and the per-row Ask -------------------------------
+  {
+    const seen = []
+    const faces = {
+      uiWorkspace: {
+        openSession: target => seen.push(['open', target]),
+        startSession: (...args) => seen.push(['chat', ...args]),
+      },
+    }
+    const view = stub.advSearchView({
+      t,
+      filters: advSearchDefaults(),
+      state: advSearchReduce(advSearchInitial(), { status: 'ready', rows: [row], total: 1 }),
+      sessions: [],
+      now: Date.now(),
+      handlers: {
+        onOpenRow: activated => {
+          // The exact call the component makes.
+          faces.uiWorkspace.openSession({ kind: 'session', sessionId: activated.sessionId })
+          seen.push(['seq', activated.seq])
+        },
+        onAskRow: activated => {
+          const question = t('advAskPrompt', { snippet: 'the parser' })
+          installChat(faces, question)
+          seen.push(['asked', activated.sessionId])
+        },
+      },
+    })
+    const openButton = treeByType(view, 'button').find(button => String(button.props.className).includes('edh-adv-row-main'))
+    openButton.props.onClick()
+    assert.deepEqual(seen[0], ['open', { kind: 'session', sessionId: 's1' }], 'the row opens its session')
+    assert.deepEqual(seen[1], ['seq', 7], 'the message seq travels with it, for the breadcrumb')
+    assert.equal(seen.length, 2, 'openSession takes no message position: verified, `SessionTarget` is an id')
+    const askButton = treeByType(view, 'button').find(button => button.props.children?.[0] === 'Ask the agent about this')
+    askButton.props.onClick()
+    const chat = seen.find(entry => entry[0] === 'chat')
+    assert.equal(chat[2].prompt, 'About this from our conversation: "the parser" — could you explain it?', 'the question is seeded, not sent')
+    assert.equal(chat[2].whenDraftExists, 'replace')
+  }
+
+  // --- the stylesheet's promises ----------------------------------------
+  {
+    assert.ok(ADV_SEARCH_CSS.includes('@media (prefers-reduced-motion: reduce)'), 'reduced motion honoured')
+    assert.ok(ADV_SEARCH_CSS.includes(':focus-visible'), 'focus-visible on the controls')
+    assert.ok(ADV_SEARCH_CSS.includes('tabular-nums'), 'tabular numerals for counts and times')
+    assert.ok(ADV_SEARCH_CSS.includes('--dsw-alias-label-primary'), 'tokens only')
+    assert.ok(ADV_SEARCH_CSS.includes('border-bottom: 1px solid'), 'hairlines, not cards')
+    assert.equal(/text-transform:\s*uppercase|::before|border-radius:\s*12px/.test(ADV_SEARCH_CSS), false, 'no caps eyebrows, no cards')
+    for (const glyph of ['·', '→']) assert.equal(ADV_SEARCH_CSS.includes(glyph), false, `no ${glyph} glyph`)
+    for (const key of ['advTitle', 'advIntro', 'advInitial', 'advSearching', 'advNoResults', 'advFailed', 'advUnavailable', 'advTruncated', 'advMore', 'advRangeReversed', 'advAsk', 'advNav']) {
+      const value = t(key, { shown: 1, total: 2, snippet: 'x' })
+      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
+      assert.ok(value.length > 0, `${key} says something`)
+    }
+  }
+}
+
+console.log('edh search: advanced page, filters, and paging checks passed')
 console.log('edh search: palette, sections, and chat checks passed')
 console.log('edh notify: click-to-raise checks passed')
 console.log('edh notify: stored-sound fidelity checks passed')

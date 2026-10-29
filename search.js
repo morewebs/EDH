@@ -76,6 +76,12 @@ export const DEFAULT_LIMIT = 20
 /** The most results any caller can ask for. */
 export const MAX_LIMIT = 100
 
+/** The furthest a caller may page, so nobody can walk the corpus forever. */
+export const MAX_OFFSET = 10000
+
+/** Why a query stops: the scan collects this many matches and no more. */
+export const MAX_CANDIDATES = 5000
+
 /** Shorter queries are "still typing", not an error. */
 export const MIN_QUERY = 2
 
@@ -90,9 +96,6 @@ export const MAX_MESSAGES_PER_SESSION = 300
 
 /** Characters of context on each side of a match in a snippet. */
 export const SNIPPET_CONTEXT = 60
-
-/** The most matching messages one query will collect before it stops scanning. */
-export const MAX_CANDIDATES = 5000
 
 /** Sessions folded per background tick. */
 export const SESSIONS_PER_TICK = 2
@@ -125,6 +128,31 @@ function messageOf(error) {
 /** True for a finite, non-negative integer. */
 function isCount(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** Longest Session id this route will look at. */
+export const MAX_SESSION_ID = 128
+
+/**
+ * Whether one value is shaped like a Session id at all.
+ *
+ * Not the authorisation — the index's own `knows()` is, since an id has to name a
+ * stored Session — but it stops a hostile value before anything looks at it: no
+ * separators, no parent directory, no colon (drive letter or alternate data
+ * stream), no control characters, nothing absurdly long.
+ * @param value - the untrusted value.
+ * @param limit - the longest accepted.
+ * @returns true when it is a plausible id.
+ */
+export function isSafeKey(value, limit = MAX_SESSION_ID) {
+  if (typeof value !== 'string') return false
+  if (value.length === 0 || value.length > limit) return false
+  // eslint-disable-next-line no-control-regex -- refusing control characters is the point
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return false
+  if (value.includes('/') || value.includes('\\')) return false
+  if (value.includes('..')) return false
+  if (value.includes(':')) return false
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -454,25 +482,60 @@ export function snippetOf(text, match, context = SNIPPET_CONTEXT) {
 }
 
 /**
- * The ranked matches for one query, over one index.
+ * The ranking order, extended to a **total** order so paging is stable.
+ *
+ * Two rows can share a rank and a millisecond, so the sort must keep going:
+ * session id, then `seq`. Neither can tie — `seq` is the index's watermark for a
+ * Session, so no two messages in it share one — which means every row has exactly
+ * one place in the order and a page boundary always falls between the same two
+ * rows, whatever the corpus does around them.
+ * @param sort - `relevance` or `recent`.
+ * @returns a comparator.
+ */
+export function compareHits(sort) {
+  return (left, right) => {
+    if (sort === 'recent') {
+      if (right.message.time !== left.message.time) return right.message.time - left.message.time
+    } else {
+      if (left.rank !== right.rank) return left.rank - right.rank
+      if (right.message.time !== left.message.time) return right.message.time - left.message.time
+    }
+    if (left.sessionId !== right.sessionId) return left.sessionId < right.sessionId ? -1 : 1
+    return left.message.seq - right.message.seq
+  }
+}
+
+/**
+ * The matches for one query and one set of filters, over one index.
  *
  * A plain in-memory scan: 200 Sessions of truncated text is small, and a request
- * never touches a log. Ranking is the order {@link rankOf} defines, ties broken by
- * recency, and the scan stops once it has {@link MAX_CANDIDATES} matches so a
- * two-letter query cannot hold the Host.
+ * never touches a log. Filters are applied *before* the candidate cap, so the cap
+ * counts the rows the caller actually asked about. `total` is the number of
+ * matches the scan found — exact unless `truncated` says the cap stopped it — and
+ * the page is `offset … offset + limit` of the totally-ordered matches.
  * @param index - the index: `sessions` is a Map of id → record.
  * @param query - the normalised query.
- * @param options - `limit`, the number of results wanted.
- * @returns `{ messages, truncated }`.
+ * @param options - `limit`, `offset`, `sessionId`, `role`, `from`, `to`, `sort`.
+ * @returns `{ results, total, truncated }`.
  */
 export function searchIndex(index, query, options = {}) {
-  const limit = isCount(options.limit) && options.limit > 0 ? options.limit : DEFAULT_LIMIT
+  const limit = isCount(options.limit) && options.limit > 0 ? Math.min(options.limit, MAX_LIMIT) : DEFAULT_LIMIT
+  const offset = isCount(options.offset) && options.offset <= MAX_OFFSET ? options.offset : 0
+  const sort = options.sort === 'recent' ? 'recent' : 'relevance'
+  const onlySession = typeof options.sessionId === 'string' && options.sessionId !== '' ? options.sessionId : undefined
+  const onlyRole = options.role === 'user' || options.role === 'assistant' ? options.role : undefined
+  const from = isCount(options.from) ? options.from : undefined
+  const to = isCount(options.to) ? options.to : undefined
   const sessions = index?.sessions instanceof Map ? index.sessions : new Map()
   const terms = query.split(' ').filter(term => term !== '')
   const hits = []
   let capped = false
   for (const [sessionId, session] of sessions) {
+    if (onlySession !== undefined && sessionId !== onlySession) continue
     for (const message of session.messages) {
+      if (onlyRole !== undefined && message.role !== onlyRole) continue
+      if (from !== undefined && message.time < from) continue
+      if (to !== undefined && message.time > to) continue
       if (tooMany(hits)) {
         capped = true
         break
@@ -483,18 +546,14 @@ export function searchIndex(index, query, options = {}) {
     }
     if (capped) break
   }
-  hits.sort((left, right) => {
-    if (left.rank !== right.rank) return left.rank - right.rank
-    if (right.message.time !== left.message.time) return right.message.time - left.message.time
-    return left.message.seq - right.message.seq
-  })
-  const picked = hits.slice(0, limit)
-  const messages = []
-  for (const hit of picked) {
+  const total = hits.length
+  hits.sort(compareHits(sort))
+  const results = []
+  for (const hit of hits.slice(offset, offset + limit)) {
     const match = locateMatch(hit.message.text, query, terms)
     if (match === undefined) continue
     const { snippet, matched } = snippetOf(hit.message.text, match)
-    messages.push({
+    results.push({
       sessionId: hit.sessionId,
       sessionTitle: hit.session.title,
       seq: hit.message.seq,
@@ -504,7 +563,7 @@ export function searchIndex(index, query, options = {}) {
       matched,
     })
   }
-  return { messages, truncated: capped || hits.length > messages.length }
+  return { results, total, truncated: capped }
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +633,8 @@ export function createSearch(options = {}) {
   const state = { total: 0, passDone: false, state: 'idle', errors: 0, passStartedAt: 0, passMs: 0 }
   let queue
   let seenThisPass = new Set()
+  /** Every id a pass has enumerated, so `sessionId` can be validated honestly. */
+  const enumerated = new Set()
   let running = false
   let disposed = false
   let timer
@@ -766,6 +827,12 @@ export function createSearch(options = {}) {
     )
     state.total = queue.length
     seenThisPass = new Set()
+    // Every id this Host has a stored Session for, indexed or not yet — the
+    // `sessionId` filter is validated against this, so a Session still waiting in
+    // the queue is "known but empty" rather than "not found".
+    for (const snapshot of queue) {
+      if (typeof snapshot?.header?.id === 'string') enumerated.add(snapshot.header.id)
+    }
   }
 
   /** One background tick: a couple of Sessions, then yield. */
@@ -876,15 +943,32 @@ export function createSearch(options = {}) {
       const persistence = getPersistence()
       return persistence !== undefined && persistence !== null && typeof persistence.list === 'function'
     },
+    /**
+     * Whether this Host has a stored Session with that id.
+     *
+     * True for an indexed Session and for one a pass has enumerated but not
+     * folded yet — a filter on it answers an empty page, not "not found", because
+     * the Session really exists and the build simply has not reached it.
+     * @param id - the id to look for.
+     */
+    knows(id) {
+      if (typeof id !== 'string' || id === '') return false
+      return index.sessions.has(id) || enumerated.has(id)
+    },
     /** The last store failure, if any; the route reports it rather than failing. */
     error() {
       return storeError
     },
-    /** Run one query over the index. Never touches a log. */
-    search(query, limit = DEFAULT_LIMIT) {
+    /**
+     * Run one query over the index. Never touches a log.
+     * @param query - the raw query text.
+     * @param options - `limit`, `offset`, `sessionId`, `role`, `from`, `to`, `sort`.
+     * @returns `{ results, total, truncated }`, or `undefined` for a query too short to run.
+     */
+    search(query, options = {}) {
       const normalized = normalizeQuery(query)
       if (normalized === undefined) return undefined
-      return searchIndex(index, normalized, { limit })
+      return searchIndex(index, normalized, isRecord(options) ? options : {})
     },
     /** Stop indexing and forget the timers; safe to call twice. */
     dispose() {
@@ -920,7 +1004,14 @@ function methodOf(request) {
   return typeof request?.method === 'string' ? request.method.toUpperCase() : ''
 }
 
-/** The `limit` query value, or the reason it is not usable. */
+/**
+ * The `limit` query value, or the reason it is not usable.
+ *
+ * Kept as its own tiny helper because a caller that only pages wants it without
+ * the rest of the contract; it shares {@link parseSearchQuery}'s rules.
+ * @param request - the incoming request.
+ * @returns `{ ok: true, limit }` or `{ ok: false }`.
+ */
 export function limitOf(request) {
   let url
   try {
@@ -928,14 +1019,8 @@ export function limitOf(request) {
   } catch {
     return { ok: false }
   }
-  const values = url.searchParams.getAll('limit')
-  if (values.length === 0) return { ok: true, limit: DEFAULT_LIMIT }
-  if (values.length > 1) return { ok: false }
-  const raw = values[0].trim()
-  if (!/^\d+$/u.test(raw)) return { ok: false }
-  const limit = Number(raw)
-  if (!Number.isSafeInteger(limit) || limit < 1) return { ok: false }
-  return { ok: true, limit: Math.min(limit, MAX_LIMIT) }
+  const limit = countParameter(parameterOf(url, 'limit'), { fallback: DEFAULT_LIMIT, min: 1, max: MAX_LIMIT, clamp: true })
+  return limit.ok === true ? { ok: true, limit: limit.value } : { ok: false }
 }
 
 /** The `q` query value of one request, or `undefined` when it is absent or repeated. */
@@ -951,13 +1036,130 @@ export function queryOf(request) {
   return values[0]
 }
 
+/** One query parameter: absent, present once with a value, or repeated (which is a mistake). */
+function parameterOf(url, name) {
+  const values = url.searchParams.getAll(name)
+  if (values.length === 0) return { present: false }
+  if (values.length > 1) return { repeated: true }
+  return { present: true, value: values[0] }
+}
+
+/** One whole-number parameter, clamped or refused. */
+function countParameter(parameter, { fallback, min, max, clamp }) {
+  if (parameter.present !== true) return { ok: true, value: fallback }
+  if (parameter.repeated === true) return { ok: false }
+  const raw = String(parameter.value).trim()
+  if (!/^\d+$/u.test(raw)) return { ok: false }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < min) return { ok: false }
+  if (value > max) return clamp === true ? { ok: true, value: max } : { ok: false }
+  return { ok: true, value }
+}
+
+/** One parameter that must be one of a small set of words, case-insensitively. */
+function wordParameter(parameter, words, fallback) {
+  if (parameter.present !== true) return { ok: true, value: fallback }
+  if (parameter.repeated === true) return { ok: false }
+  const raw = String(parameter.value).trim().toLowerCase()
+  if (raw === '') return { ok: true, value: fallback }
+  return words.includes(raw) ? { ok: true, value: raw } : { ok: false }
+}
+
 /**
- * Answer `GET /api/edh.search?q=…&limit=…`.
+ * The whole query-string contract of the search route, in one place.
+ *
+ * Every parameter is validated here so the handler stays a switch, and the
+ * answers are the ones the palette and the Advanced page render:
+ *
+ * - `q` — required, exactly once, at least two characters (a repeat or a missing
+ *   value is `bad-input` 400; a query still being typed is `too-short`, 200).
+ * - `limit` — 1…100, default 20, clamped (a bigger number is not a mistake).
+ * - `offset` — 0…{@link MAX_OFFSET}, default 0, refused past the cap rather than
+ *   silently clamped: a page that was asked for is either delivered or refused.
+ * - `sessionId` — one id, `any` or empty meaning every Session.
+ * - `role` — `any`/`user`/`assistant`.
+ * - `from`/`to` — inclusive epoch-millisecond bounds; a reversed range is
+ *   `bad-input`, never a silent swap.
+ * - `sort` — `relevance` (default) or `recent`.
+ *
+ * @param request - the incoming request.
+ * @returns `{ ok: true, query, limit, offset, sessionId, role, from, to, sort }`,
+ *   or `{ ok: false, reason, message, status }`.
+ */
+export function parseSearchQuery(request) {
+  const failure = (reason, message, status = 400) => ({ ok: false, reason, message, status })
+  let url
+  try {
+    url = new URL(request?.url ?? SEARCH_PATH, 'http://edh.invalid')
+  } catch {
+    return failure('bad-input', 'That search could not be read.')
+  }
+  const q = parameterOf(url, 'q')
+  if (q.present !== true || q.repeated === true) return failure('bad-input', 'A search needs one "q" query value.')
+  const query = normalizeQuery(q.value)
+  if (query === undefined) return { ok: false, reason: 'too-short', message: `Type at least ${String(MIN_QUERY)} characters to search.`, status: 200 }
+
+  const limit = countParameter(parameterOf(url, 'limit'), { fallback: DEFAULT_LIMIT, min: 1, max: MAX_LIMIT, clamp: true })
+  if (limit.ok !== true) return failure('bad-input', `"limit" must be a whole number from 1 to ${String(MAX_LIMIT)}.`)
+
+  const offset = countParameter(parameterOf(url, 'offset'), { fallback: 0, min: 0, max: MAX_OFFSET, clamp: false })
+  if (offset.ok !== true) return failure('bad-input', `"offset" must be a whole number from 0 to ${String(MAX_OFFSET)}.`)
+
+  const role = wordParameter(parameterOf(url, 'role'), ['any', 'user', 'assistant'], 'any')
+  if (role.ok !== true) return failure('bad-input', '"role" must be "any", "user" or "assistant".')
+
+  const sort = wordParameter(parameterOf(url, 'sort'), ['relevance', 'recent'], 'relevance')
+  if (sort.ok !== true) return failure('bad-input', '"sort" must be "relevance" or "recent".')
+
+  const sessionParameter = parameterOf(url, 'sessionId')
+  if (sessionParameter.repeated === true) return failure('bad-input', '"sessionId" must be given at most once.')
+  let sessionId
+  if (sessionParameter.present === true) {
+    const raw = String(sessionParameter.value).trim()
+    const lowered = raw.toLowerCase()
+    if (raw !== '' && lowered !== 'any') {
+      if (isSafeKey(raw, MAX_SESSION_ID) !== true) return failure('bad-input', 'That "sessionId" is not a Session id.')
+      sessionId = raw
+    }
+  }
+
+  const bounds = {}
+  for (const [name, parameter] of [['from', parameterOf(url, 'from')], ['to', parameterOf(url, 'to')]]) {
+    if (parameter.present !== true) continue
+    if (parameter.repeated === true) return failure('bad-input', `"${name}" must be given at most once.`)
+    const raw = String(parameter.value).trim()
+    if (raw === '') continue
+    if (!/^\d+$/u.test(raw)) return failure('bad-input', `"${name}" must be an epoch-millisecond integer.`)
+    const value = Number(raw)
+    if (!Number.isSafeInteger(value)) return failure('bad-input', `"${name}" must be an epoch-millisecond integer.`)
+    bounds[name] = value
+  }
+  if (bounds.from !== undefined && bounds.to !== undefined && bounds.from > bounds.to) {
+    return failure('bad-input', '"from" cannot be later than "to".')
+  }
+
+  return {
+    ok: true,
+    query,
+    limit: limit.value,
+    offset: offset.value,
+    sessionId,
+    role: role.value === 'any' ? undefined : role.value,
+    from: bounds.from,
+    to: bounds.to,
+    sort: sort.value,
+  }
+}
+
+/**
+ * Answer `GET /api/edh.search?q=…&limit=…&offset=…&sessionId=…&role=…&from=…&to=…&sort=…`.
  *
  * A missing or repeated `q` is `bad-input` (400), a query still being typed is
- * `too-short` (200 — the palette shows nothing, it did not make a mistake), and a
- * Host with no persistence is `unavailable` (200). Nothing here names a path, a
- * store location or the query that failed.
+ * `too-short` (200 — the palette shows nothing, it did not make a mistake), a
+ * `sessionId` the Host does not know is `not-found` (404) rather than an empty
+ * result set that reads as "no matches", and a Host with no persistence is
+ * `unavailable` (200). Nothing here names a path, a store location or the query
+ * that failed.
  * @param request - the incoming request.
  * @param options - `search`, the indexer to read.
  * @returns the JSON answer.
@@ -984,36 +1186,34 @@ export function searchResponse(request, options = {}) {
       message: 'This Host cannot read Session logs, so there is nothing to search.',
     })
   }
-  const raw = queryOf(request)
-  if (raw === undefined) {
-    return jsonResponse({ ok: false, reason: 'bad-input', message: 'A search needs one "q" query value.' }, 400)
+  const parsed = parseSearchQuery(request)
+  if (parsed.ok !== true) {
+    return jsonResponse({ ok: false, reason: parsed.reason, message: parsed.message }, parsed.status ?? 200)
   }
-  const normalized = normalizeQuery(raw)
-  if (normalized === undefined) {
-    return jsonResponse({
-      ok: false,
-      reason: 'too-short',
-      message: `Type at least ${String(MIN_QUERY)} characters to search.`,
-    })
-  }
-  const limit = limitOf(request)
-  if (limit.ok !== true) {
-    return jsonResponse({
-      ok: false,
-      reason: 'bad-input',
-      message: `"limit" must be a whole number from 1 to ${String(MAX_LIMIT)}.`,
-    }, 400)
+  if (parsed.sessionId !== undefined && typeof search.knows === 'function' && search.knows(parsed.sessionId) !== true) {
+    // A filter on a Session this Host does not have is not "no matches" — the
+    // caller asked about something that does not exist, and must be told so.
+    return jsonResponse({ ok: false, reason: 'not-found', message: 'No stored Session has that id.' }, 404)
   }
   try {
-    const found = search.search(normalized, limit.limit)
+    const found = search.search(parsed.query, {
+      limit: parsed.limit,
+      offset: parsed.offset,
+      sessionId: parsed.sessionId,
+      role: parsed.role,
+      from: parsed.from,
+      to: parsed.to,
+      sort: parsed.sort,
+    })
     if (found === undefined) {
       return jsonResponse({ ok: false, reason: 'too-short', message: `Type at least ${String(MIN_QUERY)} characters to search.` })
     }
     return jsonResponse({
       ok: true,
-      q: normalized,
-      messages: found.messages,
+      q: parsed.query,
+      total: found.total,
       truncated: found.truncated === true,
+      results: found.results,
       indexed: typeof search.indexed === 'function' ? search.indexed() : { sessions: 0, total: 0, ready: false },
     })
   } catch {

@@ -408,6 +408,47 @@ plaintext and 7.5–15 s**, so a search can never be a scan.
   shifts page numbers — inherent to offset paging — but it cannot reorder the rows
   already there.
 
+## Skills
+
+`skills.js` answers `GET /api/edh.skills?sessionId=…` (and `POST {action:'refresh'}`)
+for the Skills settings tab: one discovery pass, split into the skills this
+workspace adds and the skills the Harness brings. Four facts decide the design.
+
+- **The registry is the only truth; never scan a directory.** `ctx.skills.list({ cwd,
+  scope })`. Three shipped packages register skills **from inside the asar** —
+  `dsh-skill-office` (7: `office`, `office-docx`, `office-export-pdf`, `office-pptx`,
+  `office-recalculate`, `office-render`, `office-xlsx`), `dsh-sandbox-windows-acl`,
+  `dsh-skill-badge` (no `path` at all) — plus whatever the preset configured. A scan
+  of `.dsh/skills` finds none of them, and `~/.claude/skills` is never scanned by the
+  Harness (the string appears in no harness JS), so scanning it would make the tab
+  lie about what the model can load. A skill with no file behind it therefore answers
+  with `path` **absent**, never an empty string.
+- **A `scope` is mandatory, and the failure is silent.** `dsh-skill-filesystem` is
+  mounted *per agent preset* (`dsh-web-app` disables the host row: "presets own local
+  discovery"), so a bare `list({ cwd })` reads only the global layer and comes back
+  empty. The Agent object *is* the scope key; for a cold Session the preset lease is
+  (`agentPresets.acquireScope(agentPreset)` → `{ key }`). This module mirrors
+  `dsh-api-session-controller/lib/types/skill-catalog.js` rather than deriving its
+  own, and disposes both the observation and the lease.
+- **`source` is the only split.** `project-dsh` (100) and `project-agents` (200) are
+  the workspace tab; `runtime` (250), `custom` (300, whatever the preset configured),
+  `user-dsh` (400), `user-agents` (500 — `~/.agents/skills`) and `bundled` (600) are
+  global. A source this table does not know is kept in **global under its own label**
+  — a provider the code predates must not vanish from a settings page.
+- **`sessionPersistence`'s `header.cwd` is the creation cwd, not the working
+  directory.** The order is `sessionQuery.observeSession(id)`'s
+  `projections.values.workingDirectory`, then the observation's `header.cwd`, then
+  `workingDirectory.defaultDirectory`, and for a live agent
+  `workingDirectory.ensure(agent)` last — which is the value that actually wins,
+  because it is the directory the sandbox is using now.
+
+`complete: false` is the registry saying discovery did not finish (a provider threw or
+answered incompletely; `SkillRegistry.listLayerCandidates` catches it, drops that
+provider's rows and marks the collection uncacheable). `refresh` calls the registry's
+own `invalidateCache()` when it exists — the same call the Harness makes after a
+registration change — and is a plain re-read when it does not, which is honest because
+providers are watcher-driven.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -436,6 +477,7 @@ node test/remote.mjs
 node test/mobile.mjs
 node test/notify.mjs
 node test/search.mjs
+node test/skills.mjs
 node test/mcp.mjs
 node test/usage.mjs
 ```

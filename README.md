@@ -17,6 +17,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `mobile` | Serves the web app manifest, so a phone can add the GUI to its home screen and open it without browser chrome |
 | `notify` | Serves a curated few of the real Windows sound files, so a notification plays the sound you already know |
 | `search` | Full-text search across every stored Session, from a Ctrl+K palette — indexed in the background, answered from memory |
+| `skills` | Lists the skills the agent can actually see, split into the ones this workspace adds and the ones the Harness brings |
 
 A switch in the conversation header turns them all on or off together.
 

@@ -154,7 +154,28 @@ window.__ModuleLoader__.load({
       remoteSessions: 'Phones signed in: {count}',
       remoteSessionOne: '1 phone signed in',
       remoteNoSessions: 'No phone signed in',
-      advTitle: 'Advanced search',
+      skillsNav: 'Skills',
+      skillsTitle: 'Skills',
+      skillsIntro: 'The skills this Harness can use, global and per project.',
+      skillsTabGlobal: 'Global',
+      skillsTabWorkspace: 'This workspace',
+      skillsFilter: 'Filter skills',
+      skillsFilterPlaceholder: 'Filter by name or description',
+      skillsRefresh: 'Refresh',
+      skillsLoading: 'Reading skills…',
+      skillsFailed: 'The skill list could not be read.',
+      skillsRetry: 'Retry',
+      skillsUnavailable: 'Skills are unavailable: this build has no skill service.',
+      skillsEmptyGlobal: 'No global skills are installed.',
+      skillsEmptyWorkspace: 'No skills in this workspace yet. Add one under .agents/skills in the project.',
+      skillsScopeSession: 'from the open conversation',
+      skillsScopeRecent: 'from the most recent conversation',
+      skillsScopeDefault: 'default workspace',
+      skillsWorkspaceLine: 'Workspace: {name}',
+      skillsNoWorkspace: 'No workspace resolved yet',
+      skillsUserOnly: 'user only',
+      skillsCopyPath: 'Copy path',
+      skillsIncomplete: 'Some skill providers could not be read.',      advTitle: 'Advanced search',
       advIntro: 'Searches the full text of every conversation on this machine, with filters.',
       advQueryLabel: 'Text',
       advQueryPlaceholder: 'Words to find',
@@ -437,7 +458,28 @@ window.__ModuleLoader__.load({
       remoteSessions: '已登录手机：{count} 台',
       remoteSessionOne: '已登录 1 台手机',
       remoteNoSessions: '没有手机登录',
-      advTitle: '高级搜索',
+      skillsNav: '技能',
+      skillsTitle: '技能',
+      skillsIntro: '这个 Harness 可用的技能，分全局与每个项目。',
+      skillsTabGlobal: '全局',
+      skillsTabWorkspace: '此工作区',
+      skillsFilter: '筛选技能',
+      skillsFilterPlaceholder: '按名称或描述筛选',
+      skillsRefresh: '刷新',
+      skillsLoading: '正在读取技能…',
+      skillsFailed: '无法读取技能列表。',
+      skillsRetry: '重试',
+      skillsUnavailable: '技能不可用：这个构建没有技能服务。',
+      skillsEmptyGlobal: '没有安装全局技能。',
+      skillsEmptyWorkspace: '这个工作区还没有技能。请在项目的 .agents/skills 下添加一个。',
+      skillsScopeSession: '来自打开的对话',
+      skillsScopeRecent: '来自最近一次的对话',
+      skillsScopeDefault: '默认工作区',
+      skillsWorkspaceLine: '工作区：{name}',
+      skillsNoWorkspace: '还没有解析出工作区',
+      skillsUserOnly: '仅用户',
+      skillsCopyPath: '复制路径',
+      skillsIncomplete: '部分技能来源读取失败。',      advTitle: '高级搜索',
       advIntro: '在整台机器的全部对话中做全文搜索，并可按条件筛选。',
       advQueryLabel: '文字',
       advQueryPlaceholder: '要查找的词',
@@ -9364,6 +9406,504 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ------------------------------------------------------------ skills page
+    const SKILLS_MODULE = '@moreweb/edh/skills'
+    const SKILLS_SECTION_SLOT = 'settings.section'
+    const SKILLS_SECTION_ORDER = 20
+    const SKILLS_ROUTE = 'api/edh.skills'
+    const SKILLS_DEBUG_KEY = 'edh:skills'
+    const SKILLS_TABS = ['global', 'workspace']
+    const SKILLS_DESCRIPTION_MAX = 220
+
+    /** Separate breadcrumb for the Skills page. */
+    function skillsWrite(payload) {
+      writeBreadcrumb(SKILLS_DEBUG_KEY, payload)
+    }
+
+    /**
+     * Which session the page should ask about.
+     *
+     * A Settings page sits outside a session scope, so `uiSession.current` is
+     * often undefined here. The order is: the open conversation, then the most
+     * recently updated one (the honest "the conversation you were last in"), then
+     * nothing at all and the Host's default workspace. The `source` is carried
+     * back so the page can say which of those it means instead of claiming a past
+     * session is live.
+     * @param options - the current session key and the list rows.
+     */
+    function skillsScopeOf(options = {}) {
+      const key = typeof options.currentKey === 'string' ? options.currentKey.trim() : ''
+      if (key !== '') return { sessionId: key, source: 'session', updatedAt: 0 }
+      let newest
+      for (const row of Array.isArray(options.rows) ? options.rows : []) {
+        if (row === null || typeof row !== 'object') continue
+        const id = typeof row.sessionId === 'string' ? row.sessionId : typeof row.id === 'string' ? row.id : ''
+        if (id === '') continue
+        const updatedAt = Number(row.updatedAt) || 0
+        if (newest === undefined || updatedAt > newest.updatedAt) newest = { sessionId: id, updatedAt }
+      }
+      if (newest !== undefined) return { sessionId: newest.sessionId, source: 'recent', updatedAt: newest.updatedAt }
+      return { sessionId: '', source: 'default', updatedAt: 0 }
+    }
+
+    /** The exact request for one scope: no id means the Host's default workspace. */
+    function skillsUrl(scope) {
+      const id = typeof scope?.sessionId === 'string' ? scope.sessionId.trim() : ''
+      if (id === '') return SKILLS_ROUTE
+      return `${SKILLS_ROUTE}?${new URLSearchParams({ sessionId: id }).toString()}`
+    }
+
+    /** A skill row, with the two facts the page actually states. */
+    function skillsRowOf(entry) {
+      if (entry === null || typeof entry !== 'object') return undefined
+      const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+      if (name === '') return undefined
+      const source = typeof entry.source === 'string' ? entry.source : ''
+      const description = typeof entry.description === 'string' ? entry.description : ''
+      const full = typeof entry.descriptionFull === 'string' && entry.descriptionFull !== '' ? entry.descriptionFull : description
+      return {
+        key: `${source}:${name}`,
+        name,
+        description: notifyClampText(description, SKILLS_DESCRIPTION_MAX),
+        descriptionFull: full,
+        whenToUse: typeof entry.whenToUse === 'string' ? entry.whenToUse : '',
+        source,
+        sourceWord: source === 'user-agents' ? 'global' : source === 'project-agents' ? 'project' : source,
+        userOnly: entry.modelInvocable === false,
+        path: typeof entry.path === 'string' && entry.path.trim() !== '' ? entry.path : '',
+      }
+    }
+
+    /** The two lists, tolerating the older `skills` name for the global array. */
+    function skillsLists(answer) {
+      const global = Array.isArray(answer?.global) ? answer.global
+        : Array.isArray(answer?.skills) ? answer.skills : []
+      const workspace = Array.isArray(answer?.workspace) ? answer.workspace : []
+      const rowify = list => list.map(skillsRowOf).filter(row => row !== undefined)
+      return { global: rowify(global), workspace: rowify(workspace) }
+    }
+
+    /** The counts beside the tab labels: the Host's own, or the list lengths. */
+    function skillsCounts(answer) {
+      const lists = skillsLists(answer)
+      const counts = answer !== null && typeof answer === 'object' && answer.counts !== null && typeof answer.counts === 'object'
+        ? answer.counts
+        : undefined
+      return {
+        global: Number.isFinite(Number(counts?.global)) ? Number(counts.global) : lists.global.length,
+        workspace: Number.isFinite(Number(counts?.workspace)) ? Number(counts.workspace) : lists.workspace.length,
+      }
+    }
+
+    /** The rows one tab shows after the filter box. */
+    function skillsVisible(answer, tab, query) {
+      const lists = skillsLists(answer)
+      const rows = tab === 'workspace' ? lists.workspace : lists.global
+      const needle = String(query ?? '').trim().toLowerCase()
+      if (needle === '') return rows
+      return rows.filter(row => row.name.toLowerCase().includes(needle) || row.description.toLowerCase().includes(needle))
+    }
+
+    /** Arrow keys inside the tablist, wrapping. */
+    function skillsNextTab(tab, key) {
+      const at = SKILLS_TABS.indexOf(tab === 'workspace' ? 'workspace' : 'global')
+      if (key === 'ArrowRight' || key === 'ArrowDown') return SKILLS_TABS[(at + 1) % SKILLS_TABS.length]
+      if (key === 'ArrowLeft' || key === 'ArrowUp') return SKILLS_TABS[(at - 1 + SKILLS_TABS.length) % SKILLS_TABS.length]
+      if (key === 'Home') return SKILLS_TABS[0]
+      if (key === 'End') return SKILLS_TABS[SKILLS_TABS.length - 1]
+      return tab
+    }
+
+    /** The quiet workspace line: which workspace, and how it was decided. */
+    function skillsScopeLine(answer, scope, t) {
+      const block = answer !== null && typeof answer === 'object' ? answer.scope : undefined
+      const name = typeof block?.workspaceName === 'string' && block.workspaceName.trim() !== ''
+        ? block.workspaceName.trim()
+        : typeof block?.cwd === 'string' ? block.cwd : ''
+      const how = scope?.source === 'session'
+        ? t('skillsScopeSession')
+        : scope?.source === 'recent' ? t('skillsScopeRecent') : t('skillsScopeDefault')
+      if (name === '') return t('skillsNoWorkspace')
+      return `${t('skillsWorkspaceLine', { name })} ${how}`
+    }
+
+    /** The empty sentence for one scope, and it teaches in the workspace tab. */
+    function skillsEmptyText(tab, t) {
+      return tab === 'workspace' ? t('skillsEmptyWorkspace') : t('skillsEmptyGlobal')
+    }
+
+    /** One skill row: name, description, quiet meta, and a Copy path when there is a path. */
+    function skillsRowView(row, t) {
+      return h('li', { key: row.key, className: 'edh-skills-row' }, [
+        h('div', { key: 'text', className: 'edh-skills-row-text' }, [
+          h('div', { key: 'name', className: 'edh-skills-row-name' }, row.name),
+          row.description === ''
+            ? null
+            : h('div', { key: 'desc', className: 'edh-skills-row-desc', title: row.descriptionFull }, row.description),
+        ]),
+        h('div', { key: 'meta', className: 'edh-skills-row-meta' }, [
+          h('span', { key: 'source', className: 'edh-skills-row-source', title: row.source }, row.sourceWord),
+          row.userOnly ? h('span', { key: 'user', className: 'edh-skills-row-user' }, t('skillsUserOnly')) : null,
+        ]),
+        row.path === ''
+          ? null
+          : h('button', {
+            key: 'copy',
+            type: 'button',
+            className: 'edh-skills-row-copy',
+            title: row.path,
+            onClick: () => row.onCopy?.(row),
+          }, t('skillsCopyPath')),
+      ])
+    }
+
+    /**
+     * Fold one read's outcome into the page state.
+     *
+     * The rule that matters: a failure of any kind **keeps the list already on
+     * screen** and puts its sentence beside it, because a stale list with an error
+     * line is more use than an empty page.
+     */
+    function skillsReduce(state, patch) {
+      const current = state !== null && typeof state === 'object' && 'answer' in state
+        ? state
+        : { status: 'loading', answer: undefined, error: '' }
+      const kind = String(patch?.status ?? '')
+      if (kind === 'loading') return { ...current, status: current.answer === undefined ? 'loading' : current.status }
+      if (kind === 'ready') return { status: 'ready', answer: patch.answer, error: '' }
+      if (kind === 'unavailable') return { status: 'unavailable', answer: undefined, error: String(patch.message ?? '') }
+      if (kind === 'error') {
+        return {
+          status: current.answer === undefined ? 'error' : current.status,
+          answer: current.answer,
+          error: String(patch.message ?? patch.reason ?? ''),
+        }
+      }
+      return current
+    }
+
+    /**
+     * The page, as a pure tree.
+     */
+    function skillsView(view = {}) {
+      const t = typeof view.t === 'function' ? view.t : key => key
+      const tab = view.tab === 'workspace' ? 'workspace' : 'global'
+      const state = view.state ?? { status: 'loading', answer: undefined, error: '' }
+      const handlers = view.handlers ?? {}
+      const answer = state.answer
+      const counts = answer === undefined ? { global: 0, workspace: 0 } : skillsCounts(answer)
+      const rows = answer === undefined ? [] : skillsVisible(answer, tab, view.query)
+      const on = name => (typeof handlers[name] === 'function' ? handlers[name] : undefined)
+      const tabNode = (id, label, count) => h('button', {
+        key: id,
+        type: 'button',
+        id: `edh-skills-tab-${id}`,
+        role: 'tab',
+        className: `edh-skills-tab${tab === id ? ' edh-skills-tab-active' : ''}`,
+        'aria-selected': tab === id,
+        'aria-controls': `edh-skills-panel-${id}`,
+        tabIndex: tab === id ? 0 : -1,
+        onClick: () => on('onTab')?.(id),
+      }, [
+        h('span', { key: 'label', className: 'edh-skills-tab-label' }, label),
+        h('span', { key: 'count', className: 'edh-skills-tab-count' }, String(count)),
+      ])
+
+      const body = []
+      if (state.status === 'loading') body.push(h('p', { key: 'loading', className: 'edh-skills-note' }, t('skillsLoading')))
+      if (state.status === 'unavailable') body.push(h('p', { key: 'unavailable', className: 'edh-skills-note' }, t('skillsUnavailable')))
+      if (state.status === 'error') {
+        body.push(h('div', { key: 'error', className: 'edh-skills-error' }, [
+          h('p', { key: 'text', className: 'edh-skills-note' }, state.error === '' ? t('skillsFailed') : state.error),
+          h('button', {
+            key: 'retry',
+            type: 'button',
+            className: 'edh-skills-button',
+            onClick: on('onRefresh'),
+          }, t('skillsRetry')),
+        ]))
+      }
+      if (answer !== undefined && state.status !== 'loading' && state.status !== 'unavailable') {
+        if (rows.length === 0) {
+          body.push(h('p', { key: 'empty', className: 'edh-skills-note' }, skillsEmptyText(tab, t)))
+        } else {
+          body.push(h('ul', { key: 'rows', className: 'edh-skills-list' }, rows.map(row => skillsRowView(row, t))))
+        }
+        if (state.error !== '' && state.status !== 'error') {
+          body.push(h('p', { key: 'stale', className: 'edh-skills-note' }, state.error))
+        }
+        if (answer.complete === false) {
+          body.push(h('p', { key: 'incomplete', className: 'edh-skills-note' }, t('skillsIncomplete')))
+        }
+      }
+
+      const scopeLine = answer === undefined || tab !== 'workspace'
+        ? null
+        : h('p', { key: 'scope', className: 'edh-skills-scope' }, skillsScopeLine(answer, view.scope, t))
+
+      return h('div', { className: 'edh-skills-page' }, [
+        h('div', { key: 'head', className: 'edh-skills-head' }, [
+          h('h2', { key: 'title', className: 'edh-skills-title' }, t('skillsTitle')),
+          h('p', { key: 'intro', className: 'edh-skills-intro' }, t('skillsIntro')),
+        ]),
+        h('div', {
+          key: 'tabs',
+          className: 'edh-skills-tabs',
+          role: 'tablist',
+          'aria-label': t('skillsTitle'),
+          onKeyDown: event => {
+            const next = skillsNextTab(tab, String(event?.key ?? ''))
+            if (next === tab) return
+            if (typeof event?.preventDefault === 'function') event.preventDefault()
+            on('onTab')?.(next)
+          },
+        }, [
+          tabNode('global', t('skillsTabGlobal'), counts.global),
+          tabNode('workspace', t('skillsTabWorkspace'), counts.workspace),
+        ]),
+        scopeLine,
+        state.status === 'unavailable' ? null : h('div', { key: 'tools', className: 'edh-skills-tools' }, [
+          h('input', {
+            key: 'filter',
+            ref: view.inputRef,
+            className: 'edh-skills-filter',
+            type: 'search',
+            value: view.query ?? '',
+            placeholder: t('skillsFilterPlaceholder'),
+            'aria-label': t('skillsFilter'),
+            onInput: event => on('onQuery')?.(event.target.value),
+          }),
+          h('button', {
+              key: 'refresh',
+              type: 'button',
+              className: 'edh-skills-button',
+              disabled: state.status === 'loading',
+              onClick: on('onRefresh'),
+            }, t('skillsRefresh')),
+        ]),
+        h('div', {
+          key: 'panel',
+          className: 'edh-skills-panel',
+          role: 'tabpanel',
+          id: `edh-skills-panel-${tab}`,
+          'aria-labelledby': `edh-skills-tab-${tab}`,
+        }, body),
+      ])
+    }
+
+    /**
+     * The live page: resolve the scope, read once, refresh on demand, filter
+     * locally, and talk the two tabs.
+     */
+    function createSkillsPage(t, faces = {}) {
+      return function SkillsPage() {
+        const [tab, setTab] = React.useState('global')
+        const [query, setQuery] = React.useState('')
+        const [state, setState] = React.useState({ status: 'loading', answer: undefined, error: '' })
+        const fetched = React.useRef('')
+        const inputRef = React.useRef(null)
+
+        const readScope = () => {
+          let currentKey = ''
+          try {
+            currentKey = String(faces.uiSession?.current?.getSnapshot?.()?.key ?? '')
+          } catch (error) {
+            // An unreadable binding means "no open conversation".
+          }
+          const byId = faces.sessions?.list?.getSnapshot?.()?.byId
+          const rows = byId !== null && typeof byId === 'object' ? Object.values(byId) : []
+          return skillsScopeOf({ currentKey, rows })
+        }
+
+        const scope = readScope()
+
+        const load = React.useCallback(async (mode) => {
+          const request = faces.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+          if (typeof request !== 'function') {
+            setState(previous => skillsReduce(previous, { status: 'unavailable' }))
+            skillsWrite({ phase: 'failed', action: 'read', reason: 'no-fetch' })
+            return
+          }
+          setState(previous => skillsReduce(previous, { status: 'loading' }))
+          try {
+            const init = mode === 'refresh'
+              ? { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ action: 'refresh' }) }
+              : { headers: { accept: 'application/json' } }
+            const response = await request(skillsUrl(scope), init)
+            if (response === null || typeof response !== 'object' || response.ok !== true) {
+              throw new Error(String(response?.status ?? 'no-response'))
+            }
+            const answer = await response.json()
+            if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+              const reason = String(answer?.reason ?? 'refused')
+              if (reason === 'unavailable') {
+                setState(previous => skillsReduce(previous, { status: 'unavailable', message: String(answer?.message ?? '') }))
+              } else {
+                // A failed refresh keeps the list that is already on screen.
+                setState(previous => skillsReduce(previous, { status: 'error', message: String(answer?.message ?? ''), reason }))
+              }
+              skillsWrite({ phase: 'failed', action: mode ?? 'read', reason })
+              return
+            }
+            skillsWrite({ phase: 'loaded', global: skillsCounts(answer).global, workspace: skillsCounts(answer).workspace, scope: scope.source })
+            setState(previous => skillsReduce(previous, { status: 'ready', answer }))
+          } catch (error) {
+            // Also keeps whatever is already visible.
+            setState(previous => skillsReduce(previous, { status: 'error', message: messageOf(error) }))
+            skillsWrite({ phase: 'failed', action: mode ?? 'read', reason: messageOf(error) })
+          }
+        }, [faces, scope.sessionId])
+
+        React.useEffect(() => {
+          // Once per resolved scope: both tabs come from the same answer, so a tab
+          // switch never costs a round trip.
+          const key = `${scope.source}:${scope.sessionId}`
+          if (fetched.current === key) return
+          fetched.current = key
+          void load('read')
+        }, [load, scope.source, scope.sessionId])
+
+        const copy = async row => {
+          try {
+            const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+            if (clip === undefined || typeof clip.writeText !== 'function') throw new Error('no-clipboard')
+            await clip.writeText(row.path)
+            skillsWrite({ phase: 'copied', name: row.name })
+          } catch (error) {
+            skillsWrite({ phase: 'failed', action: 'copy', reason: messageOf(error) })
+          }
+        }
+
+        const rows = state.answer === undefined ? [] : skillsVisible(state.answer, tab, query)
+        const withActions = rows.map(row => ({ ...row, onCopy: copy }))
+        const shaped = state.answer === undefined
+          ? state
+          : { ...state, answer: { ...state.answer, [tab]: withActions, global: tab === 'global' ? withActions : state.answer.global, workspace: tab === 'workspace' ? withActions : state.answer.workspace } }
+
+        return skillsView({
+          t,
+          tab,
+          query,
+          scope,
+          state: shaped,
+          inputRef,
+          handlers: {
+            onTab: next => setTab(next),
+            onQuery: value => setQuery(value),
+            onRefresh: () => void load('refresh'),
+          },
+        })
+      }
+    }
+
+    const SKILLS_CSS = `
+.edh-skills-page { display: flex; flex-direction: column; gap: 0; padding: 24px 28px 40px; max-width: 880px; }
+.edh-skills-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
+.edh-skills-title { margin: 0; color: var(--dsw-alias-label-primary); font-size: 18px; line-height: 26px; font-weight: 600; }
+.edh-skills-intro { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+.edh-skills-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--dsw-alias-border-l); }
+.edh-skills-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.edh-skills-tab:hover { color: var(--dsw-alias-label-primary); }
+.edh-skills-tab-active { color: var(--dsw-alias-label-primary); border-bottom-color: var(--dsw-alias-brand-primary); }
+.edh-skills-tab:focus-visible, .edh-skills-button:focus-visible, .edh-skills-filter:focus-visible, .edh-skills-row-copy:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+.edh-skills-tab-count { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.edh-skills-scope { margin: 10px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.edh-skills-tools { display: flex; align-items: center; gap: 10px; padding: 12px 0; }
+.edh-skills-filter {
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  height: 30px;
+  min-width: 160px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+.edh-skills-button {
+  flex: none;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.edh-skills-button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.edh-skills-button:disabled { color: var(--dsw-alias-label-dimmed); background: transparent; cursor: default; }
+.edh-skills-panel { display: flex; flex-direction: column; }
+.edh-skills-list { list-style: none; margin: 0; padding: 0; }
+.edh-skills-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--dsw-alias-border-l); }
+.edh-skills-row-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.edh-skills-row-name { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 19px; font-weight: 500; }
+.edh-skills-row-desc {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.edh-skills-row-meta { flex: none; display: flex; align-items: baseline; gap: 10px; padding-top: 1px; }
+.edh-skills-row-source { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.edh-skills-row-user { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
+.edh-skills-row-copy {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.edh-skills-row-copy:hover { border-color: var(--dsw-alias-border-l); color: var(--dsw-alias-label-primary); }
+.edh-skills-note { margin: 10px 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+.edh-skills-error { display: flex; align-items: center; gap: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .edh-skills-button, .edh-skills-tab, .edh-skills-row-copy { transition: none; }
+}
+`
+
+    /** Inject the page's one stylesheet, once. */
+    function installSkillStyles() {
+      if (typeof document === 'undefined') return () => {}
+      if (document.getElementById('edh-skills-style') !== null) return () => {}
+      const style = document.createElement('style')
+      style.id = 'edh-skills-style'
+      style.textContent = SKILLS_CSS
+      document.head.appendChild(style)
+      return () => {
+        try {
+          style.remove()
+        } catch (error) {
+          // A head that is gone has nothing to remove.
+        }
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -10355,6 +10895,66 @@ window.__ModuleLoader__.load({
         () => installAdvancedSearch(ctx, controller, { t, page: AdvancedSearchPage, icon: advSearchPanelIcon }),
         'edh: advanced search entries',
       )
+
+      // skills — its own Settings page with two tabs.
+      //
+      // A Settings page sits outside a session scope, so `uiSession.current` is
+      // often undefined here; `uiSession` therefore joins on its own optional
+      // contract rather than the required list, and the page falls back to the
+      // most recent conversation and then to the Host's default workspace.
+      const skillsFaces = { sessions: undefined, uiSession: undefined, fetch: undefined }
+      ctx.inject(['sessions'], scope => {
+        scope.effect(() => {
+          skillsFaces.sessions = scope.sessions
+          return () => {
+            skillsFaces.sessions = undefined
+          }
+        }, 'edh: skills sessions')
+      })
+      ctx.inject(['uiSession'], scope => {
+        scope.effect(() => {
+          skillsFaces.uiSession = scope.uiSession
+          return () => {
+            skillsFaces.uiSession = undefined
+          }
+        }, 'edh: skills ui-session')
+      })
+      const SkillsPage = createSkillsPage(t, skillsFaces)
+      ctx.effect(() => installSkillStyles(), 'edh: skills styles')
+      ctx.slots.inject(SKILLS_SECTION_SLOT, () => {
+        let dispose
+        let installed = false
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), SKILLS_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({
+              name: SKILLS_SECTION_SLOT,
+              id: 'skills',
+              order: SKILLS_SECTION_ORDER,
+              locale: NS,
+              label: () => t('skillsNav'),
+            }, SkillsPage)
+            installed = true
+          } catch (error) {
+            installed = false
+            skillsWrite({ phase: 'register-failed', part: 'section', message: messageOf(error) })
+          }
+        }
+        const stop = controller.subscribe(sync)
+        sync()
+        return () => {
+          stop()
+          dispose?.()
+          dispose = undefined
+        }
+      })
       // The fallback that also makes the palette work in a plain browser: the
       // registry consumes the gesture it handles, so this sees `defaultPrevented`
       // and stays out of the way.
@@ -10743,6 +11343,27 @@ window.__ModuleLoader__.load({
       advSearchReduce,
       advSearchPanelIcon,
       installAdvancedSearch,
+      createSkillsPage,
+      skillsView,
+      skillsScopeOf,
+      skillsUrl,
+      skillsRowOf,
+      skillsLists,
+      skillsCounts,
+      skillsVisible,
+      skillsNextTab,
+      skillsScopeLine,
+      skillsEmptyText,
+      skillsReduce,
+      skillsRowView,
+      installSkillStyles,
+      SKILLS_CSS,
+      SKILLS_MODULE,
+      SKILLS_SECTION_SLOT,
+      SKILLS_SECTION_ORDER,
+      SKILLS_TABS,
+      SKILLS_ROUTE,
+      SKILLS_DEBUG_KEY,
       installAdvancedSearchStyles,
       ADV_SEARCH_CSS,
       ADV_SEARCH_ID,

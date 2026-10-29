@@ -264,6 +264,22 @@ const {
   searchMessageRows,
   searchSegments,
   searchShortcutIntent,
+  skillsView,
+  skillsScopeOf,
+  skillsUrl,
+  skillsRowOf,
+  skillsLists,
+  skillsCounts,
+  skillsVisible,
+  skillsNextTab,
+  skillsScopeLine,
+  skillsEmptyText,
+  skillsReduce,
+  SKILLS_CSS,
+  SKILLS_MODULE,
+  SKILLS_SECTION_ORDER,
+  SKILLS_TABS,
+  SKILLS_ROUTE,
   searchTriggerOf,
   installSearchTriggerGuard,
   SEARCH_TRIGGER_LABELS,
@@ -6735,6 +6751,218 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 64 — the Skills page: two real tabs, three scope resolutions, and the rows.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+
+  const answer = {
+    ok: true,
+    scope: { sessionId: 's-open', cwd: 'C:/work/EDH', workspaceName: 'EDH', source: 'session' },
+    global: [
+      { name: 'agent-experience', description: 'Use when writing a tool definition.', source: 'user-agents', provider: 'builtin', modelInvocable: true, userInvocable: true, path: 'C:/skills/agent-experience/SKILL.md' },
+      { name: 'brainstorming', description: 'Use before any creative work. '.repeat(8), descriptionFull: 'Use before any creative work. '.repeat(8), source: 'user-agents', provider: 'builtin', modelInvocable: false, userInvocable: true },
+    ],
+    workspace: [
+      { name: 'edh-release', description: 'How to cut a release.', source: 'project-agents', provider: 'file', modelInvocable: true, userInvocable: true, path: 'C:/work/EDH/.agents/skills/edh-release/SKILL.md' },
+    ],
+    complete: false,
+    counts: { global: 44, workspace: 1 },
+  }
+
+  const ready = () => skillsReduce({ status: 'loading', answer: undefined, error: '' }, { status: 'ready', answer })
+  const render = (state, tab, query, scope, extra) => stub.skillsView({
+    t,
+    tab,
+    query: query ?? '',
+    scope: scope ?? { sessionId: 's-open', source: 'session' },
+    state,
+    handlers: (extra ?? {}).handlers ?? {},
+  })
+
+  // --- the tabs are real tabs -------------------------------------------
+  {
+    const view = render(ready(), 'global', '', undefined)
+    const tablist = treeByType(view, 'div').find(node => node.props.role === 'tablist')
+    assert.ok(tablist !== undefined, 'a real tablist')
+    assert.equal(tablist.props['aria-label'], 'Skills')
+    const tabs = treeByType(view, 'button').filter(button => button.props.role === 'tab')
+    assert.equal(tabs.length, 2, 'Global and This workspace')
+    assert.deepEqual(tabs.map(tab => tab.props.id), ['edh-skills-tab-global', 'edh-skills-tab-workspace'])
+    assert.deepEqual(tabs.map(tab => tab.props['aria-controls']), ['edh-skills-panel-global', 'edh-skills-panel-workspace'])
+    assert.deepEqual(tabs.map(tab => tab.props['aria-selected']), [true, false], 'the active tab is selected, once')
+    assert.deepEqual(tabs.map(tab => tab.props.tabIndex), [0, -1], 'and only it is in the tab order')
+    // Counts sit beside the labels, quiet, not in a pill.
+    assert.deepEqual(tabs.map(tab => treeText(tab)), [['Global', '44'], ['This workspace', '1']], 'the count sits beside the label')
+    assert.ok(tabs[0].props.className.includes('edh-skills-tab-active'))
+    const panel = treeByType(view, 'div').find(node => node.props.role === 'tabpanel')
+    assert.equal(panel.props.id, 'edh-skills-panel-global')
+    assert.equal(panel.props['aria-labelledby'], 'edh-skills-tab-global')
+
+    // Arrow keys move through the tablist.
+    assert.equal(skillsNextTab('global', 'ArrowRight'), 'workspace')
+    assert.equal(skillsNextTab('workspace', 'ArrowRight'), 'global', 'wraps forward')
+    assert.equal(skillsNextTab('global', 'ArrowLeft'), 'workspace', 'wraps backward')
+    assert.equal(skillsNextTab('workspace', 'ArrowLeft'), 'global')
+    assert.equal(skillsNextTab('global', 'Home'), 'global')
+    assert.equal(skillsNextTab('global', 'End'), 'workspace')
+    assert.equal(skillsNextTab('workspace', 'Enter'), 'workspace', 'other keys leave it alone')
+    // The same logic is wired to the tablist's own handler.
+    const switched = []
+    const live = render(ready(), 'global', '', undefined, { handlers: { onTab: next => switched.push(next) } })
+    const liveList = treeByType(live, 'div').find(node => node.props.role === 'tablist')
+    liveList.props.onKeyDown({ key: 'ArrowRight', preventDefault: () => switched.push('prevented') })
+    assert.deepEqual(switched, ['prevented', 'workspace'], 'the tablist moves itself')
+  }
+
+  // --- rows -------------------------------------------------------------
+  {
+    const view = render(ready(), 'workspace', '', undefined)
+    const rows = treeByType(view, 'li')
+    assert.equal(rows.length, 1, 'one row per workspace skill')
+    const text = treeText(view)
+    assert.ok(text.includes('edh-release'), 'the name')
+    assert.ok(text.includes('How to cut a release.'), 'the description')
+    assert.ok(text.includes('project'), 'the source as a quiet word')
+    assert.ok(text.includes('Copy path'), 'with a path, a Copy control')
+
+    // The source word and its raw value in the title.
+    const sourceSpan = treeByType(view, 'span').find(span => span.props.className === 'edh-skills-row-source')
+    assert.equal(sourceSpan.props.children[0], 'project')
+    assert.equal(sourceSpan.props.title, 'project-agents')
+  }
+
+  {
+    // A path-less skill renders no Copy control at all (never a disabled one).
+    const view = render(ready(), 'global', '', undefined)
+    const rows = treeByType(view, 'li')
+    assert.equal(rows.length, 2)
+    const buttons = treeByType(rows[1], 'button')
+    assert.equal(buttons.length, 0, 'no Copy for a skill with no path')
+    assert.ok(treeText(rows[1]).includes('Copy path') === false)
+    // A user-only skill says so; a model-invocable one does not.
+    assert.ok(treeText(rows[0]).includes('user only') === false, 'model-invocable skills stay quiet')
+    assert.ok(treeText(rows[1]).includes('user only'), 'user only is stated where it applies')
+    // Source words: user-agents reads as global.
+    const words = treeByType(view, 'span').filter(span => span.props.className === 'edh-skills-row-source').map(span => span.props.children)
+    assert.deepEqual(words, [['global'], ['global']], 'user-agents reads as global')
+
+    // A long description is clamped in the stylesheet and kept whole in the title.
+    const desc = treeByType(view, 'div').filter(node => node.props.className === 'edh-skills-row-desc').at(-1)
+    assert.ok(desc !== undefined)
+    assert.ok(String(desc.props.children[0]).endsWith('…'), 'clamped with a real ellipsis')
+    assert.ok(String(desc.props.title).length > String(desc.props.children[0]).length, 'the full text is in the title')
+    assert.ok(SKILLS_CSS.includes('-webkit-line-clamp: 2'), 'two lines max')
+    assert.ok(SKILLS_CSS.includes('.edh-skills-row-name { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 19px; font-weight: 500; }'), 'the harness font at weight 500, not monospace')
+  }
+
+  // --- the workspace line: three resolutions -----------------------------
+  {
+    const rows = [
+      { sessionId: 's-old', updatedAt: 1000 },
+      { sessionId: 's-recent', updatedAt: 9000 },
+      { sessionId: '', updatedAt: 9999 },
+    ]
+    const live = skillsScopeOf({ currentKey: 's-live', rows })
+    assert.deepEqual(live, { sessionId: 's-live', source: 'session', updatedAt: 0 }, 'the open conversation wins')
+    const recent = skillsScopeOf({ currentKey: '', rows })
+    assert.deepEqual(recent, { sessionId: 's-recent', source: 'recent', updatedAt: 9000 }, 'otherwise the most recently updated')
+    const none = skillsScopeOf({ currentKey: '', rows: [] })
+    assert.deepEqual(none, { sessionId: '', source: 'default', updatedAt: 0 }, 'otherwise nothing at all')
+    assert.equal(skillsScopeOf({ currentKey: '  ', rows: [{ id: 'x', updatedAt: 5 }] }).sessionId, 'x', 'an id-keyed row still counts')
+    assert.equal(skillsScopeOf({}).source, 'default')
+
+    // The request carries exactly that id, or none.
+    assert.equal(skillsUrl(live), 'api/edh.skills?sessionId=s-live')
+    assert.equal(skillsUrl(recent), 'api/edh.skills?sessionId=s-recent')
+    assert.equal(skillsUrl(none), 'api/edh.skills', 'no id, the Host picks the default workspace')
+    assert.equal(skillsUrl(undefined), 'api/edh.skills')
+
+    // And the line says which, without claiming a past session is live.
+    assert.equal(skillsScopeLine(answer, live, t), 'Workspace: EDH from the open conversation')
+    assert.equal(skillsScopeLine(answer, recent, t), 'Workspace: EDH from the most recent conversation')
+    assert.equal(skillsScopeLine(answer, none, t), 'Workspace: EDH default workspace')
+    assert.equal(skillsScopeLine({ scope: { cwd: 'C:/w/x' } }, none, t), 'Workspace: C:/w/x default workspace', 'cwd when there is no name')
+    assert.equal(skillsScopeLine({}, none, t), 'No workspace resolved yet')
+    // Only the workspace tab carries it.
+    assert.ok(hasText(render(ready(), 'workspace'), 'Workspace: EDH'))
+    assert.equal(hasText(render(ready(), 'global'), 'Workspace: EDH'), false, 'the Global tab does not claim a workspace')
+  }
+
+  // --- empty per scope, teaching in the workspace tab --------------------
+  {
+    const empty = skillsReduce({ status: 'loading', answer: undefined, error: '' }, {
+      status: 'ready',
+      answer: { ok: true, scope: { cwd: 'C:/work/EDH', source: 'default' }, global: [], workspace: [], complete: true, counts: { global: 0, workspace: 0 } },
+    })
+    assert.equal(skillsEmptyText('global', t), 'No global skills are installed.')
+    const workspaceEmpty = render(empty, 'workspace')
+    assert.ok(hasText(workspaceEmpty, 'No skills in this workspace yet. Add one under .agents/skills in the project.'), 'the workspace empty state teaches')
+    assert.ok(hasText(workspaceEmpty, 'Workspace: C:/work/EDH'), 'and shows the path it means')
+    assert.ok(hasText(render(empty, 'global'), 'No global skills are installed.'))
+  }
+
+  // --- filtering is local ------------------------------------------------
+  {
+    assert.deepEqual(skillsVisible(answer, 'global', '').map(row => row.name), ['agent-experience', 'brainstorming'])
+    assert.deepEqual(skillsVisible(answer, 'global', 'BRAIN').map(row => row.name), ['brainstorming'], 'case-insensitive on the name')
+    assert.deepEqual(skillsVisible(answer, 'global', 'tool definition').map(row => row.name), ['agent-experience'], 'and on the description')
+    assert.deepEqual(skillsVisible(answer, 'global', 'zzz'), [])
+    assert.deepEqual(skillsVisible(answer, 'workspace', 'release').map(row => row.name), ['edh-release'], 'per tab')
+    const filtered = render(ready(), 'global', 'brain')
+    assert.equal(treeByType(filtered, 'li').length, 1, 'the box filters what is drawn')
+  }
+
+  // --- states ------------------------------------------------------------
+  {
+    assert.ok(hasText(render({ status: 'loading', answer: undefined, error: '' }, 'global'), 'Reading skills…'))
+    const failed = render({ status: 'error', answer: undefined, error: 'the skill service said no' }, 'global')
+    assert.ok(hasText(failed, 'the skill service said no'), "the Host's own sentence")
+    assert.ok(hasText(failed, 'Retry'), 'and a Retry control')
+    const unavailable = render({ status: 'unavailable', answer: undefined, error: '' }, 'global')
+    assert.ok(hasText(unavailable, 'Skills are unavailable: this build has no skill service.'))
+    assert.equal(hasText(unavailable, 'Refresh'), false, 'no dead refresh')
+    assert.equal(hasText(unavailable, 'Retry'), false, 'no dead retry')
+    assert.equal(treeByType(unavailable, 'input').length, 0, 'and no dead filter box')
+    assert.equal(treeByType(unavailable, 'li').length, 0)
+    // complete:false is one quiet line.
+    assert.ok(hasText(render(ready(), 'global'), 'Some skill providers could not be read.'))
+
+    // A failed refresh keeps the list it already had.
+    const good = ready()
+    const afterFailure = skillsReduce(good, { status: 'error', message: 'network down' })
+    assert.equal(afterFailure.status, 'ready', 'the list stays')
+    assert.equal(afterFailure.answer, answer, 'with the same answer')
+    assert.equal(afterFailure.error, 'network down', 'and the sentence beside it')
+    assert.ok(hasText(render(afterFailure, 'global'), 'network down'))
+    assert.equal(treeByType(render(afterFailure, 'global'), 'li').length, 2, 'the rows are still drawn')
+    // With nothing on screen yet, the error state shows instead.
+    assert.equal(skillsReduce({ status: 'loading', answer: undefined, error: '' }, { status: 'error', reason: 'boom' }).status, 'error')
+    assert.equal(skillsReduce(good, { status: 'unavailable' }).status, 'unavailable', 'unavailable drops the list')
+  }
+
+  // --- the stylesheet's promises ----------------------------------------
+  {
+    assert.ok(SKILLS_CSS.includes('@media (prefers-reduced-motion: reduce)'), 'reduced motion honoured')
+    assert.ok(SKILLS_CSS.includes(':focus-visible'), 'focus-visible on tabs, buttons and rows')
+    assert.ok(SKILLS_CSS.includes('tabular-nums'), 'tabular numerals for the counts')
+    assert.ok(SKILLS_CSS.includes('--dsw-alias-label-primary'), 'tokens only')
+    assert.ok(SKILLS_CSS.includes('border-bottom: 1px solid'), 'hairlines, not cards')
+    assert.equal(/text-transform:\s*uppercase|::before/.test(SKILLS_CSS), false, 'no ALL-CAPS eyebrows')
+    for (const glyph of ['·', '→']) assert.equal(SKILLS_CSS.includes(glyph), false, `no ${glyph} glyph`)
+    assert.equal(SKILLS_SECTION_ORDER, 20, 'after Notifications at 19')
+    assert.equal(SKILLS_MODULE, '@moreweb/edh/skills', 'gated on its own row')
+    assert.equal(SKILLS_ROUTE, 'api/edh.skills')
+    assert.deepEqual(SKILLS_TABS, ['global', 'workspace'])
+    for (const key of ['skillsTitle', 'skillsIntro', 'skillsTabGlobal', 'skillsTabWorkspace', 'skillsLoading', 'skillsFailed', 'skillsUnavailable', 'skillsEmptyGlobal', 'skillsEmptyWorkspace', 'skillsScopeSession', 'skillsScopeRecent', 'skillsScopeDefault', 'skillsUserOnly', 'skillsCopyPath', 'skillsIncomplete', 'skillsNav']) {
+      const value = t(key, { name: 'EDH' })
+      assert.ok(value.length > 0, `${key} says something`)
+      assert.equal(/[·→]/u.test(value), false, `${key} avoids the forbidden glyph`)
+    }
+  }
+}
+
+console.log('edh skills: tabs, scope, and row checks passed')
 console.log('edh search: box, magnifier, and menu-action checks passed')
 console.log('edh search: advanced page, filters, and paging checks passed')
 console.log('edh search: palette, sections, and chat checks passed')

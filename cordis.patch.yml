@@ -88,3 +88,11 @@
     - id: edh-search
       name: '@moreweb/edh/search'
       config: {}
+
+    # skills — a listing for the Skills settings tab, split by source. The row
+    # reads the Harness skill registry (never the filesystem: several skills ship
+    # inside the asar and have no path), scoped to a Session's preset, because the
+    # filesystem provider is mounted per preset and a bare list finds nothing.
+    - id: edh-skills
+      name: '@moreweb/edh/skills'
+      config: {}

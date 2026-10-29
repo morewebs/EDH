@@ -191,7 +191,7 @@ window.__ModuleLoader__.load({
       searchAskTimeout: 'The agent took too long and gave up.',
       searchAskTooShort: 'Type a few more words first.',
       searchAskRestart: 'This build does not have the ask service yet. Restart the app, then try again.',
-      searchAskUnexpected: 'The ask service answered unexpectedly. Stop the app\'s Remote page and try again.',
+      searchAskUnexpected: 'The ask service answered unexpectedly. Try again in a moment.',
       searchAskNoIndex: 'Your conversation index has not been built yet. It builds in the background after a restart; search messages meanwhile.',
       searchAskNoModel: 'No model is configured, so the agent cannot search for you. Set one in the harness settings.',
       searchAskBusy: 'One search is already running. Give it a moment.',

@@ -749,43 +749,60 @@ export async function notifyLastResponse(request, options = {}) {
 // owns a window on this desktop.
 //
 // The work is a short PowerShell `Add-Type` P/Invoke of `user32`, because EDH
-// ships no npm dependency and a native addon is not an option. Four rules make it
+// ships no npm dependency and a native addon is not an option. Five rules make it
 // honest rather than hopeful:
 //
 // - **The window is found by pid** — this process's, then its parent's, since on a
 //   desktop build the visible window may belong to the parent — and never by title
 //   text or a guessed name, which could raise the wrong window.
-// - **Restore before foreground**, because a minimised window cannot be
-//   foregrounded at all: `ShowWindowAsync(SW_RESTORE)` first, then
-//   `SetForegroundWindow`.
-// - **The result is verified, not assumed**: the script ends by comparing
-//   `GetForegroundWindow()` with the handle it asked for, and only then reports
-//   `raised=1`. If Windows' foreground lock refuses, it tries `BringWindowToTop`
-//   once and reports `raised: false` (reason `denied`) rather than pretending.
+// - **It asks the window what it is before touching it** (`IsIconic`, `IsZoomed`),
+//   because the two cases want opposite treatment and the wrong one is destructive:
+//   `SW_RESTORE` on a *maximised* window un-maximises it. That was a real bug — a
+//   notification click resized the app — so restoring happens **only** when the
+//   window is minimised, and there is no minimise/restore nudge at all.
+// - **A raise may change focus, never geometry.** The script captures `IsIconic`,
+//   `IsZoomed` and `GetWindowRect` before and after, and a raise that moved the
+//   window is reported as a failure (`reason=changed`), not a success.
+// - **The result is verified, not assumed**: `raised=1` only when
+//   `GetForegroundWindow()` is the handle it asked for *and* the state check holds.
+//   Otherwise it reports `raised: false` (`denied`, `changed`) rather than pretending.
 // - **It is bounded and serialised**: a 3 s timeout, and one raise in flight at a
 //   time — a second click joins the running one instead of spawning another.
 
 /**
  * The C# the script compiles: find by pid, then climb three documented rungs.
  *
- * `SetForegroundWindow` on its own **is expected to fail** for the case this
- * feature exists for — a window sitting behind another app — because the process
- * calling it is the `powershell.exe` we spawned: it owns no window and is not the
- * foreground process. So the script climbs, in order, verifying every attempt
- * with `GetForegroundWindow()` and reporting which rung worked:
+ * **A raise may change focus. It may not change geometry or maximise state.** That
+ * is the rule the whole ladder is built around, and it is why the rungs ask the
+ * window what it is before touching it:
  *
- * 1. `ShowWindowAsync(SW_RESTORE)` — enough on its own for a *minimised* window,
- *    which is why it stays first and is never skipped.
+ * - `IsIconic(target)` — minimised. This is the *only* case where restoring is the
+ *   action rather than a side effect, because a minimised window cannot hold the
+ *   foreground at all. `ShowWindowAsync(SW_RESTORE)` is therefore called here and
+ *   **nowhere else**: on a *maximised* window it un-maximises (Windows restores to
+ *   the pre-maximise size), which is a resize the user never asked for.
+ * - `IsZoomed(target)` — maximised. Recorded, verified, and never acted on.
+ *
+ * The rungs, in order, each verified with `GetForegroundWindow()`:
+ *
+ * 1. `ShowWindowAsync(SW_RESTORE)` — **only when `IsIconic` is true**.
  * 2. `AttachThreadInput` — join the foreground window's input queue, ask while
  *    attached, detach. The documented way around the foreground lock for a helper
- *    process, and the rung that usually works.
- * 3. the minimise/restore nudge — a visible flash, but on most setups it hands the
- *    foreground to the restored window. Only after 2 has failed.
- * 4. `BringWindowToTop` — not a foreground request at all; it leaves the window at
- *    the top of the Z order, so a total refusal is still not "nothing happened".
+ *    process, and the rung that works on this machine.
+ * 3. `SetWindowPos(… SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)` then
+ *    `BringWindowToTop` — Z order only, geometrically inert. It never runs on a
+ *    minimised window (rung 1 handled that), so `SWP_SHOWWINDOW` cannot restore
+ *    anything either.
  *
- * Every `ShowWindowAsync` is asynchronous, so each rung settles briefly before it
- * is judged, and `raised=1` is printed only after the check passes.
+ * **There is no minimise/restore nudge.** It was a visible flash that changed the
+ * window's state twice by design — the other thing that could resize the app — and
+ * it is gone.
+ *
+ * The verdict is a success only when *both* hold: the window is foreground, **and**
+ * its state is what it was (or, for the iconic case, merely un-minimised with its
+ * maximised flag untouched). `changed=1` is reported as a failure, because a raise
+ * that steals focus and un-maximises is precisely the bug this script exists to
+ * prevent.
  */
 const RAISE_TYPE_SOURCE = `using System;
 using System.Runtime.InteropServices;
@@ -794,8 +811,20 @@ public class EdhRaise
 {
     private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
 
-    private const int SwMinimize = 6;
     private const int SwRestore = 9;
+    private const uint HwndTop = 0;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpShowWindow = 0x0040;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
@@ -803,12 +832,20 @@ public class EdhRaise
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsZoomed(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindow(IntPtr hWnd, uint command);
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, uint insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
@@ -829,27 +866,70 @@ public class EdhRaise
         }
         if (target == IntPtr.Zero) return "EDH window=none";
 
-        ShowWindowAsync(target, SwRestore);
-        Settle(60);
-        if (IsForeground(target)) return "EDH raised=1 step=restore";
+        // What the window is, before anything touches it.
+        bool iconicBefore = IsIconic(target);
+        bool zoomedBefore = IsZoomed(target);
+        Rect before;
+        GetWindowRect(target, out before);
 
-        SetForegroundAttached(target);
-        Settle(60);
-        if (IsForeground(target)) return "EDH raised=1 step=attach";
+        string step = "";
 
-        ShowWindowAsync(target, SwMinimize);
-        Settle(100);
-        ShowWindowAsync(target, SwRestore);
-        Settle(100);
-        SetForegroundAttached(target);
-        Settle(60);
-        if (IsForeground(target)) return "EDH raised=1 step=nudge";
+        // Rung 1: restoring is the action only for a minimised window.
+        if (iconicBefore)
+        {
+            ShowWindowAsync(target, SwRestore);
+            Settle(60);
+            if (IsForeground(target)) step = "restore";
+        }
 
-        BringWindowToTop(target);
-        Settle(60);
-        if (IsForeground(target)) return "EDH raised=1 step=top";
+        // Rung 2: join the foreground thread's input queue and ask.
+        if (step.Length == 0)
+        {
+            SetForegroundAttached(target);
+            Settle(60);
+            if (IsForeground(target)) step = "attach";
+        }
 
-        return "EDH raised=0 reason=denied steps=restore,attach,nudge,top";
+        // Rung 3: Z order only — no move, no size, and never on a minimised window.
+        if (step.Length == 0)
+        {
+            SetWindowPos(target, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+            BringWindowToTop(target);
+            Settle(60);
+            if (IsForeground(target)) step = "top";
+        }
+
+        // What the window is, after. Focus is the only thing we were allowed to
+        // change; the maximised flag and the rect must be exactly as they were, and
+        // a minimised window may only have lost its minimised state.
+        bool iconicAfter = IsIconic(target);
+        bool zoomedAfter = IsZoomed(target);
+        Rect after;
+        GetWindowRect(target, out after);
+        bool geometry = SameRect(before, after);
+        bool state =
+            zoomedAfter == zoomedBefore &&
+            (iconicBefore ? iconicAfter == false : iconicAfter == false && geometry);
+        string facts = "iconic=" + (iconicAfter ? "1" : "0") +
+            " zoomed=" + (zoomedAfter ? "1" : "0") +
+            " changed=" + (state ? "0" : "1");
+
+        if (step.Length > 0 && state)
+        {
+            return "EDH raised=1 step=" + step + " " + facts;
+        }
+        if (step.Length > 0)
+        {
+            // It took the foreground and moved the window: a failure, named as one.
+            return "EDH raised=0 reason=changed tries=" + step + " " + facts;
+        }
+        return "EDH raised=0 reason=denied tries=iconic,attach,top " + facts;
+    }
+
+    private static bool SameRect(Rect left, Rect right)
+    {
+        return left.Left == right.Left && left.Top == right.Top &&
+            left.Right == right.Right && left.Bottom == right.Bottom;
     }
 
     private static bool IsForeground(IntPtr target)
@@ -968,14 +1048,24 @@ export function raiseCommand(pidList, options = {}) {
 /**
  * The verdict the script printed.
  *
- * One line starting `EDH `, and the last one wins. A success names the rung that
- * actually brought the window forward (`step=restore|attach|nudge|top`) — that is
- * the only way to know which workaround Windows honoured on this machine, so it is
- * carried all the way to the answer. Anything else — a wall of text, a PowerShell
- * error, no output at all — is `undefined`, which the caller reports as `failed`
- * rather than guessing.
+ * One line starting `EDH `, and the last one wins. The three shapes are:
+ *
+ * ```
+ * EDH raised=1 step=attach iconic=0 zoomed=1 changed=0
+ * EDH raised=0 reason=changed tries=attach iconic=0 zoomed=0 changed=1
+ * EDH raised=0 reason=denied tries=iconic,attach,top iconic=0 zoomed=1 changed=0
+ * ```
+ *
+ * A success names the rung that actually brought the window forward
+ * (`step=restore|attach|top`) **and** states that the window's geometry and
+ * maximise state were unchanged. That second half is not decoration: a raise that
+ * steals focus and un-maximises the app is the bug this script was rewritten for,
+ * so a `raised=1` line whose `changed` is not `0` is parsed as a **failure**
+ * (`changed`), not as a success — the parser refuses to be lied to by its own
+ * script. Anything else — a wall of text, a PowerShell error, no output — is
+ * `undefined`, which the caller reports as `failed` rather than guessing.
  * @param text - the process's stdout.
- * @returns `{ raised, reason?, step? }`, or `undefined` when nothing was printed.
+ * @returns `{ raised, reason?, step?, tried?, iconic?, zoomed?, changed? }`, or `undefined`.
  */
 export function parseRaiseOutput(text) {
   if (typeof text !== 'string') return undefined
@@ -984,19 +1074,32 @@ export function parseRaiseOutput(text) {
     const match = /^EDH[ \t]+(.*)$/u.exec(line.trim())
     if (match === null) continue
     const payload = match[1].trim()
-    // Strict on purpose: the script prints one of a handful of exact shapes, so a
-    // line with anything unexpected on it is not evidence of anything.
-    const raised = /^raised=1(?:[ \t]+step=([a-z]+))?$/u.exec(payload)
-    const denied = /^raised=0[ \t]+reason=denied(?:[ \t]+steps=([a-z,]+))?$/u.exec(payload)
     if (payload === 'window=none') {
       verdict = { raised: false, reason: 'no-window' }
-    } else if (raised !== null) {
-      verdict = raised[1] === undefined ? { raised: true } : { raised: true, step: raised[1] }
-    } else if (denied !== null) {
-      verdict =
-        denied[1] === undefined
-          ? { raised: false, reason: 'denied' }
-          : { raised: false, reason: 'denied', tried: denied[1].split(',') }
+      continue
+    }
+    // Strict on purpose: the script prints a handful of exact shapes, so a line
+    // with anything unexpected on it is not evidence of anything.
+    const success = /^raised=1[ \t]+step=([a-z]+)((?:[ \t]+[a-z]+=[01])*)$/u.exec(payload)
+    const refusal = /^raised=0[ \t]+reason=(denied|changed)(?:[ \t]+tries=([a-z,]+))?((?:[ \t]+[a-z]+=[01])*)$/u.exec(payload)
+    if (success !== null) {
+      const facts = stateFactsOf(success[2])
+      if (facts.changed === undefined) {
+        // A success that did not check the geometry is not evidence of a raise.
+        verdict = undefined
+      } else if (facts.changed === 1) {
+        // The whole point: focus was taken and the window moved. A failure.
+        verdict = { raised: false, reason: 'changed', step: success[1], ...facts }
+      } else {
+        verdict = { raised: true, step: success[1], ...facts }
+      }
+    } else if (refusal !== null) {
+      verdict = {
+        raised: false,
+        reason: refusal[1],
+        ...(refusal[2] === undefined ? {} : { tried: refusal[2].split(',') }),
+        ...stateFactsOf(refusal[3]),
+      }
     } else if (/^raised=0(?:[ \t]|$)/u.test(payload)) {
       verdict = { raised: false, reason: 'failed' }
     } else {
@@ -1004,6 +1107,15 @@ export function parseRaiseOutput(text) {
     }
   }
   return verdict
+}
+
+/** The `iconic=`/`zoomed=`/`changed=` facts of a verdict line. */
+function stateFactsOf(fragment) {
+  const facts = {}
+  for (const match of String(fragment ?? '').matchAll(/([a-z]+)=([01])/gu)) {
+    facts[match[1]] = Number(match[2])
+  }
+  return facts
 }
 
 /** Run one command with `execFile`, resolving rather than throwing. */

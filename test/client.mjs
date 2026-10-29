@@ -6782,7 +6782,7 @@ function recordingNotification(permission, behaviour) {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
   const RESTART = 'This build does not have the ask service yet. Restart the app, then try again.'
-  const UNEXPECTED = "The ask service answered unexpectedly. Stop the app's Remote page and try again."
+  const UNEXPECTED = "The ask service answered unexpectedly. Try again in a moment."
   const NO_INDEX = 'Your conversation index has not been built yet. It builds in the background after a restart; search messages meanwhile.'
   const NO_MODEL = 'No model is configured, so the agent cannot search for you. Set one in the harness settings.'
   const BUSY = 'One search is already running. Give it a moment.'

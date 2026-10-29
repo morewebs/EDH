@@ -1138,7 +1138,11 @@ class CountingStream extends Readable {
   for (const call of [
     'EnumWindows',
     'GetWindowThreadProcessId',
+    'IsIconic',
+    'IsZoomed',
+    'GetWindowRect',
     'ShowWindowAsync',
+    'SetWindowPos',
     'SetForegroundWindow',
     'BringWindowToTop',
     'GetForegroundWindow',
@@ -1148,34 +1152,60 @@ class CountingStream extends Readable {
     assert.equal(script.includes(call), true, `the script calls ${call}`)
   }
   assert.equal(script.includes('private const int SwRestore = 9;'), true, 'SW_RESTORE is 9')
-  assert.equal(script.includes('private const int SwMinimize = 6;'), true, 'SW_MINIMIZE is 6')
 
-  // The rungs climb in the documented order, and each one names itself in the
-  // verdict so the answer says which workaround Windows honoured.
+  // **The bug this rewrite is about**: a raise may change focus, never geometry.
+  assert.equal(/SwMinimize/u.test(script), false, 'SW_MINIMIZE appears nowhere — it changed the state twice and could resize')
+  assert.equal(script.includes('nudge'), false, 'the minimise/restore nudge is gone, rung and all')
+  assert.equal((script.match(/ShowWindowAsync\(target, SwRestore\)/gu) ?? []).length, 1, 'exactly one SW_RESTORE call site')
+  {
+    // …and that one call site is inside the `if (iconicBefore)` branch: on a
+    // maximised window it would restore to the pre-maximise size.
+    const restoreAt = script.indexOf('ShowWindowAsync(target, SwRestore)')
+    const guardAt = script.lastIndexOf('if (iconicBefore)', restoreAt)
+    assert.equal(guardAt > 0, true, 'SW_RESTORE is guarded')
+    const between = script.slice(guardAt, restoreAt)
+    assert.equal(between.includes('}'), false, 'the guard has not closed before the call — it is inside the branch')
+    assert.equal(between.length < 120, true, 'and it is the branch that guards it, not something far away')
+    assert.equal(script.includes('if (iconicBefore)'), true, 'the window is asked what it is first')
+  }
+
+  // Both sides of the raise are captured: `IsIconic`, `IsZoomed`, and the rect.
+  assert.equal((script.match(/IsIconic\(target\)/gu) ?? []).length, 2, 'minimised state, before and after')
+  assert.equal((script.match(/IsZoomed\(target\)/gu) ?? []).length, 2, 'maximised state, before and after')
+  assert.equal((script.match(/GetWindowRect\(target, out (?:before|after)\)/gu) ?? []).length, 2, 'and the rect, before and after')
+  assert.equal(script.includes('SameRect(before, after)'), true, 'compared, not assumed')
+  assert.equal(script.includes('zoomedAfter == zoomedBefore'), true, 'the maximise state must be identical')
+  assert.equal(script.includes('" changed="'), true, 'the verdict carries changed=')
+
+  // The rungs, in order, and the fallback is geometrically inert.
   const rungs = [
-    'step=restore',
-    'step=attach',
-    'ShowWindowAsync(target, SwMinimize)',
-    'step=nudge',
-    'step=top',
+    'if (iconicBefore)',
+    'step = "restore"',
+    'SetForegroundAttached(target)',
+    'step = "attach"',
+    'SetWindowPos(target, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow)',
+    'BringWindowToTop(target)',
+    'step = "top"',
   ].map(marker => script.indexOf(marker))
   assert.equal(rungs.every(index => index > 0), true, 'every rung is in the script')
   assert.deepEqual(
     rungs.every((index, position) => position === 0 || index > rungs[position - 1]),
     true,
-    'restore, then attach, then the minimise/restore nudge, then the Z-order fallback',
+    'restore only for a minimised window, then attach, then the Z-order fallback',
   )
-  assert.equal(
-    script.indexOf('ShowWindowAsync(target, SwRestore)') < script.indexOf('SetForegroundAttached(target)'),
-    true,
-    'restore happens before any foreground request — a minimised window cannot be foregrounded',
-  )
-  assert.equal(
-    script.indexOf('ShowWindowAsync(target, SwMinimize)') > script.indexOf('step=attach'),
-    true,
-    'the visible flash only happens after the attach attempt failed',
-  )
-  assert.equal(script.includes('steps=restore,attach,nudge,top'), true, 'a total refusal names every rung it tried')
+  assert.equal(script.includes('private const uint SwpNoSize = 0x0001;'), true)
+  assert.equal(script.includes('private const uint SwpNoMove = 0x0002;'), true)
+  assert.equal(script.includes('private const uint SwpShowWindow = 0x0040;'), true)
+  {
+    // One `SetWindowPos`, and it moves nothing and sizes nothing.
+    const calls = [...script.matchAll(/SetWindowPos\(target,([^)]*)\)/gu)].map(match => match[1])
+    assert.equal(calls.length, 1, 'a single SetWindowPos call site')
+    for (const flag of ['SwpNoMove', 'SwpNoSize', 'SwpShowWindow']) {
+      assert.equal(calls[0].includes(flag), true, `the fallback passes ${flag}`)
+    }
+  }
+  assert.equal(script.includes('reason=changed tries='), true, 'a raise that moved the window is a named failure')
+  assert.equal(script.includes('tries=iconic,attach,top'), true, 'a total refusal names every rung it tried')
   assert.equal(script.includes('window=none'), true, 'and it says when there is no window')
   assert.equal(command.options.windowsHide, true, 'no console window flashes on the click')
   assert.equal(command.options.timeout, RAISE_TIMEOUT_MS)
@@ -1190,25 +1220,76 @@ class CountingStream extends Readable {
   assert.equal(hostile.args[7].includes('calc'), false)
   assert.equal(hostile.args[7].includes('Run(@())'), true, 'with no valid pid the script targets nothing')
 
-  // The verdict parser: only one line matters, the last one wins, and the rung
-  // that worked is carried through.
-  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=restore\n'), { raised: true, step: 'restore' })
-  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=attach'), { raised: true, step: 'attach' })
-  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=nudge'), { raised: true, step: 'nudge' })
-  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=top'), { raised: true, step: 'top' })
-  assert.deepEqual(parseRaiseOutput('EDH raised=1'), { raised: true }, 'a bare success is still a success')
-  assert.deepEqual(parseRaiseOutput('noise\r\nEDH raised=1 step=attach\r\nmore noise\r\n'), { raised: true, step: 'attach' })
+  // The verdict parser: only one line matters, the last one wins, and both the rung
+  // that worked *and* the state facts are carried through.
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=restore iconic=0 zoomed=0 changed=0\n'), {
+    raised: true,
+    step: 'restore',
+    iconic: 0,
+    zoomed: 0,
+    changed: 0,
+  })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=attach iconic=0 zoomed=1 changed=0'), {
+    raised: true,
+    step: 'attach',
+    iconic: 0,
+    zoomed: 1,
+    changed: 0,
+  })
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=top iconic=0 zoomed=0 changed=0'), {
+    raised: true,
+    step: 'top',
+    iconic: 0,
+    zoomed: 0,
+    changed: 0,
+  })
+  // The whole point: a raise that stole focus and moved the window is a FAILURE,
+  // even on a line that calls itself a success.
+  assert.deepEqual(parseRaiseOutput('EDH raised=1 step=attach iconic=0 zoomed=0 changed=1'), {
+    raised: false,
+    reason: 'changed',
+    step: 'attach',
+    iconic: 0,
+    zoomed: 0,
+    changed: 1,
+  })
+  assert.deepEqual(parseRaiseOutput('noise\r\nEDH raised=1 step=attach iconic=0 zoomed=1 changed=0\r\nmore noise\r\n'), {
+    raised: true,
+    step: 'attach',
+    iconic: 0,
+    zoomed: 1,
+    changed: 0,
+  })
   assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=denied'), { raised: false, reason: 'denied' })
-  assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=denied steps=restore,attach,nudge,top'), {
+  assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=denied tries=iconic,attach,top iconic=0 zoomed=1 changed=0'), {
     raised: false,
     reason: 'denied',
-    tried: ['restore', 'attach', 'nudge', 'top'],
+    tried: ['iconic', 'attach', 'top'],
+    iconic: 0,
+    zoomed: 1,
+    changed: 0,
+  })
+  assert.deepEqual(parseRaiseOutput('EDH raised=0 reason=changed tries=attach iconic=0 zoomed=0 changed=1'), {
+    raised: false,
+    reason: 'changed',
+    tried: ['attach'],
+    iconic: 0,
+    zoomed: 0,
+    changed: 1,
   })
   assert.deepEqual(parseRaiseOutput('EDH window=none'), { raised: false, reason: 'no-window' })
-  assert.deepEqual(parseRaiseOutput('EDH window=none\nEDH raised=1 step=attach'), { raised: true, step: 'attach' }, 'the last verdict wins')
+  assert.deepEqual(parseRaiseOutput('EDH window=none\nEDH raised=1 step=attach iconic=0 zoomed=0 changed=0'), {
+    raised: true,
+    step: 'attach',
+    iconic: 0,
+    zoomed: 0,
+    changed: 0,
+  }, 'the last verdict wins')
   assert.equal(parseRaiseOutput(''), undefined, 'no output is not a verdict')
   assert.equal(parseRaiseOutput('EDH'), undefined)
+  assert.equal(parseRaiseOutput('EDH raised=1'), undefined, 'a success with no rung and no state check is not evidence')
   assert.equal(parseRaiseOutput('EDH raised=1 extra'), undefined)
+  assert.equal(parseRaiseOutput('EDH raised=1 step=attach iconic=0 zoomed=0'), undefined, 'missing the state check')
   assert.equal(parseRaiseOutput(undefined), undefined)
 
   /** A raiser whose PowerShell is a fake, recording every command it was given. */
@@ -1232,8 +1313,8 @@ class CountingStream extends Readable {
   // Success is only claimed when the script *verified* the foreground window, and
   // the answer names the rung that did it.
   {
-    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach\n' })
-    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'attach' })
+    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=1 changed=0\n' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'attach', iconic: 0, zoomed: 1, changed: 0 })
     assert.equal(commands.length, 1)
     assert.equal(commands[0].args[7].includes('(111, 222)'), true, 'this process, then its parent')
     assert.equal(raiser.attempts(), 1)
@@ -1245,22 +1326,22 @@ class CountingStream extends Readable {
       platform: 'win32',
       pid: 1,
       parentPid: 2,
-      run: async () => ({ ok: true, stdout: 'EDH raised=1 step=nudge' }),
+      run: async () => ({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' }),
       logger: { warn: () => {}, info: (...args) => info.push(args.map(String).join(' ')) },
     })
-    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'nudge' })
+    assert.deepEqual(await raiser.raise(), { ok: true, raised: true, step: 'attach', iconic: 0, zoomed: 0, changed: 0 })
     assert.equal(info.length, 1)
-    assert.match(info[0], /nudge/u)
+    assert.match(info[0], /attach/u)
   }
 
   // The foreground lock refusing is `raised: false` with a reason, not a lie.
   {
-    const { raiser, warnings } = fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied steps=restore,attach,nudge,top' })
+    const { raiser, warnings } = fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied tries=iconic,attach,top iconic=0 zoomed=1 changed=0' })
     const verdict = await raiser.raise()
     assert.equal(verdict.ok, true)
     assert.equal(verdict.raised, false)
     assert.equal(verdict.reason, 'denied')
-    assert.deepEqual(verdict.tried, ['restore', 'attach', 'nudge', 'top'])
+    assert.deepEqual(verdict.tried, ['iconic', 'attach', 'top'])
     assert.equal(warnings.length, 1)
     assert.match(warnings[0], /denied/u)
     assert.equal(warnings[0].includes('DeepSeek'), false, 'nothing about the window is logged')
@@ -1297,7 +1378,7 @@ class CountingStream extends Readable {
       platform: 'linux',
       run: async () => {
         spawned += 1
-        return { ok: true, stdout: 'EDH raised=1' }
+        return { ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' }
       },
     })
     assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'not-windows' })
@@ -1316,25 +1397,25 @@ class CountingStream extends Readable {
       run: () =>
         new Promise(resolve => {
           spawns += 1
-          release = () => resolve({ ok: true, stdout: 'EDH raised=1' })
+          release = () => resolve({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' })
         }),
     })
     const first = raiser.raise()
     const second = raiser.raise()
     assert.equal(first, second, 'the second call returns the same promise')
     release()
-    assert.deepEqual(await first, { ok: true, raised: true })
+    assert.deepEqual(await first, { ok: true, raised: true, step: 'attach', iconic: 0, zoomed: 0, changed: 0 })
     assert.equal(spawns, 1, 'exactly one PowerShell for two clicks')
     // A later click is a fresh attempt.
     const third = raiser.raise()
     release()
-    assert.deepEqual(await third, { ok: true, raised: true })
+    assert.deepEqual(await third, { ok: true, raised: true, step: 'attach', iconic: 0, zoomed: 0, changed: 0 })
     assert.equal(spawns, 2)
   }
 
   // Disposal stops the raiser without throwing.
   {
-    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1' })
+    const { raiser, commands } = fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' })
     raiser.dispose()
     assert.deepEqual(await raiser.raise(), { ok: true, raised: false, reason: 'disposed' })
     assert.equal(commands.length, 0, 'nothing is spawned after disposal')
@@ -1344,28 +1425,28 @@ class CountingStream extends Readable {
   {
     const raised = await notifyRaiseResponse(
       { method: 'POST', text: async () => '' },
-      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' }).raiser },
     )
     assert.equal(raised.status, 200)
-    assert.deepEqual(await raised.json(), { ok: true, raised: true })
+    assert.deepEqual(await raised.json(), { ok: true, raised: true, step: 'attach' })
 
     // The rung that worked is carried to the answer, so the page (and this report)
     // can see which workaround Windows honoured.
     const byAttach = await notifyRaiseResponse(
       { method: 'POST', text: async () => '' },
-      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach' }).raiser },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=1 changed=0' }).raiser },
     )
     assert.deepEqual(await byAttach.json(), { ok: true, raised: true, step: 'attach' })
 
     const empty = await notifyRaiseResponse(
       { method: 'POST', text: async () => '{}' },
-      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' }).raiser },
     )
-    assert.deepEqual(await empty.json(), { ok: true, raised: true }, 'an empty object body is fine')
+    assert.deepEqual(await empty.json(), { ok: true, raised: true, step: 'attach' }, 'an empty object body is fine')
 
     const refused = await notifyRaiseResponse(
       { method: 'POST', text: async () => '' },
-      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied' }).raiser },
+      { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=0 reason=denied tries=iconic,attach,top iconic=0 zoomed=1 changed=0' }).raiser },
     )
     const refusedBody = await refused.json()
     assert.equal(refused.status, 200, 'a refused raise is a report, not an error status')
@@ -1381,7 +1462,7 @@ class CountingStream extends Readable {
     for (const body of ['not json', '[]', '"text"', '42', 'null', 'x'.repeat(RAISE_BODY_LIMIT + 1)]) {
       const rejected = await notifyRaiseResponse(
         { method: 'POST', text: async () => body },
-        { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1' }).raiser },
+        { raiser: fakeRaiser({ ok: true, stdout: 'EDH raised=1 step=attach iconic=0 zoomed=0 changed=0' }).raiser },
       )
       assert.equal(rejected.status, 400, `${JSON.stringify(body.slice(0, 20))} is a bad body`)
       const parsed = await rejected.json()

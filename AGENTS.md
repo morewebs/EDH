@@ -310,22 +310,38 @@ Audio, and the watcher that decides when to fire).
   desktop build the visible window may belong to the parent; nine of this app's
   ten processes have no window at all). Never by title text: raising "some
   DeepSeek window" could raise the wrong one.
+- **A raise may change focus. It may never change geometry or maximise state.**
+  `ShowWindowAsync(SW_RESTORE)` is for a **minimised** window only: on a *maximised*
+  one it restores to the pre-maximise size, which is a resize the user never asked
+  for — reported from live use as "clicking the notification resizes the app". The
+  script therefore asks the window what it is first (`IsIconic`, `IsZoomed`), calls
+  `SW_RESTORE` **only** inside the `IsIconic` branch, and there is **no
+  minimise/restore nudge at all** (it changed the state twice by design). The
+  geometry-inert fallback is `SetWindowPos(HWND_TOP, 0,0,0,0, SWP_NOMOVE |
+  SWP_NOSIZE | SWP_SHOWWINDOW)` then `BringWindowToTop` — Z order only.
+- **The verdict checks two things, not one**: `GetForegroundWindow() == h` **and**
+  that the state did not change (`IsIconic`/`IsZoomed`/`GetWindowRect` captured
+  before and after, printed as `iconic=… zoomed=… changed=…`). A line that stole
+  focus and moved the window is parsed as `raised: false, reason: 'changed'`, so the
+  log and the answer can never call a resize a success. Measured on this machine
+  against the maximised app window: before `iconic=0 zoomed=1 rect=-8,-8,1928,1048`,
+  after a raise `iconic=0 zoomed=1 rect=-8,-8,1928,1048` — unchanged.
 - **`SetForegroundWindow` alone is not enough, and the reason is the caller.**
   The process that calls it is the `powershell.exe` we spawned: it owns no window
-  and is not the foreground process, so Windows' foreground lock refuses — measured
-  here as `raised=0 reason=denied` before the workaround. The script therefore
-  climbs, verifying `GetForegroundWindow()` after every rung and printing which one
-  won: `ShowWindowAsync(SW_RESTORE)` for a *minimised* window → `AttachThreadInput`
-  (join the foreground thread's input queue, ask, detach) → the minimise/restore
-  nudge (a visible flash) → `BringWindowToTop` for the Z order alone. **On this
-  machine `step=attach` is the rung that works**: a genuinely background app window
-  came forward in ~460 ms, confirmed by an independent foreground-pid probe. Keep
-  the ladder in that order; a `raised=0 reason=denied steps=…` means all four were
-  tried and Windows said no, which is reported as `{ ok: true, raised: false,
-  reason: 'denied' }` and never dressed up. Where PowerShell or the OS refuses
-  outright the answer degrades to `raised: false` with `not-windows`, `no-window`,
-  `timeout` or `failed` — the click still made its sound. One raise runs at a time;
-  a second click joins it.
+  and is not the foreground process, so Windows' foreground lock refuses. The rungs
+  climb (`restore` for a minimised window → `AttachThreadInput`, join the foreground
+  thread's input queue, ask, detach → the Z-order fallback), each verified with
+  `GetForegroundWindow()`. The lock also depends on *permission credit*, not just the
+  rung: a click on the app's own toast grants the app the right to raise, which is
+  why the real click path works; a bare probe (no click, another app in front) is
+  refused by **every** geometry-inert call — measured as `raised=0 reason=denied
+  tries=iconic,attach,top changed=0`, with `AttachThreadInput` returning 1 while
+  `SetForegroundWindow`, `SetActiveWindow`, `SwitchToThisWindow` and
+  `AllowSetForegroundWindow` all refused. Those refusals never move the window;
+  reporting `{ ok: true, raised: false, reason: 'denied' }` is the honest answer.
+  Where PowerShell or the OS refuses outright it degrades to `raised: false` with
+  `not-windows`, `no-window`, `timeout` or `failed` — the click still made its sound.
+  One raise runs at a time; a second click joins it.
 - **The notification body is a bounded tail read, never a transcript fetch.**
   `GET /api/edh.notify/last?sessionId=…` reads the last 256 KB of the Session's
   Zstandard artifact, splits it into frames with `usage.js`'s `splitZstdFrames`

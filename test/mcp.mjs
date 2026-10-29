@@ -270,6 +270,40 @@ async function whileClockRuns(operation) {
   }
 }
 
+/** Let every queued microtask, timer callback and I/O completion run. */
+async function settle() {
+  await new Promise(resolve => {
+    setTimeout(resolve, 20)
+  })
+}
+
+/**
+ * Run one block with the MCP store pointed at a throwaway profile.
+ *
+ * `apply(ctx)` builds its own manager, and `createManager`'s store path defaults
+ * to `resolveStorePath()` — **this machine's real `~/.dsh/mcp/servers.json`**.
+ * A test that calls `apply` therefore used to read the developer's own server
+ * list and `startEnabled()` it: a real `node.exe` (the playwright MCP server, here)
+ * was spawned during the suite, and because the manager's disposal is fire-and-
+ * forget the child outlived the run and the process never exited. Pointing the
+ * profile at a temp directory makes the store empty, so nothing is started and
+ * nothing is read that belongs to the user — a suite that touches real
+ * configuration is a bug whether or not it leaks.
+ * @param operation - the block to run.
+ */
+async function withTempProfile(operation) {
+  const previous = process.env.DSH_PROFILE_DIR
+  const dir = mkdtempSync(join(tmpdir(), 'edh-mcp-profile-'))
+  process.env.DSH_PROFILE_DIR = dir
+  try {
+    return await operation(dir)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** A manager over a fake stdio server and a fake registry. */
 function startFakeManager(options = {}) {
   const server = createStdioServer(fakeServerHandler(options), options)
@@ -1258,36 +1292,51 @@ const FAKE_RECORD = {
 // ---------------------------------------------------------------------------
 // 35 — registration: one path, both methods, and disposal inside ctx.effect
 // ---------------------------------------------------------------------------
-{
+await withTempProfile(async () => {
   const { ctx, routes, disposers, warnings } = createContext()
-  apply(ctx)
-  assert.equal(routes.length, 1)
-  assert.equal(routes[0].path, '/api/edh.mcp')
-  assert.equal(MCP_PATH, '/api/edh.mcp')
-  assert.deepEqual(routes[0].methods, ['GET', 'POST'])
-  assert.equal(routes[0].requestBody, 'buffered')
-  assert.equal(typeof routes[0].fetch, 'function')
-  assert.deepEqual(ctx.injected, ['tools'], 'the tool registry is taken as an optional contract')
-  assert.equal(disposers.length, 2)
-  for (const dispose of disposers) dispose()
+  try {
+    apply(ctx)
+    assert.equal(routes.length, 1)
+    assert.equal(routes[0].path, '/api/edh.mcp')
+    assert.equal(MCP_PATH, '/api/edh.mcp')
+    assert.deepEqual(routes[0].methods, ['GET', 'POST'])
+    assert.equal(routes[0].requestBody, 'buffered')
+    assert.equal(typeof routes[0].fetch, 'function')
+    assert.deepEqual(ctx.injected, ['tools'], 'the tool registry is taken as an optional contract')
+    assert.equal(disposers.length, 2)
+  } finally {
+    for (const dispose of disposers) dispose()
+    // The row's disposal is fire-and-forget, so give the manager's own teardown
+    // (and any `startEnabled()` still in flight) a turn to finish before the block
+    // ends: a child that outlives the assertion keeps the process alive forever.
+    await settle()
+  }
   assert.equal(routes.length, 0, 'turning the row off removes the route')
   assert.deepEqual(warnings, [])
-}
+})
 
 // ---------------------------------------------------------------------------
 // 36 — a refused route registration leaves the rest of EDH running
 // ---------------------------------------------------------------------------
-{
-  const { ctx, warnings } = createContext()
+await withTempProfile(async () => {
+  const { ctx, disposers, warnings } = createContext()
   ctx.connection.fetch = {
     register() {
       throw new Error('this deployment refuses the path')
     },
   }
-  apply(ctx)
-  assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /route registration failed/u)
-}
+  try {
+    apply(ctx)
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /route registration failed/u)
+  } finally {
+    // This block used to leave the context undisposed, so its manager (and the
+    // servers `startEnabled()` had begun starting) stayed alive for the rest of
+    // the run. Nothing here is exempt from being closed.
+    for (const dispose of disposers) dispose()
+    await settle()
+  }
+})
 
 // ---------------------------------------------------------------------------
 // 37 — a pipe error is a report, never an uncaught exception in the Host

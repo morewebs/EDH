@@ -657,8 +657,8 @@ function makeAsk({ rounds, storePath, deadlineMs = DEADLINE_MS, llmOptions = {},
 // ---------------------------------------------------------------------------
 {
   const storePath = indexWithStore()
-  const makeRoute = (rounds = [answerStream('{"queries":["zstandard frames"]}'), answerStream('ANSWER: a\nSESSIONS: session-a')]) =>
-    makeAsk({ rounds, storePath })
+  const makeRoute = (rounds = [answerStream('{"queries":["zstandard frames"]}'), answerStream('ANSWER: a\nSESSIONS: session-a')], deadlineMs = undefined) =>
+    makeAsk({ rounds, storePath, ...(deadlineMs === undefined ? {} : { deadlineMs }) })
   const call = async (setup, body, method = 'POST') => {
     const { ask } = setup
     const request = {
@@ -719,16 +719,21 @@ function makeAsk({ rounds, storePath, deadlineMs = DEADLINE_MS, llmOptions = {},
 
   // A second concurrent ask is 429 with a retry hint.
   {
-    const setup = makeRoute([hangStream()])
+    // A short deadline on purpose: the first ask is abandoned mid-flight, and its
+    // 28 s timer would otherwise be the last thing holding the process open — the
+    // suite must exit on its own, not after the product deadline.
+    const setup = makeRoute([hangStream()], 120)
     const running = call(setup, { q: 'zstandard frames' })
     const busy = await call(setup, { q: 'zstandard frames' })
     assert.equal(busy.status, 429)
     assert.equal(busy.body.reason, 'busy')
     assert.equal(busy.headers.get('retry-after'), '1')
-    // Ending the first ask: it will hit its own deadline.
-    const slow = createAsk({ get: () => undefined })
-    await slow.run({}) // no-op, keeps the shape honest
-    await Promise.race([running, new Promise(resolve => setTimeout(resolve, 300))])
+    // Let the abandoned ask reach its deadline, so `inFlight` is released and
+    // nothing is left running when this block ends.
+    const settled = await running
+    assert.equal(settled.status, 200)
+    assert.equal(settled.body.reason, 'timeout')
+    assert.equal(setup.ask.busy(), false, 'the slot is free again')
   }
 
   // `unavailable` when the Host has no model, through the route.

@@ -15,6 +15,7 @@ Everything DeepSeek Harness — one plugin, one master switch, a feature per row
 | `remote` | Opens the same Web GUI on a phone over the LAN, behind a login page and a username and password you set |
 | `usage` | Shows where your tokens went: totals, per model and per day across every Session, with streaks and peaks |
 | `mobile` | Serves the web app manifest, so a phone can add the GUI to its home screen and open it without browser chrome |
+| `notify` | Serves a curated few of the real Windows sound files, so a notification plays the sound you already know |
 
 A switch in the conversation header turns them all on or off together.
 

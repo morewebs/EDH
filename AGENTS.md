@@ -278,6 +278,37 @@ fact: **the listener is ours, and the harness only ever sees loopback.**
   because an icon URL resolves against the manifest URL too. If that file ever
   moves, drop the `icons` array rather than guess.
 
+## Notifications
+
+`notify.js` exists for one reason: **a browser page cannot read
+`C:\Windows\Media`.** The user asked for the default Windows sound, and that is a
+WAV on this disk that no page may open — so the Host serves the real files and the
+browser half does everything else (settings, the tones it synthesises with Web
+Audio, and the watcher that decides when to fire).
+
+- **The catalog is a curated allowlist, never a directory listing.** The folder
+  holds ~70 WAVs — system events, hardware dings, setup chimes — and offering all
+  of them is the opposite of a feature. `NOTIFY_CATALOG` names eleven, in a
+  deliberate order with the Windows default (`Windows Notify System Generic`)
+  first. `GET /api/edh.notify/sounds` answers `{ ok, available, sounds, note? }`,
+  and a machine without that folder gets `available: false` **with a 200 and a
+  sentence**, because the page has to be able to say so plainly.
+- **An id is a catalog key, never a path fragment.** No request value is joined
+  onto a path: the `id` must equal one of our own constants, the file name comes
+  from the catalog entry, and `soundFilePath` re-checks that the resolved file
+  still sits inside the media directory. Anything with `/`, `\`, `..`, a colon
+  (drive letter or alternate data stream) or a control character is refused
+  before the lookup — defence in depth, so a refactor of any single check cannot
+  quietly reopen the traversal. `test/notify.mjs` keeps a matrix of those shapes
+  and a source-level guard that no `join(` takes a bare id.
+- **WAVs are streamed, never buffered** (`createReadStream` → `Readable.toWeb`),
+  ~200 KB each, `private, max-age=86400`. `audio/wav` is deliberately absent from
+  the proxy's compressible list, so Remote passes the bytes through untouched.
+- **Browser popups need a secure context.** The Notification API refuses a plain
+  `http://` origin, so the Remote page on a LAN address gets *sound* (through Web
+  Audio, which has no such rule) but no system notifications. That is a browser
+  rule this side cannot work around; do not try to "fix" it in the Host.
+
 ## Styling
 
 Class names are ours (`edh-`), but every rule and token is copied from the shipped
@@ -304,6 +335,7 @@ node test/export.mjs
 node test/update.mjs
 node test/remote.mjs
 node test/mobile.mjs
+node test/notify.mjs
 node test/mcp.mjs
 node test/usage.mjs
 ```
@@ -322,7 +354,7 @@ both Plugin Manager controls — update (`mounted` / `checked` / `update-started
 for the MCP page (`loaded` / `added` / `removed` / `tested` / `register-failed` / `failed`),
 and `edh:btw` for the side-chat commands and its launcher card (`click` / `guide-click` /
 `forked` / `named` / `pane-opened` / `pane-failed` / `register-failed` / `failed` with the
-step that failed), and `edh:remote` for the Remote page (`loaded` / `saved` / `started` / `stopped` / `failed` / `register-failed`), and `edh:usage` for the Usage page (`loaded` / `refreshed` / `failed` / `register-failed`).
+step that failed), and `edh:remote` for the Remote page (`loaded` / `saved` / `started` / `stopped` / `failed` / `register-failed`), and `edh:usage` for the Usage page (`loaded` / `refreshed` / `failed` / `register-failed`), and `edh:notify:debug` for the Notifications page and its watcher (`loaded` / `saved` / `played` / `fired` / `blocked` / `failed` / `register-failed`). Note that the settings themselves live under `edh:notify` — one key cannot hold durable data and the last diagnostic event, since a breadcrumb would erase the settings.
 Read them off disk while the app is closed or running:
 
 ```

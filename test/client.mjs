@@ -214,6 +214,28 @@ const {
   REMOTE_QR_ALIGNMENT,
   REMOTE_QR_QUIET,
 } = mod.__test
+const {
+  notifyDefaults,
+  notifyClampVolume,
+  notifyDomId,
+  readNotifySettings,
+  writeNotifySettings,
+  notifyCatalog,
+  notifyTransition,
+  notifyAllows,
+  notifySoundFor,
+  createNotifyAudio,
+  createNotifyPopup,
+  createNotifier,
+  installNotifier,
+  notifyPage,
+  createNotifyPage,
+  NOTIFY_TONES,
+  NOTIFY_MODULE,
+  NOTIFY_SETTINGS_KEY,
+  NOTIFY_DEBUG_KEY,
+  NOTIFY_SECTION_ORDER,
+} = mod.__test
 
 const SHELL = { entryId: 'include:edh', moduleName: '@moreweb/edh', enabled: true, fiberPhase: 'active' }
 const RETRY = { entryId: 'include:edh-retry', moduleName: '@moreweb/edh/retry', enabled: true, fiberPhase: 'active' }
@@ -4304,6 +4326,591 @@ function qrTestDecode(model) {
   assert.ok(treeText(tooLong).includes(long), 'the address itself is still there')
 }
 
+/**
+ * An AudioContext-shaped fake: it records what was built and what was done to it,
+ * so the lifecycle is assertable without a sound card.
+ */
+function fakeAudioContext() {
+  const counters = { constructed: 0, resume: 0, close: 0, gain: 0, oscillator: 0, buffer: 0, starts: 0, stops: 0 }
+  const context = {
+    state: 'suspended',
+    currentTime: 0,
+    destination: { kind: 'destination' },
+    resume() {
+      counters.resume++
+      context.state = 'running'
+      return Promise.resolve()
+    },
+    close() {
+      counters.close++
+      context.state = 'closed'
+      return Promise.resolve()
+    },
+    createGain() {
+      counters.gain++
+      return {
+        gain: {
+          value: 1,
+          setValueAtTime() {},
+          linearRampToValueAtTime() {},
+          exponentialRampToValueAtTime() {},
+        },
+        connect() {},
+      }
+    },
+    createOscillator() {
+      counters.oscillator++
+      return {
+        type: '',
+        frequency: { setValueAtTime() {} },
+        connect() {},
+        start() {
+          counters.starts++
+        },
+        stop() {
+          counters.stops++
+        },
+      }
+    },
+    createBufferSource() {
+      counters.buffer++
+      return {
+        buffer: undefined,
+        connect() {},
+        start() {
+          counters.starts++
+        },
+      }
+    },
+    decodeAudioData(bytes, done) {
+      done({ decoded: true })
+    },
+  }
+  return { context, counters }
+}
+
+/** A localStorage-shaped store, for the settings and the breadcrumbs. */
+function fakeStore(initial = {}) {
+  const values = new Map(Object.entries(initial))
+  return {
+    getItem: key => (values.has(key) ? values.get(key) : null),
+    setItem: (key, value) => {
+      values.set(key, String(value))
+    },
+    removeItem: key => {
+      values.delete(key)
+    },
+    values,
+  }
+}
+
+// 49 — the settings: user data read back defensively, never half-valid.
+{
+  assert.deepEqual(notifyDefaults(), {
+    enabled: true,
+    backgroundOnly: true,
+    sound: 'chime',
+    volume: 60,
+  }, 'the defaults are the brief\'s')
+
+  assert.deepEqual(readNotifySettings(undefined), notifyDefaults(), 'no store, the defaults')
+  assert.deepEqual(readNotifySettings(fakeStore({})), notifyDefaults(), 'no value, the defaults')
+  assert.deepEqual(readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: 'not json' })), notifyDefaults(), 'junk JSON, the defaults')
+  assert.deepEqual(readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: 'null' })), notifyDefaults())
+  assert.deepEqual(readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: '"a string"' })), notifyDefaults())
+  assert.deepEqual(
+    readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify({ enabled: 'yes', backgroundOnly: 1, sound: '  ', volume: 'loud' }) })),
+    notifyDefaults(),
+    'every field is checked, not just parsed',
+  )
+  assert.deepEqual(
+    readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify({ enabled: false, backgroundOnly: false, sound: ' blip ', volume: 41.6 }) })),
+    { enabled: false, backgroundOnly: false, sound: 'blip', volume: 42 },
+    'a valid store is read field by field, trimmed and rounded',
+  )
+  assert.deepEqual(
+    readNotifySettings(fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify({ sound: 'Windows Ding.wav' }) })),
+    { ...notifyDefaults(), sound: 'Windows Ding.wav' },
+    'a sound id is kept even when this page cannot resolve it yet',
+  )
+
+  // Volume: always a whole number in range.
+  assert.equal(notifyClampVolume(0), 0)
+  assert.equal(notifyClampVolume(60), 60)
+  assert.equal(notifyClampVolume(100), 100)
+  assert.equal(notifyClampVolume(140), 100, 'above 100 clamps')
+  assert.equal(notifyClampVolume(-20), 0, 'below 0 clamps')
+  assert.equal(notifyClampVolume(59.5), 60, 'rounded')
+  assert.equal(notifyClampVolume('45'), 45)
+  assert.equal(notifyClampVolume('nonsense'), 60)
+  assert.equal(notifyClampVolume(undefined), 60)
+
+  // Writing is best effort, and a refused store is not an error.
+  const store = fakeStore()
+  const wanted = { enabled: false, backgroundOnly: true, sound: 'two-tone', volume: 20 }
+  assert.equal(writeNotifySettings(wanted, store), true)
+  assert.deepEqual(readNotifySettings(store), wanted, 'what was written is what is read')
+  assert.equal(writeNotifySettings(wanted, { setItem() { throw new Error('quota') } }), false, 'a refusal is answered, not thrown')
+  assert.equal(writeNotifySettings(wanted, null), false, 'no store, nothing written')
+
+  // The DOM id of a catalogue key is safe: the Host's ids carry spaces.
+  assert.equal(notifyDomId('Windows Notify System Generic'), 'windows-notify-system-generic')
+  assert.equal(notifyDomId('Windows Ding.wav'), 'windows-ding-wav')
+  assert.equal(notifyDomId('  ...  '), '')
+}
+
+// 50 — the sound catalogue: transcriptions of the Host's list, and the tones first.
+{
+  const payload = {
+    ok: true,
+    available: true,
+    sounds: [
+      { id: 'Windows Notify System Generic', label: 'Windows Notify System Generic', file: 'Windows Notify System Generic.wav', bytes: 210_000, kind: 'system' },
+      { id: 'chime', label: 'A tone that shadows ours' },
+      { id: 'Windows Ding', label: 'Windows Ding', bytes: 90_000 },
+      { id: '', label: 'no id' },
+      { label: 'no id at all' },
+    ],
+  }
+  const catalog = notifyCatalog(payload)
+  assert.equal(catalog.available, true)
+  assert.deepEqual(catalog.windows.map(entry => entry.id), ['Windows Notify System Generic', 'Windows Ding'], 'the Host curated the order, so it is kept as sent')
+  assert.equal(catalog.windows[1].kind, 'system')
+  assert.equal(catalog.windows[1].bytes, 90_000)
+  assert.equal(catalog.windows.some(entry => entry.id === 'chime'), false, 'a Host id that shadows a tone is ignored')
+
+  assert.equal(notifyCatalog({ ok: true, available: false, note: 'no media folder', sounds: [] }).available, false)
+  assert.equal(notifyCatalog({ ok: true, available: true, sounds: [] }).available, false, 'available with nothing in it is not available')
+  assert.equal(notifyCatalog({ available: true, note: 'hi', sounds: [{ id: 'x', label: 'X' }] }).note, 'hi')
+  for (const empty of [undefined, null, 'nope', {}]) {
+    assert.deepEqual(notifyCatalog(empty), { available: false, windows: [], note: '' }, 'nothing is nothing')
+  }
+
+  // Resolution: a tone is a tone, a listed id is a Host sound, a stale id falls back.
+  const full = notifyCatalog(payload)
+  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'two-tone' }, full), { id: 'two-tone', kind: 'tone' })
+  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }, full), { id: 'Windows Ding', kind: 'system' })
+  assert.deepEqual(
+    notifySoundFor({ ...notifyDefaults(), sound: 'Windows Gone' }, full),
+    { id: 'chime', kind: 'tone' },
+    'a stale Windows id falls back to the default tone rather than silence',
+  )
+  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }, undefined), { id: 'chime', kind: 'tone' })
+
+  // The tones are ours, and they are the three the page offers, first.
+  assert.deepEqual(NOTIFY_TONES.map(tone => tone.id), ['chime', 'two-tone', 'blip'])
+  for (const tone of NOTIFY_TONES) {
+    assert.ok(tone.voices.length >= 1, `${tone.id} has a voice`)
+    for (const voice of tone.voices) {
+      assert.ok(voice.gain > 0 && voice.gain <= 0.25, `${tone.id} peaks conservatively (${voice.gain})`)
+      assert.ok(voice.duration > 0 && voice.duration <= 1.5, `${tone.id} is short`)
+      assert.ok(voice.start >= 0)
+    }
+  }
+}
+
+// 51 — the transition detector: one finished turn, once.
+{
+  let state = { running: {}, fired: {} }
+
+  /** Feed one status event, the way the Remote listener does. */
+  const feed = (sessionId, running) => {
+    const outcome = notifyTransition(state, sessionId, running)
+    state = outcome.state
+    return outcome.fire
+  }
+
+  assert.equal(feed('s1', true), false, 'running is not a finish')
+  assert.equal(feed('s1', false), true, 'the first idle after running is one finished turn')
+  assert.equal(feed('s1', false), false, 'the same finish reported again stays silent')
+  assert.equal(feed('s1', false), false)
+
+  assert.equal(feed('s1', true), false, 'a second turn starts silently')
+  assert.equal(feed('s1', false), true, 'and finishes loudly')
+
+  assert.equal(feed('s2', false), false, 'an idle session that was never seen running is not a turn')
+
+  // Interleaved sessions do not confuse each other.
+  assert.equal(feed('a', true), false)
+  assert.equal(feed('b', true), false)
+  assert.equal(feed('b', false), true)
+  assert.equal(feed('a', false), true)
+  assert.equal(feed('a', true), false)
+
+  // The state survives a junk input rather than throwing.
+  const junk = notifyTransition(undefined, 'x', true)
+  assert.equal(junk.fire, false)
+  assert.equal(junk.state.running.x, true)
+
+  // The switches.
+  assert.equal(notifyAllows(notifyDefaults(), true), true, 'hidden, and that is what was asked for')
+  assert.equal(notifyAllows(notifyDefaults(), false), false, 'visible, so stay quiet by default')
+  assert.equal(notifyAllows({ ...notifyDefaults(), backgroundOnly: false }, false), true, 'unless the switch says otherwise')
+  assert.equal(notifyAllows({ ...notifyDefaults(), enabled: false }, true), false, 'the master switch wins')
+  assert.equal(notifyAllows(undefined, true), true, 'junk settings read as the defaults')
+}
+
+// 52 — the popup: absent is a silent skip, never an error.
+{
+  const none = createNotifyPopup({})
+  assert.equal(none.available, false, 'this is the phone over plain http')
+  assert.equal(none.permission(), '')
+  assert.equal(await none.request(), '')
+  assert.equal(none.show('title', 'body'), false, 'no popup is claimed where there is no API')
+
+  const shown = []
+  const granted = createNotifyPopup({
+    Notification: Object.assign(function FakeNotification(title, options) {
+      shown.push({ title, options })
+    }, {
+      permission: 'granted',
+      requestPermission: async () => 'granted',
+    }),
+  })
+  assert.equal(granted.available, true)
+  assert.equal(granted.permission(), 'granted')
+  assert.equal(granted.show('Turn finished', 'ready'), true)
+  assert.deepEqual(shown, [{ title: 'Turn finished', options: { body: 'ready' } }])
+
+  const denied = createNotifyPopup({
+    Notification: Object.assign(function FakeNotification() {
+      throw new Error('should not be constructed')
+    }, { permission: 'denied' }),
+  })
+  assert.equal(denied.show('x', 'y'), false, 'a denied permission is not asked again and shows nothing')
+
+  const thrown = createNotifyPopup({
+    Notification: Object.assign(function FakeNotification() {
+      throw new Error('blocked')
+    }, { permission: 'granted' }),
+  })
+  assert.equal(thrown.show('x', 'y'), false, 'a refusing constructor is caught')
+
+  const asks = createNotifyPopup({
+    Notification: Object.assign(function FakeNotification() {}, {
+      permission: 'default',
+      requestPermission: async () => 'granted',
+    }),
+  })
+  assert.equal(await asks.request(), 'granted', 'the gesture-time request answers')
+}
+
+// 53 — one AudioContext: created on first use, resumed when suspended, closed on dispose.
+{
+  const fake = fakeAudioContext()
+  const constructions = []
+  class TrackedContext {
+    constructor() {
+      constructions.push(this)
+      Object.assign(this, fake.context)
+      this.state = 'suspended'
+      const counters = fake.counters
+      this.resume = () => {
+        counters.resume++
+        this.state = 'running'
+        return Promise.resolve()
+      }
+      this.close = () => {
+        counters.close++
+        this.state = 'closed'
+        return Promise.resolve()
+      }
+      this.createGain = fake.context.createGain
+      this.createOscillator = fake.context.createOscillator
+      this.decodeAudioData = fake.context.decodeAudioData
+    }
+  }
+  const audio = createNotifyAudio({ AudioContext: TrackedContext })
+  assert.equal(audio.created(), false, 'nothing is created at load: autoplay would refuse it')
+  assert.equal(constructions.length, 0)
+
+  const chime = NOTIFY_TONES.find(tone => tone.id === 'chime')
+  assert.equal(audio.playTone(chime, 60), true, 'the first gesture creates the context')
+  assert.equal(constructions.length, 1)
+  assert.equal(fake.counters.resume, 1, 'and resumes it, because it started suspended')
+  assert.equal(audio.state(), 'running')
+  assert.equal(fake.counters.oscillator, 2, 'the chime is a fundamental and an octave')
+  assert.equal(fake.counters.gain, 3, 'one master and one envelope per voice')
+  assert.equal(fake.counters.starts, 2)
+
+  assert.equal(audio.playTone(NOTIFY_TONES[2], 30), true, 'the next play reuses the same context')
+  assert.equal(constructions.length, 1, 'one context, forever')
+  assert.equal(fake.counters.oscillator, 3, 'the blip is one note')
+
+  // A browser that suspends it behind our back is resumed on the next play.
+  constructions[0].state = 'suspended'
+  audio.playTone(chime, 60)
+  assert.equal(fake.counters.resume, 2, 'resumed again')
+
+  audio.close()
+  assert.equal(fake.counters.close, 1)
+  assert.equal(audio.created(), false, 'closed and forgotten')
+  assert.equal(audio.state(), '')
+
+  // No Web Audio at all is a quiet failure, not a throw.
+  const absent = createNotifyAudio({ AudioContext: undefined })
+  assert.equal(absent.playTone(chime, 60), false)
+  assert.equal(absent.created(), false)
+}
+
+// 54 — the page: every row, the tones first, Windows only when available, and the line.
+{
+  const stub = stubPageFactory()
+  const t = dictionaryOf('en')
+  const calls = []
+  const actions = {
+    toggle: (field, value) => calls.push(`toggle:${field}:${value}`),
+    sound: id => calls.push(`sound:${id}`),
+    volume: value => calls.push(`volume:${value}`),
+    preview: id => calls.push(`preview:${id}`),
+    test: () => calls.push('test'),
+  }
+  const base = {
+    enabled: true,
+    settings: notifyDefaults(),
+    catalog: { available: false, windows: [], note: '' },
+    status: 'ready',
+    notice: { text: '', tone: 'bad' },
+    busy: '',
+    actions,
+  }
+  const page = (overrides = {}) => stub.notifyPage(t, { ...base, ...overrides })
+  const ready = page()
+  const text = treeText(ready)
+
+  assert.deepEqual(treeByType(ready, 'h2').map(node => node.props.children[0]), ['Notifications'])
+  // Every labelled row is present.
+  for (const label of ['Notify me', 'Only when this window is in the background', 'Sound', 'Volume', 'Test']) {
+    assert.ok(text.includes(label), `the page has the ${label} row`)
+  }
+  assert.ok(text.includes('A sound when a turn finishes while you are looking somewhere else.'))
+  // The switches are real buttons with a switch role.
+  const switches = treeByType(ready, 'button').filter(button => button.props.role === 'switch')
+  assert.equal(switches.length, 2)
+  assert.deepEqual(switches.map(button => button.props['aria-checked']), [true, true], 'both default on')
+  switches[0].props.onClick()
+  assert.deepEqual(calls, ['toggle:enabled:false'])
+  calls.length = 0
+
+  // The three tones, in order, each with a radio and a Play.
+  const radios = treeByType(ready, 'input').filter(input => input.props.type === 'radio')
+  assert.deepEqual(radios.map(input => input.props.value), ['chime', 'two-tone', 'blip'], 'the tones come first')
+  assert.equal(radios[0].props.checked, true, 'the default tone is chosen')
+  assert.equal(radios[0].props.name, 'edh-notify-sound', 'one radio group')
+  assert.equal(treeByType(ready, 'ul').find(list => list.props.role === 'radiogroup').props['aria-label'], 'Sound')
+  const plays = treeByType(ready, 'button').filter(button => button.props.children.includes('Play'))
+  assert.equal(plays.length, 3, 'one Play per tone')
+  plays[1].props.onClick()
+  assert.deepEqual(calls, ['preview:two-tone'])
+  calls.length = 0
+
+  // No Windows folder: the tones, one line, and no Windows heading.
+  assert.equal(text.includes('Windows'), false, 'no heading without a catalogue')
+  assert.ok(text.includes('The Windows sounds are not on this machine.'))
+
+  // With a catalogue: a Windows heading and its rows, after the tones.
+  const withWindows = page({
+    catalog: notifyCatalog({
+      available: true,
+      sounds: [
+        { id: 'Windows Ding', label: 'Windows Ding', bytes: 1000 },
+        { id: 'Windows Notify System Generic', label: 'Windows Notify System Generic', bytes: 2000 },
+      ],
+    }),
+  })
+  const windowsRadios = treeByType(withWindows, 'input').filter(input => input.props.type === 'radio')
+  assert.deepEqual(
+    windowsRadios.map(input => input.props.value),
+    ['chime', 'two-tone', 'blip', 'Windows Ding', 'Windows Notify System Generic'],
+    'tones first, then the Windows list',
+  )
+  assert.ok(treeText(withWindows).includes('Windows'), 'the quiet heading is there')
+  assert.equal(
+    windowsRadios[3].props.id,
+    'edh-notify-sound-windows-ding',
+    'the radio id is a safe id even though the Host id has a space',
+  )
+  assert.equal(
+    treeByType(withWindows, 'label').find(label => label.props.htmlFor === 'edh-notify-sound-windows-ding')
+      .props.children[0].props.children[0],
+    'Windows Ding',
+    'and its label points at it',
+  )
+
+  // Volume: a range with the value beside it.
+  const range = treeByType(ready, 'input').find(input => input.props.type === 'range')
+  assert.equal(range.props.min, 0)
+  assert.equal(range.props.max, 100)
+  assert.equal(range.props.value, 60)
+  assert.equal(range.props.id, 'edh-notify-volume')
+  assert.ok(text.includes('60%'), 'the value is written out')
+  range.props.onChange({ target: { value: '35' } })
+  assert.deepEqual(calls, ['volume:35'])
+  calls.length = 0
+
+  // Test: one button with one name.
+  const test = treeByType(ready, 'button').find(button => button.props.children.includes('Test'))
+  assert.ok(test)
+  test.props.onClick()
+  assert.deepEqual(calls, ['test'])
+  calls.length = 0
+  assert.ok(page({ busy: 'test' }).props.children !== undefined)
+  assert.equal(
+    treeByType(page({ busy: 'test' }), 'button').find(button => button.props.children.includes('Test')).props.disabled,
+    true,
+    'the button keeps its name while it works',
+  )
+
+  // The plain-HTTP line is always there, in its own words.
+  assert.ok(text.some(line => line.includes('plain http') && line.includes('popup')))
+  assert.ok(
+    hasText(ready, 'Popups need a secure (https) page'),
+    'the honest limitation is stated',
+  )
+
+  // The row switched off: one line, no controls.
+  const off = page({ enabled: false })
+  assert.equal(treeByType(off, 'button').length, 0)
+  assert.deepEqual(treeText(off), [
+    'Notifications',
+    'A sound when a turn finishes while you are looking somewhere else.',
+    'Notifications are off. Turn them on with the EDH switch.',
+  ])
+}
+
+// 55 — the watcher: one Remote listener, gated by the row, silent when it should be.
+{
+  const handlers = new Map()
+  const watchers = []
+  const disposers = []
+  let rowOn = true
+  const controller = {
+    getSnapshot: () => ({ status: 'ready', moduleStates: { [NOTIFY_MODULE]: rowOn } }),
+    subscribe(listener) {
+      watchers.push(listener)
+      return () => {
+        const at = watchers.indexOf(listener)
+        if (at >= 0) watchers.splice(at, 1)
+      }
+    },
+    setRow(next) {
+      rowOn = next
+      for (const watch of [...watchers]) watch()
+    },
+  }
+  const ctx = {
+    effect(fn, label) {
+      assert.equal(label, 'edh: notify watcher', 'one effect owns the watcher')
+      const dispose = fn()
+      disposers.push(dispose)
+      return dispose
+    },
+    remote: {
+      $on(event, handler) {
+        handlers.set(event, handler)
+        return () => handlers.delete(event)
+      },
+    },
+  }
+  const plays = []
+  const audio = {
+    playTone: (tone, volume) => {
+      plays.push(`${tone.id}@${volume}`)
+      return true
+    },
+    playSound: async id => {
+      plays.push(id)
+      return true
+    },
+    close: () => {
+      plays.push('closed')
+    },
+  }
+  const store = fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify({ enabled: true, backgroundOnly: true, sound: 'blip', volume: 30 }) })
+  let visible = false
+  const install = overrides => installNotifier(ctx, controller, {
+    audio,
+    storage: store,
+    scope: {},
+    hidden: () => !visible,
+    ...overrides,
+  })
+
+  storage.length = 0
+  const notifier = install()
+  assert.equal(typeof notifier, 'object')
+  assert.ok(handlers.has('api-session/status'), 'the harness\'s own status feed is the seam')
+  assert.equal(watchers.length, 1)
+
+  const status = () => handlers.get('api-session/status')
+
+  // Hidden, enabled, background-only: the finished turn plays the chosen sound.
+  status()('s1', true)
+  status()('s1', false)
+  assert.deepEqual(plays, ['blip@30'], 'the stored sound at the stored volume')
+  status()('s1', false)
+  assert.deepEqual(plays, ['blip@30'], 'the same finish does not play twice')
+
+  // Visible + background-only stays silent, and says why.
+  storage.length = 0
+  visible = true
+  status()('s1', true)
+  status()('s1', false)
+  assert.deepEqual(plays, ['blip@30'], 'no sound while the reader is looking at it')
+  const blocked = storage
+    .filter(([key]) => key === NOTIFY_DEBUG_KEY)
+    .map(([, value]) => JSON.parse(value))
+  assert.equal(blocked.at(-1).phase, 'blocked')
+  assert.equal(blocked.at(-1).reason, 'visible')
+
+  // Allowed while visible when the switch says so: a second watcher, with its
+  // own store, proves the master/background pair is what decides.
+  const visibleStore = fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify({ enabled: true, backgroundOnly: false, sound: 'chime', volume: 50 }) })
+  const visibleWatcher = install({ storage: visibleStore })
+  const visibleStatus = () => handlers.get('api-session/status')
+  visible = true
+  visibleStatus()('s9', true)
+  visibleStatus()('s9', false)
+  assert.deepEqual(plays, ['blip@30', 'chime@50'], 'the switch says it may play while visible')
+  assert.equal(typeof visibleWatcher, 'object')
+
+  // The row is the switch: off unsubscribes, on subscribes again.
+  controller.setRow(false)
+  assert.equal(handlers.has('api-session/status'), false, 'a row that is off listens to nothing')
+  controller.setRow(true)
+  assert.ok(handlers.has('api-session/status'), 'and turning it back on restores the listener')
+
+  // Disposal closes the audio and drops the listener — for every watcher.
+  while (disposers.length > 0) disposers.pop()()
+  assert.equal(handlers.has('api-session/status'), false)
+  assert.equal(plays.at(-1), 'closed', 'the AudioContext is closed on disposal')
+  assert.equal(watchers.length, 0, 'nothing left subscribed')
+  void visibleStore
+  void visibleWatcher
+  void notifier
+
+  // The settings the page saves are the settings the engine fires with, because
+  // the two share one notifier: a change made here is what the next turn plays.
+  const probe = []
+  const engine = createNotifier({
+    audio: {
+      playTone: (tone, volume) => {
+        probe.push(tone.id + '@' + volume)
+        return true
+      },
+      playSound: async () => true,
+      close() {},
+    },
+    popup: createNotifyPopup({}),
+    settings: notifyDefaults(),
+    log: () => {},
+  })
+  engine.setSettings({ ...notifyDefaults(), sound: 'two-tone', volume: 25 })
+  await engine.fire({ sessionId: 's7', title: '', body: '' })
+  assert.deepEqual(probe, ['two-tone@25'], 'a change on the page is what the next finished turn plays')
+}
+
+console.log('edh notify: settings, watcher, and sound checks passed')
 console.log('edh mobile: layer, stylesheet, and QR checks passed')
 console.log('edh mcp: page, form, and secret checks passed')
 console.log('edh mcp: reload control checks passed')

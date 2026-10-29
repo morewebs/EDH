@@ -154,6 +154,39 @@ window.__ModuleLoader__.load({
       remoteSessions: 'Phones signed in: {count}',
       remoteSessionOne: '1 phone signed in',
       remoteNoSessions: 'No phone signed in',
+      notifyNav: 'Notifications',
+      notifyTitle: 'Notifications',
+      notifyIntro: 'A sound when a turn finishes while you are looking somewhere else.',
+      notifyOff: 'Notifications are off. Turn them on with the EDH switch.',
+      notifyEnable: 'Notify me',
+      notifyEnableHint: 'Play a sound when a turn finishes.',
+      notifyBackground: 'Only when this window is in the background',
+      notifyBackgroundHint: 'Off means it also plays while you are reading the conversation.',
+      notifySound: 'Sound',
+      notifySoundHint: 'Pick one and press Play to hear it.',
+      notifyPlay: 'Play',
+      notifyWindows: 'Windows',
+      notifyWindowsSoundHint: 'A sound from Windows itself.',
+      notifyWindowsMissing: 'The Windows sounds are not on this machine.',
+      notifyCatalogFailed: 'The Windows sound list could not be read.',
+      notifyVolume: 'Volume',
+      notifyVolumeHint: 'How loud the notification is.',
+      notifyTest: 'Test',
+      notifyTestHint: 'Hear the chosen sound now, and allow popups if this browser offers them.',
+      notifyTestAction: 'Test',
+      notifyTestDone: 'That is the sound, and a popup.',
+      notifyTestSoundOnly: 'That is the sound. This browser did not show a popup.',
+      notifyPopupDenied: 'That is the sound. Popups are blocked for this page.',
+      notifyPlayFailed: 'That sound could not be played.',
+      notifyPlainHttp: 'Popups need a secure (https) page, and this one is served over plain http, so on the phone you get the sound rather than a system notification. Here on the desktop, press Test once to allow popups.',
+      notifyToneChime: 'Chime',
+      notifyToneChimeHint: 'A soft bell.',
+      notifyToneTwo: 'Two-tone',
+      notifyToneTwoHint: 'Two notes, rising.',
+      notifyToneBlip: 'Blip',
+      notifyToneBlipHint: 'One short note.',
+      notifyPopupTitle: 'Turn finished',
+      notifyPopupBody: 'The conversation is ready.',
       remotePhoneHint: 'The phone must be on the same network as this computer.',
       remoteQrShow: 'Show code',
       remoteQrHide: 'Hide code',
@@ -349,6 +382,39 @@ window.__ModuleLoader__.load({
       remoteSessions: '已登录手机：{count} 台',
       remoteSessionOne: '已登录 1 台手机',
       remoteNoSessions: '没有手机登录',
+      notifyNav: '通知',
+      notifyTitle: '通知',
+      notifyIntro: '当你看别处时，一轮对话结束后播放提示音。',
+      notifyOff: '通知已关闭，请用 EDH 开关打开。',
+      notifyEnable: '通知我',
+      notifyEnableHint: '一轮对话结束时播放提示音。',
+      notifyBackground: '仅当这个窗口在后台时',
+      notifyBackgroundHint: '关闭后，你正在看对话时也会播放。',
+      notifySound: '提示音',
+      notifySoundHint: '选一个，按「播放」试听。',
+      notifyPlay: '播放',
+      notifyWindows: 'Windows',
+      notifyWindowsSoundHint: '来自 Windows 本身的音效。',
+      notifyWindowsMissing: '这台机器上没有 Windows 音效。',
+      notifyCatalogFailed: '无法读取 Windows 音效列表。',
+      notifyVolume: '音量',
+      notifyVolumeHint: '提示音的音量。',
+      notifyTest: '测试',
+      notifyTestHint: '立刻听一下所选提示音，并在浏览器支持时允许弹窗。',
+      notifyTestAction: '测试',
+      notifyTestDone: '就是这个提示音，并弹出了一条通知。',
+      notifyTestSoundOnly: '就是这个提示音。这个浏览器没有弹出通知。',
+      notifyPopupDenied: '就是这个提示音。本页的弹窗被阻止了。',
+      notifyPlayFailed: '无法播放这个提示音。',
+      notifyPlainHttp: '弹窗需要安全的（https）页面，而本页通过明文 http 提供，所以在手机上你听到的是提示音而不是系统通知。在桌面端，按一次「测试」即可允许弹窗。',
+      notifyToneChime: '钟声',
+      notifyToneChimeHint: '柔和的一声钟响。',
+      notifyToneTwo: '双音',
+      notifyToneTwoHint: '两个音，上行。',
+      notifyToneBlip: '短哔',
+      notifyToneBlipHint: '一个短促的音。',
+      notifyPopupTitle: '对话已结束',
+      notifyPopupBody: '这轮对话已就绪。',
       remotePhoneHint: '手机必须和这台电脑在同一个网络上。',
       remoteQrShow: '显示二维码',
       remoteQrHide: '隐藏二维码',
@@ -488,6 +554,10 @@ window.__ModuleLoader__.load({
 
     function usageWrite(payload) {
       writeBreadcrumb(USAGE_DEBUG_KEY, payload)
+    }
+
+    function notifyWrite(payload) {
+      writeBreadcrumb(NOTIFY_DEBUG_KEY, payload)
     }
 
     function mobileWrite(payload) {
@@ -5970,6 +6040,937 @@ window.__ModuleLoader__.load({
       throw failure
     }
 
+    // ---------------------------------------------------------------------
+    // Notifications
+    //
+    // A sound when a turn finishes while you are looking somewhere else. The
+    // sound is the channel that always works — Web Audio needs no secure
+    // context — and the browser popup is a bonus that is feature-detected and
+    // never promised: Remote serves this page over plain HTTP on the LAN, where
+    // the Notification API does not exist at all.
+    //
+    // The engine is one Remote listener. The harness's own session controller
+    // feeds 'api-session/status' with (sessionId, running), so a session that
+    // goes running and then idle is one finished turn — the moment worth a sound.
+    // ---------------------------------------------------------------------
+
+    /** The row that governs the whole feature. */
+    const NOTIFY_MODULE = '@moreweb/edh/notify'
+
+    /** The Settings seat: one page in the Settings navigation. */
+    const NOTIFY_SECTION_SLOT = 'settings.section'
+
+    /** MCP 16, Remote 17, Usage 18 — this is the fourth seat. */
+    const NOTIFY_SECTION_ORDER = 19
+
+    /** Where the settings live. Local Storage, so a change needs no round-trip. */
+    const NOTIFY_SETTINGS_KEY = 'edh:notify'
+
+    /**
+     * The breadcrumb key, deliberately beside the settings key rather than on it:
+     * the brief names both 'edh:notify', but one is durable user data and the
+     * other is the last diagnostic event, and a write of one would erase the other.
+     */
+    const NOTIFY_DEBUG_KEY = 'edh:notify:debug'
+
+    /** The Host route for the curated Windows sounds. */
+    const NOTIFY_SOUNDS_ROUTE = 'api/edh.notify/sounds'
+
+    /** The Host route for one sound's bytes. */
+    const NOTIFY_SOUND_ROUTE = 'api/edh.notify/sound'
+
+    /** The three tones this page synthesises, in the order they are offered. */
+    const NOTIFY_TONES = [
+      {
+        id: 'chime',
+        labelKey: 'notifyToneChime',
+        hintKey: 'notifyToneChimeHint',
+        // A soft bell: a fundamental and a quiet octave, both decaying away.
+        voices: [
+          { start: 0, frequency: 880, duration: 1.2, gain: 0.22 },
+          { start: 0, frequency: 1760, duration: 0.8, gain: 0.07 },
+        ],
+      },
+      {
+        id: 'two-tone',
+        labelKey: 'notifyToneTwo',
+        hintKey: 'notifyToneTwoHint',
+        // Rising, unhurried: a question answered, not an alarm raised.
+        voices: [
+          { start: 0, frequency: 660, duration: 0.22, gain: 0.2 },
+          { start: 0.26, frequency: 880, duration: 0.34, gain: 0.2 },
+        ],
+      },
+      {
+        id: 'blip',
+        labelKey: 'notifyToneBlip',
+        hintKey: 'notifyToneBlipHint',
+        // One short high note: the smallest acknowledgement that reads clearly.
+        voices: [
+          { start: 0, frequency: 1240, duration: 0.09, gain: 0.18 },
+        ],
+      },
+    ]
+
+    /** The defaults, and the only values a junk store can fall back to. */
+    function notifyDefaults() {
+      return { enabled: true, backgroundOnly: true, sound: 'chime', volume: 60 }
+    }
+
+    /** One volume, clamped to whole 0..100. */
+    function notifyClampVolume(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return 60
+      return Math.min(100, Math.max(0, Math.round(number)))
+    }
+
+    /** Whether one id names a tone this page synthesises. */
+    function notifyIsTone(id) {
+      return NOTIFY_TONES.some(tone => tone.id === id)
+    }
+
+    /** A DOM-safe id fragment: catalogue keys may carry spaces and dots. */
+    function notifyDomId(id) {
+      return String(id ?? '').toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '')
+    }
+
+    /**
+     * The settings as stored, validated field by field.
+     *
+     * A setting read from Local Storage is user data that may have been written by
+     * an older build, so every field is checked against what this page can honour
+     * and falls back to its default rather than to something half-valid. A sound
+     * id is not validated against the catalogue here: that list belongs to the
+     * Host and may be unavailable, so a stale id is resolved at play time.
+     * @param storage - a localStorage-shaped object; optional.
+     */
+    function readNotifySettings(storage = (typeof window === 'undefined' ? undefined : window.localStorage)) {
+      const defaults = notifyDefaults()
+      if (storage === undefined || storage === null || typeof storage.getItem !== 'function') return defaults
+      let raw
+      try {
+        raw = storage.getItem(NOTIFY_SETTINGS_KEY)
+      } catch (error) {
+        return defaults
+      }
+      if (typeof raw !== 'string' || raw === '') return defaults
+      let parsed
+      try {
+        parsed = JSON.parse(raw)
+      } catch (error) {
+        return defaults
+      }
+      if (parsed === null || typeof parsed !== 'object') return defaults
+      return {
+        enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : defaults.enabled,
+        backgroundOnly: typeof parsed.backgroundOnly === 'boolean' ? parsed.backgroundOnly : defaults.backgroundOnly,
+        sound: typeof parsed.sound === 'string' && parsed.sound.trim() !== '' ? parsed.sound.trim() : defaults.sound,
+        volume: notifyClampVolume(parsed.volume ?? defaults.volume),
+      }
+    }
+
+    /**
+     * Write one settings object back.
+     * @returns whether the write landed; a refused store is not an error.
+     */
+    function writeNotifySettings(settings, storage = (typeof window === 'undefined' ? undefined : window.localStorage)) {
+      if (storage === undefined || storage === null || typeof storage.setItem !== 'function') return false
+      try {
+        storage.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify(settings))
+        return true
+      } catch (error) {
+        return false
+      }
+    }
+
+    /**
+     * The Host's sound list, read without trusting its shape.
+     *
+     * The page always has its own three tones; this only adds the machine's
+     * Windows sounds, and only when the Host says the folder was found.
+     * @param payload - a GET api/edh.notify/sounds answer.
+     */
+    function notifyCatalog(payload) {
+      const answer = payload !== null && typeof payload === 'object' ? payload : {}
+      const windows = []
+      for (const entry of Array.isArray(answer.sounds) ? answer.sounds : []) {
+        if (entry === null || typeof entry !== 'object') continue
+        const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+        if (id === '' || notifyIsTone(id)) continue
+        const label = typeof entry.label === 'string' && entry.label.trim() !== '' ? entry.label.trim() : id
+        windows.push({
+          id,
+          label,
+          kind: 'system',
+          bytes: Number.isFinite(Number(entry.bytes)) && Number(entry.bytes) > 0 ? Math.trunc(Number(entry.bytes)) : 0,
+        })
+      }
+      return {
+        available: answer.available === true && windows.length > 0,
+        windows,
+        note: typeof answer.note === 'string' ? answer.note.trim() : '',
+      }
+    }
+
+    /**
+     * The transition detector: one finished turn, once.
+     *
+     * The harness reports a state, not a turn id, so the state per session is what
+     * is tracked: a true arms the session, and the first false after it fires. A
+     * second false with no true between is the same finished turn reported again
+     * and stays silent; a new true arms it for the next turn.
+     * @param previous - { running, fired }, both session-id keyed.
+     * @param sessionId - the session the event is about.
+     * @param running - whether its agent is running now.
+     * @returns whether to fire, and the state to keep.
+     */
+    function notifyTransition(previous, sessionId, running) {
+      const state = previous !== null && typeof previous === 'object' ? previous : {}
+      const runningBefore = state.running !== null && typeof state.running === 'object' ? { ...state.running } : {}
+      const firedBefore = state.fired !== null && typeof state.fired === 'object' ? { ...state.fired } : {}
+      const id = String(sessionId ?? '')
+      let fire = false
+      if (running === true) {
+        runningBefore[id] = true
+        firedBefore[id] = false
+      } else if (runningBefore[id] === true && firedBefore[id] !== true) {
+        runningBefore[id] = false
+        firedBefore[id] = true
+        fire = true
+      } else {
+        runningBefore[id] = false
+      }
+      return { fire, state: { running: runningBefore, fired: firedBefore } }
+    }
+
+    /** Whether the switches allow a notification at all, right now. */
+    function notifyAllows(settings, hidden) {
+      const values = settings !== null && typeof settings === 'object' ? settings : notifyDefaults()
+      if (values.enabled !== true) return false
+      if (values.backgroundOnly === true && hidden !== true) return false
+      return true
+    }
+
+    /**
+     * The sound to play, resolved against what is actually available.
+     *
+     * A stored Windows id from a machine that no longer has that file is a stale
+     * setting, not a reason to be silent: it falls back to the default tone.
+     */
+    function notifySoundFor(settings, catalog) {
+      const values = settings !== null && typeof settings === 'object' ? settings : notifyDefaults()
+      const chosen = typeof values.sound === 'string' ? values.sound : ''
+      if (notifyIsTone(chosen)) return { id: chosen, kind: 'tone' }
+      const available = catalog !== null && typeof catalog === 'object' && Array.isArray(catalog.windows)
+        ? catalog.windows
+        : []
+      if (available.some(entry => entry.id === chosen)) return { id: chosen, kind: 'system' }
+      return { id: notifyDefaults().sound, kind: 'tone' }
+    }
+
+    /**
+     * One AudioContext, created on the first gesture and reused forever.
+     *
+     * Browsers refuse to start audio without a gesture, so nothing is created at
+     * load: the first Play or Test makes it, and every later call reuses it,
+     * resuming it when the browser suspended it behind our back.
+     * @param options - AudioContext (injected for the suite), and a log.
+     */
+    function createNotifyAudio(options = {}) {
+      const Constructor = options.AudioContext ?? (typeof window === 'undefined' ? undefined : window.AudioContext)
+      let context
+      const api = {
+        /** Whether a context exists yet. */
+        created: () => context !== undefined,
+        /**
+         * The context, created or resumed as needed.
+         * @returns it, or undefined when this build has no Web Audio.
+         */
+        ensure() {
+          if (Constructor === undefined) return undefined
+          try {
+            if (context === undefined) context = new Constructor()
+            if (context.state === 'suspended' && typeof context.resume === 'function') {
+              const resumed = context.resume()
+              if (resumed !== null && typeof resumed === 'object' && typeof resumed.catch === 'function') {
+                resumed.catch(() => undefined)
+              }
+            }
+            return context
+          } catch (error) {
+            options.log?.({ phase: 'failed', action: 'audio', reason: messageOf(error) })
+            return undefined
+          }
+        },
+        /** The live state, for the suite and the breadcrumb. */
+        state: () => (context === undefined ? '' : String(context.state ?? '')),
+        /** Play one tone at one volume, straight from the oscillator table. */
+        playTone(tone, volume) {
+          const live = api.ensure()
+          if (live === undefined || tone === undefined) return false
+          try {
+            const now = Number(live.currentTime) || 0
+            const master = live.createGain()
+            master.gain.setValueAtTime(notifyClampVolume(volume) / 100, now)
+            master.connect(live.destination)
+            for (const voice of tone.voices) {
+              const oscillator = live.createOscillator()
+              const envelope = live.createGain()
+              const at = now + voice.start
+              oscillator.type = 'sine'
+              oscillator.frequency.setValueAtTime(voice.frequency, at)
+              // Short attack, exponential decay, and a conservative peak: the
+              // loudest voice here is 0.22, so nothing can clip the mix.
+              envelope.gain.setValueAtTime(0.0001, at)
+              envelope.gain.linearRampToValueAtTime(voice.gain, at + 0.006)
+              envelope.gain.exponentialRampToValueAtTime(0.0001, at + voice.duration)
+              oscillator.connect(envelope)
+              envelope.connect(master)
+              oscillator.start(at)
+              oscillator.stop(at + voice.duration + 0.02)
+            }
+            return true
+          } catch (error) {
+            options.log?.({ phase: 'failed', action: 'tone', reason: messageOf(error) })
+            return false
+          }
+        },
+        /**
+         * Play one Host sound.
+         * @param id - a catalogue id, encoded into the route.
+         * @returns whether playback started.
+         */
+        async playSound(id) {
+          const live = api.ensure()
+          if (live === undefined) return false
+          try {
+            const response = await fetch(`${NOTIFY_SOUND_ROUTE}?id=${encodeURIComponent(id)}`, {
+              headers: { accept: 'audio/wav' },
+            })
+            if (response === null || response.ok !== true) {
+              options.log?.({ phase: 'failed', action: 'sound', reason: String(response?.status ?? 'no-response') })
+              return false
+            }
+            const bytes = await response.arrayBuffer()
+            const buffer = await new Promise((resolve, reject) => {
+              const decoded = live.decodeAudioData(bytes, resolve, reject)
+              if (decoded !== null && typeof decoded === 'object' && typeof decoded.then === 'function') {
+                decoded.then(resolve, reject)
+              }
+            })
+            const source = live.createBufferSource()
+            source.buffer = buffer
+            source.connect(live.destination)
+            source.start()
+            return true
+          } catch (error) {
+            options.log?.({ phase: 'failed', action: 'sound', reason: messageOf(error) })
+            return false
+          }
+        },
+        /** Close the context, so disposal leaves no live audio graph behind. */
+        close() {
+          if (context === undefined) return
+          try {
+            const closing = context.close()
+            if (closing !== null && typeof closing === 'object' && typeof closing.catch === 'function') {
+              closing.catch(() => undefined)
+            }
+          } catch (error) {
+            // A context that refused to close is already gone.
+          }
+          context = undefined
+        },
+      }
+      return api
+    }
+
+    /**
+     * The browser popup, feature-detected rather than assumed.
+     *
+     * The Notification API only exists in a secure context, which a plain-HTTP
+     * LAN page is not — so every function here answers no politely instead of
+     * raising, and the page says so in one line.
+     * @param scope - a window-shaped object.
+     */
+    function createNotifyPopup(scope = (typeof window === 'undefined' ? undefined : window)) {
+      const api = scope !== undefined && scope !== null && typeof scope.Notification === 'function'
+        ? scope.Notification
+        : undefined
+      const popup = {
+        /** Whether this build has the API at all. */
+        available: api !== undefined,
+        /** The current permission, or an empty string when there is no API. */
+        permission() {
+          if (api === undefined) return ''
+          try {
+            return String(api.permission ?? '')
+          } catch (error) {
+            return ''
+          }
+        },
+        /**
+         * Ask once, from a real gesture. Never called at load.
+         * @returns the permission afterwards.
+         */
+        async request() {
+          if (api === undefined || typeof api.requestPermission !== 'function') return ''
+          try {
+            return String(await api.requestPermission())
+          } catch (error) {
+            return ''
+          }
+        },
+        /**
+         * Show one popup, but only when it is already permitted.
+         * @returns whether one was shown.
+         */
+        show(title, body) {
+          if (api === undefined || popup.permission() !== 'granted') return false
+          try {
+            // eslint-disable-next-line no-new
+            new api(String(title ?? ''), { body: String(body ?? '') })
+            return true
+          } catch (error) {
+            return false
+          }
+        },
+      }
+      return popup
+    }
+
+    /**
+     * The notifier: settings, one sound, one optional popup.
+     *
+     * It owns no DOM and no React: the page asks it to preview, and the watcher
+     * asks it to fire. Everything it touches is injected, so the suite drives it
+     * with fakes and the browser gets the real AudioContext.
+     * @param options - audio, popup, settings, log.
+     */
+    function createNotifier(options = {}) {
+      const audio = options.audio ?? createNotifyAudio({ AudioContext: options.AudioContext, log: options.log })
+      const popup = options.popup ?? createNotifyPopup(options.scope)
+      const log = typeof options.log === 'function' ? options.log : () => {}
+      let settings = options.settings ?? notifyDefaults()
+      let catalog = { available: false, windows: [], note: '' }
+
+      const toneFor = id => NOTIFY_TONES.find(tone => tone.id === id)
+
+      const play = async wanted => {
+        if (wanted.kind === 'tone') return audio.playTone(toneFor(wanted.id), settings.volume)
+        return audio.playSound(wanted.id)
+      }
+
+      return {
+        settings: () => ({ ...settings }),
+        setSettings(next) {
+          settings = next !== null && typeof next === 'object' ? next : notifyDefaults()
+        },
+        /** Learn the Host's sound list, so a stored Windows id can resolve. */
+        setCatalog(next) {
+          catalog = next !== null && typeof next === 'object' ? next : { available: false, windows: [], note: '' }
+        },
+        catalog: () => catalog,
+        popup,
+        audio,
+        /**
+         * Play one sound because the reader asked to hear it.
+         * @param id - a tone id or a Host sound id.
+         */
+        async preview(id) {
+          const wanted = notifySoundFor({ ...settings, sound: id }, catalog)
+          const played = (await play(wanted)) === true
+          log({ phase: 'played', sound: wanted.id, kind: wanted.kind, ok: played })
+          return played
+        },
+        /**
+         * Fire the notification for one finished turn.
+         *
+         * The caller has already decided the switches allow it; this only makes
+         * the sound and, when the browser already permitted it, one popup. A popup
+         * that cannot be shown is not a failure — it is the normal case on a phone
+         * over plain HTTP.
+         * @returns what actually happened.
+         */
+        async fire({ sessionId, title, body }) {
+          const wanted = notifySoundFor(settings, catalog)
+          const played = (await play(wanted)) === true
+          const popped = popup.show(title ?? '', body ?? '')
+          log({
+            phase: 'fired',
+            turn: String(sessionId ?? ''),
+            sound: wanted.id,
+            played,
+            popup: popped,
+          })
+          return { played, popup: popped }
+        },
+        close() {
+          audio.close()
+        },
+      }
+    }
+
+    /**
+     * Install the watcher and keep it in step with its row.
+     *
+     * One effect owns everything: the Remote subscription, the notifier, and the
+     * AudioContext. A row that is off subscribes to nothing, and disposal closes
+     * the context and drops the listener, so turning the feature off leaves no
+     * live audio graph and no callback behind.
+     * @param ctx - the browser plugin context.
+     * @param controller - the switch controller holding the row states.
+     * @param options - injectable scope, store, audio and visibility for the suite.
+     */
+    function installNotifier(ctx, controller, options = {}) {
+      const scope = options.scope ?? (typeof window === 'undefined' ? undefined : window)
+      const store = options.storage ?? (scope === undefined ? undefined : scope.localStorage)
+      const hidden = options.hidden ?? (() => (typeof document === 'undefined' ? true : document.hidden === true))
+      const notifier = createNotifier({
+        audio: options.audio,
+        popup: options.popup ?? createNotifyPopup(scope),
+        settings: readNotifySettings(store),
+        log: notifyWrite,
+      })
+      const state = { running: {}, fired: {} }
+      let unsubscribe
+
+      ctx.effect(() => {
+        let active = false
+        const listen = () => {
+          if (unsubscribe !== undefined) return
+          if (typeof ctx.remote?.$on !== 'function') {
+            notifyWrite({ phase: 'register-failed', part: 'watch' })
+            return
+          }
+          unsubscribe = ctx.remote.$on('api-session/status', (sessionId, running) => {
+            // The row and the switches decide; the transition detector decides
+            // whether this event is the one finished turn.
+            if (!rowEnabled(controller.getSnapshot(), NOTIFY_MODULE)) return
+            const settings = notifier.settings()
+            const outcome = notifyTransition(state, sessionId, running)
+            state.running = outcome.state.running
+            state.fired = outcome.state.fired
+            if (!outcome.fire) return
+            if (!notifyAllows(settings, hidden())) {
+              notifyWrite({
+                phase: 'blocked',
+                reason: settings.enabled !== true ? 'disabled' : 'visible',
+                turn: String(sessionId ?? ''),
+              })
+              return
+            }
+            void notifier
+              .fire({ sessionId, title: options.title?.() ?? '', body: options.body?.() ?? '' })
+              .catch(error => notifyWrite({ phase: 'failed', action: 'fire', reason: messageOf(error) }))
+          })
+          notifyWrite({ phase: 'loaded', sound: notifier.settings().sound, enabled: notifier.settings().enabled })
+        }
+        /** Subscribe or unsubscribe, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), NOTIFY_MODULE)
+          if (wanted === active) return
+          if (wanted) {
+            listen()
+            active = unsubscribe !== undefined
+          } else {
+            unsubscribe?.()
+            unsubscribe = undefined
+            active = false
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          unsubscribe?.()
+          unsubscribe = undefined
+          notifier.close()
+        }
+      }, 'edh: notify watcher')
+      return notifier
+    }
+
+    /**
+     * The page, rendered from one explicit state.
+     *
+     * Kept apart from the component for the same reason as its neighbours: with no
+     * browser in the loop, this is the only way to see what a state paints.
+     * @param t - the dictionary's translate function.
+     * @param state - settings, catalogue, catalogue status, and the handlers.
+     */
+    function notifyPage(t, state) {
+      const source = state !== null && typeof state === 'object' ? state : {}
+      const settings = source.settings !== null && typeof source.settings === 'object'
+        ? source.settings
+        : notifyDefaults()
+      const catalog = source.catalog !== null && typeof source.catalog === 'object'
+        ? source.catalog
+        : { available: false, windows: [], note: '' }
+      const status = typeof source.status === 'string' ? source.status : 'loading'
+      const notice = source.notice !== null && typeof source.notice === 'object'
+        ? source.notice
+        : { text: '', tone: 'bad' }
+      const actions = source.actions !== null && typeof source.actions === 'object' ? source.actions : {}
+      const busy = typeof source.busy === 'string' ? source.busy : ''
+      const call = (name, ...parameters) => {
+        const handler = actions[name]
+        if (typeof handler === 'function') handler(...parameters)
+      }
+
+      const frame = (...children) => h('div', { className: 'edh-notify' },
+        h('h2', { className: 'edh-notify-title' }, t('notifyTitle')),
+        h('p', { className: 'edh-notify-intro' }, t('notifyIntro')),
+        ...children,
+      )
+
+      if (source.enabled === false) {
+        return frame(h('p', { className: 'edh-notify-status' }, t('notifyOff')))
+      }
+
+      const noticeNode = notice.text === ''
+        ? []
+        : [h('p', {
+          className: 'edh-notify-notice',
+          'data-tone': notice.tone === 'ok' ? 'ok' : 'bad',
+          role: notice.tone === 'ok' ? 'status' : 'alert',
+        }, notice.text)]
+
+      /** One switch row: a label, a sentence, and a real button with a role. */
+      const switchRow = (key, label, hint, checked, onToggle) => h('div', {
+        key,
+        className: 'edh-notify-row',
+      },
+        h('div', { className: 'edh-notify-rowText' },
+          h('span', { className: 'edh-notify-rowLabel' }, label),
+          h('span', { className: 'edh-notify-fieldHint' }, hint),
+        ),
+        h('button', {
+          type: 'button',
+          role: 'switch',
+          className: 'edh-notify-switch',
+          'aria-checked': checked,
+          'aria-label': label,
+          onClick: onToggle,
+        },
+          h('span', { className: 'edh-notify-switchTrack', 'aria-hidden': true },
+            h('span', { className: 'edh-notify-switchDot', 'data-on': checked ? 'true' : 'false' }),
+          ),
+        ),
+      )
+
+      const soundRow = (key, inputId, name, hint, checked, onPick) => h('li', {
+        key,
+        className: 'edh-notify-soundRow',
+      },
+        h('input', {
+          type: 'radio',
+          className: 'edh-notify-radio',
+          name: 'edh-notify-sound',
+          id: inputId,
+          value: key,
+          checked,
+          onChange: onPick,
+        }),
+        h('label', { className: 'edh-notify-soundLabel', htmlFor: inputId },
+          h('span', { className: 'edh-notify-soundName' }, name),
+          h('span', { className: 'edh-notify-soundHint' }, hint),
+        ),
+        h('button', {
+          type: 'button',
+          className: 'edh-notify-button edh-notify-buttonSm',
+          onClick: () => {
+            call('preview', key)
+          },
+        }, t('notifyPlay')),
+      )
+
+      const windowsBlock = catalog.available
+        ? [
+          h('li', { key: 'windows-heading', className: 'edh-notify-groupHeading', role: 'presentation' },
+            h('span', null, t('notifyWindows'))),
+          ...catalog.windows.map(sound => soundRow(
+            sound.id,
+            `edh-notify-sound-${notifyDomId(sound.id)}`,
+            sound.label,
+            t('notifyWindowsSoundHint'),
+            settings.sound === sound.id,
+            () => {
+              call('sound', sound.id)
+            },
+          )),
+        ]
+        : [
+          h('li', { key: 'windows-missing', className: 'edh-notify-groupMissing', role: 'presentation' },
+            h('span', null, status === 'error' ? t('notifyCatalogFailed') : t('notifyWindowsMissing'))),
+        ]
+
+      const percent = `${notifyClampVolume(settings.volume)}%`
+
+      return frame(...noticeNode,
+        h('div', { className: 'edh-notify-rows' },
+          switchRow('enabled', t('notifyEnable'), t('notifyEnableHint'), settings.enabled === true, () => {
+            call('toggle', 'enabled', settings.enabled !== true)
+          }),
+          switchRow('background', t('notifyBackground'), t('notifyBackgroundHint'), settings.backgroundOnly === true, () => {
+            call('toggle', 'backgroundOnly', settings.backgroundOnly !== true)
+          }),
+          h('div', { key: 'sound', className: 'edh-notify-row edh-notify-rowStack' },
+            h('div', { className: 'edh-notify-rowText' },
+              h('span', { className: 'edh-notify-rowLabel' }, t('notifySound')),
+              h('span', { className: 'edh-notify-fieldHint' }, t('notifySoundHint')),
+            ),
+            h('ul', {
+              className: 'edh-notify-sounds',
+              role: 'radiogroup',
+              'aria-label': t('notifySound'),
+            },
+              NOTIFY_TONES.map(tone => soundRow(
+                tone.id,
+                `edh-notify-sound-${notifyDomId(tone.id)}`,
+                t(tone.labelKey),
+                t(tone.hintKey),
+                settings.sound === tone.id,
+                () => {
+                  call('sound', tone.id)
+                },
+              )),
+              windowsBlock,
+            ),
+          ),
+          h('div', { key: 'volume', className: 'edh-notify-row' },
+            h('div', { className: 'edh-notify-rowText' },
+              h('label', { className: 'edh-notify-rowLabel', htmlFor: 'edh-notify-volume' }, t('notifyVolume')),
+              h('span', { className: 'edh-notify-fieldHint' }, t('notifyVolumeHint')),
+            ),
+            h('div', { className: 'edh-notify-volume' },
+              h('input', {
+                type: 'range',
+                id: 'edh-notify-volume',
+                className: 'edh-notify-range',
+                min: 0,
+                max: 100,
+                step: 5,
+                value: notifyClampVolume(settings.volume),
+                'aria-valuetext': percent,
+                onChange: event => {
+                  call('volume', event.target.value)
+                },
+              }),
+              h('span', { className: 'edh-notify-volumeValue' }, percent),
+            ),
+          ),
+          h('div', { key: 'test', className: 'edh-notify-row' },
+            h('div', { className: 'edh-notify-rowText' },
+              h('span', { className: 'edh-notify-rowLabel' }, t('notifyTest')),
+              h('span', { className: 'edh-notify-fieldHint' }, t('notifyTestHint')),
+            ),
+            h('button', {
+              type: 'button',
+              className: 'edh-notify-button edh-notify-buttonPrimary',
+              disabled: busy !== '',
+              'aria-busy': busy !== '' || undefined,
+              onClick: () => {
+                call('test')
+              },
+            }, t('notifyTestAction')),
+          ),
+        ),
+        h('p', { className: 'edh-notify-note' }, t('notifyPlainHttp')),
+      )
+    }
+
+    /** The page component: settings in Local Storage, the catalogue from the Host. */
+    function createNotifyPage(t, controller, shared) {
+      const useNotifyEnabled = createFeatureHook(controller, NOTIFY_MODULE, rowEnabled)
+
+      return function EdhNotifyPage() {
+        const enabled = useNotifyEnabled()
+        const [settings, setSettings] = React.useState(() => readNotifySettings())
+        const [catalog, setCatalog] = React.useState({ available: false, windows: [], note: '' })
+        const [status, setStatus] = React.useState('loading')
+        const [notice, setNotice] = React.useState({ text: '', tone: 'bad' })
+        const [busy, setBusy] = React.useState('')
+        const notifier = React.useRef(undefined)
+
+        // The page's own preview channel. The watcher has its own notifier, so a
+        // preview and a background notification never share a queue.
+        // The watcher owns the audio context and the settings the engine fires
+        // with; the page borrows that notifier so a change made here is the one
+        // the next finished turn plays. Without a shared channel (a page opened
+        // on its own) it keeps a private one.
+        const channel = () => {
+          const live = shared ?? notifier.current
+          if (live === undefined) {
+            notifier.current = createNotifier({ settings, log: notifyWrite })
+            notifier.current.setSettings(settings)
+            notifier.current.setCatalog(catalog)
+            return notifier.current
+          }
+          live.setSettings(settings)
+          live.setCatalog(catalog)
+          return live
+        }
+
+        // The Host's curated list, once. A failure is not fatal: the tones are
+        // local, so the page stays useful and one line says what is missing.
+        React.useEffect(() => {
+          if (!enabled) return undefined
+          let current = true
+          void (async () => {
+            try {
+              const response = await fetch(NOTIFY_SOUNDS_ROUTE, { headers: { accept: 'application/json' } })
+              if (response?.ok !== true) throw new Error(`${NOTIFY_SOUNDS_ROUTE} answered ${response?.status ?? 'nothing'}`)
+              const answer = await response.json()
+              if (!current) return
+              const next = notifyCatalog(answer)
+              setCatalog(next)
+              shared?.setCatalog(next)
+              setStatus('ready')
+              notifyWrite({ phase: 'loaded', sounds: next.windows.length, available: next.available })
+            } catch (error) {
+              if (!current) return
+              setStatus('error')
+              notifyWrite({ phase: 'failed', action: 'catalog', reason: messageOf(error) })
+            }
+          })()
+          return () => {
+            current = false
+          }
+        }, [enabled])
+
+        React.useEffect(() => () => {
+          notifier.current?.close()
+          notifier.current = undefined
+        }, [])
+
+        const save = React.useCallback((patch, field) => {
+          setSettings(previous => {
+            const next = { ...previous, ...patch }
+            writeNotifySettings(next)
+            // The watcher fires with these values, so it learns them now rather
+            // than at the next page load.
+            shared?.setSettings(next)
+            notifyWrite({ phase: 'saved', field })
+            return next
+          })
+        }, [])
+
+        const onToggle = React.useCallback((field, value) => {
+          save({ [field]: value === true }, field)
+        }, [save])
+
+        const onSound = React.useCallback(id => {
+          save({ sound: String(id) }, 'sound')
+        }, [save])
+
+        const onVolume = React.useCallback(value => {
+          save({ volume: notifyClampVolume(value) }, 'volume')
+        }, [save])
+
+        const onPreview = React.useCallback(async id => {
+          const played = await channel().preview(id)
+          setNotice(played ? { text: '', tone: 'bad' } : { text: t('notifyPlayFailed'), tone: 'bad' })
+        }, [settings, catalog, t])
+
+        const onTest = React.useCallback(async () => {
+          setBusy('test')
+          const live = channel()
+          // The one place permission is ever asked for: a real gesture.
+          if (live.popup.available && live.popup.permission() === 'default') {
+            const granted = await live.popup.request()
+            notifyWrite({ phase: 'saved', field: 'permission', permission: granted })
+          }
+          const wanted = notifySoundFor(settings, catalog)
+          const played = await live.preview(wanted.id)
+          const popped = live.popup.show(t('notifyPopupTitle'), t('notifyPopupBody'))
+          setBusy('')
+          if (!played) setNotice({ text: t('notifyPlayFailed'), tone: 'bad' })
+          else if (popped) setNotice({ text: t('notifyTestDone'), tone: 'ok' })
+          else if (live.popup.available && live.popup.permission() === 'denied') {
+            setNotice({ text: t('notifyPopupDenied'), tone: 'bad' })
+          } else setNotice({ text: t('notifyTestSoundOnly'), tone: 'ok' })
+        }, [settings, catalog, t])
+
+        return notifyPage(t, {
+          enabled,
+          settings,
+          catalog,
+          status,
+          notice,
+          busy,
+          actions: {
+            toggle: onToggle,
+            sound: onSound,
+            volume: onVolume,
+            preview: onPreview,
+            test: onTest,
+          },
+        })
+      }
+    }
+
+    /** The page's stylesheet: hairlines and rows, like its neighbours. */
+    const NOTIFY_CSS = [
+      '.edh-notify{color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;max-width:760px;display:flex}',
+      '.edh-notify-title{margin:0;font-size:16px;font-weight:500;line-height:24px}',
+      '.edh-notify-intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:14px;line-height:22px}',
+      '.edh-notify-status{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px;line-height:20px}',
+      '.edh-notify-notice{color:var(--dsw-alias-label-secondary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-notify-notice[data-tone=bad]{color:var(--dsw-alias-state-error-primary)}',
+      '.edh-notify-notice[data-tone=ok]{color:var(--dsw-alias-state-success-primary)}',
+      '.edh-notify-rows{flex-direction:column;display:flex}',
+      '.edh-notify-row{border-bottom:.5px solid var(--dsw-alias-border-l2);justify-content:space-between;align-items:center;gap:16px;padding:10px 0;display:flex}',
+      '.edh-notify-row:last-child{border-bottom:none;padding-bottom:0}',
+      '.edh-notify-rowStack{flex-direction:column;align-items:stretch;gap:8px}',
+      '.edh-notify-rowText{flex-direction:column;gap:2px;min-width:0;display:flex}',
+      '.edh-notify-rowLabel{font-size:13px;line-height:20px}',
+      '.edh-notify-fieldHint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.edh-notify-switch{cursor:pointer;background:0 0;border:none;padding:2px;border-radius:999px;flex:none;align-items:center;display:inline-flex}',
+      '.edh-notify-switchTrack{box-sizing:border-box;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:999px;width:36px;height:20px;padding:1px;display:inline-flex}',
+      '.edh-notify-switchDot{background:var(--dsw-alias-label-secondary);border-radius:50%;width:14px;height:14px;display:inline-block;transition:transform 120ms ease}',
+      '.edh-notify-switchDot[data-on=true]{background:var(--dsw-alias-brand-primary);transform:translateX(16px)}',
+      '.edh-notify-sounds{flex-direction:column;margin:0;padding:0;list-style:none;display:flex}',
+      '.edh-notify-soundRow{border-top:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:6px 0;display:flex}',
+      '.edh-notify-radio{margin:0;flex:none}',
+      '.edh-notify-soundLabel{flex-direction:column;flex:1;gap:1px;min-width:0;cursor:pointer;display:flex}',
+      '.edh-notify-soundName{font-size:13px;line-height:19px}',
+      '.edh-notify-soundHint{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}',
+      '.edh-notify-groupHeading{color:var(--dsw-alias-label-secondary);border-top:.5px solid var(--dsw-alias-border-l2);padding:10px 0 2px;font-size:12px;line-height:18px}',
+      '.edh-notify-groupMissing{color:var(--dsw-alias-label-tertiary);border-top:.5px solid var(--dsw-alias-border-l2);padding:10px 0 2px;font-size:12px;line-height:18px}',
+      '.edh-notify-volume{align-items:center;gap:8px;display:flex}',
+      '.edh-notify-range{width:180px;accent-color:var(--dsw-alias-brand-primary)}',
+      '.edh-notify-volumeValue{color:var(--dsw-alias-label-secondary);text-align:right;min-width:40px;font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}',
+      '.edh-notify-note{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:18px}',
+      '.edh-notify-button{box-sizing:border-box;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-sm);justify-content:center;align-items:center;height:28px;padding:0 10px;font:inherit;font-size:12px;line-height:18px;white-space:nowrap;display:inline-flex}',
+      '.edh-notify-buttonSm{height:24px;padding:0 8px}',
+      '.edh-notify-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.edh-notify-button:disabled{cursor:not-allowed;opacity:.4}',
+      '.edh-notify-buttonPrimary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}',
+      '.edh-notify-buttonPrimary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.edh-notify :is(button,input,a):focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+    ].join('')
+
+    /** Install the page's stylesheet once and take it back out on dispose. */
+    function installNotifyStyles() {
+      if (typeof document === 'undefined') return () => {}
+      const selector = 'style[data-edh-css="notify"]'
+      if (document.querySelector(selector) === null) {
+        const tag = document.createElement('style')
+        tag.dataset.edhCss = 'notify'
+        tag.dataset.plugin = '@moreweb/edh'
+        tag.textContent = NOTIFY_CSS
+        document.head.appendChild(tag)
+        return () => {
+          if (tag.parentNode !== null) tag.parentNode.removeChild(tag)
+        }
+      }
+      return () => {
+        const existing = document.querySelector(selector)
+        if (existing !== null && existing.parentNode !== null) existing.parentNode.removeChild(existing)
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -6814,6 +7815,51 @@ window.__ModuleLoader__.load({
       // so the cell is withdrawn while that row is missing or off rather than
       // opening a page that can only say it has nothing.
       const UsagePage = createUsagePage(t, controller, ctx.locale)
+
+      // notify — its own page in the Settings navigation, and the watcher that
+      // fires the sound. The page is gated on the row like its neighbours; the
+      // watcher subscribes to the harness's own status feed and lets it go when
+      // the row is off.
+      const notifyChannel = installNotifier(ctx, controller)
+      const NotifyPage = createNotifyPage(t, controller, notifyChannel)
+      ctx.effect(() => installNotifyStyles(), 'edh: notify styles')
+      ctx.slots.inject(NOTIFY_SECTION_SLOT, () => {
+        let dispose
+        let installed = false
+        /** Register, dispose, or leave alone, to match the row right now. */
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), NOTIFY_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = ctx.slots.register({
+              name: NOTIFY_SECTION_SLOT,
+              id: 'notify',
+              order: NOTIFY_SECTION_ORDER,
+              locale: NS,
+              label: () => t('notifyNav'),
+            }, NotifyPage)
+            installed = true
+          } catch (error) {
+            installed = false
+            notifyWrite({ phase: 'register-failed', part: 'section', message: messageOf(error) })
+          }
+        }
+        const stopWatching = controller.subscribe(sync)
+        sync()
+        return () => {
+          stopWatching()
+          dispose?.()
+          dispose = undefined
+        }
+      })
+
+
       ctx.effect(() => installUsageStyles(), 'edh: usage styles')
       ctx.slots.inject(USAGE_SECTION_SLOT, () => {
         let dispose
@@ -7078,6 +8124,32 @@ window.__ModuleLoader__.load({
       REMOTE_PORT_MIN,
       REMOTE_PORT_MAX,
       REMOTE_DEBUG_KEY,
+      notifyDefaults,
+      notifyClampVolume,
+      notifyIsTone,
+      notifyDomId,
+      readNotifySettings,
+      writeNotifySettings,
+      notifyCatalog,
+      notifyTransition,
+      notifyAllows,
+      notifySoundFor,
+      createNotifyAudio,
+      createNotifyPopup,
+      createNotifier,
+      installNotifier,
+      notifyPage,
+      createNotifyPage,
+      installNotifyStyles,
+      NOTIFY_TONES,
+      NOTIFY_CSS,
+      NOTIFY_MODULE,
+      NOTIFY_SECTION_SLOT,
+      NOTIFY_SECTION_ORDER,
+      NOTIFY_SETTINGS_KEY,
+      NOTIFY_DEBUG_KEY,
+      NOTIFY_SOUNDS_ROUTE,
+      NOTIFY_SOUND_ROUTE,
       mobileIconHref,
       createMobileLayer,
       installMobileLayer,

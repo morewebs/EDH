@@ -72,3 +72,11 @@
     - id: edh-mobile
       name: '@moreweb/edh/mobile'
       config: {}
+
+    # notify — the Windows sound files, and nothing else. A browser page cannot
+    # read C:\Windows\Media, so this row serves a curated few of the real system
+    # WAVs; the browser half owns the settings, the synthesised tones and the
+    # watcher that decides when to fire.
+    - id: edh-notify
+      name: '@moreweb/edh/notify'
+      config: {}

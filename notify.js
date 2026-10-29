@@ -43,9 +43,11 @@
  * notifications. That is a browser rule this side cannot work around.
  */
 
-import { existsSync, statSync, createReadStream } from 'node:fs'
+import { closeSync, createReadStream, existsSync, fstatSync, openSync, readSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
+import { zstdDecompressSync } from 'node:zlib'
+import { splitZstdFrames } from './usage.js'
 
 export const name = 'edh-notify'
 
@@ -67,6 +69,33 @@ export const SOUND_FOLDER = 'Media'
 
 /** Longest id this route will even look at. */
 export const MAX_SOUND_ID = 64
+
+/** The third route: what a session last said, for a notification body. */
+export const NOTIFY_LAST_PATH = '/api/edh.notify/last'
+
+/**
+ * How much of the end of a Session log is read for one notification body.
+ *
+ * 256 KB of *compressed* log is tens of append frames — minutes of conversation —
+ * and is all it takes to find the last assistant message. The log for a long
+ * Session is tens of megabytes; the whole point is never to touch them.
+ */
+export const LAST_WINDOW_BYTES = 256 * 1024
+
+/** Longest notification body returned; a notification that needs scrolling is a bug. */
+export const LAST_TEXT_LIMIT = 600
+
+/** Longest session id accepted (real ones are far shorter). */
+export const MAX_SESSION_ID = 128
+
+/** How many Zstandard frame-magic candidates the window scan will try before giving up. */
+export const LAST_FRAME_CANDIDATES = 16
+
+/** The answer must arrive inside the client's own 1200 ms cap, with room to spare. */
+export const LAST_BUDGET_MS = 800
+
+/** The Zstandard frame magic, little-endian as it appears in the artifact. */
+const ZSTD_FRAME_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
 /**
  * The curated catalog, in the order a settings page should show it.
@@ -107,24 +136,35 @@ export function resolveMediaDir(env = process.env) {
 }
 
 /**
- * Whether one value is shaped like an id at all.
+ * Whether one value is shaped like a key at all.
  *
- * This is not the authorisation — {@link catalogEntry} is, because only a
- * constant can pass — but it stops a hostile value early and keeps the rule in
- * one place: no separators, no parent directory, no colon (drive letter or
- * alternate data stream), no control characters, nothing absurdly long.
- * @param value - the untrusted `id` query value.
- * @returns true when it is a plausible catalog id.
+ * This is never the authorisation — the sound catalog entry or the persistence
+ * lookup is — but it stops a hostile value early and keeps the rule in one
+ * place: no separators, no parent directory, no colon (drive letter or alternate
+ * data stream), no control characters, nothing absurdly long. Both routes that
+ * take a key from the request use it.
+ * @param value - the untrusted query value.
+ * @param limit - the longest value accepted.
+ * @returns true when it is a plausible key.
  */
-export function isSoundIdSafe(value) {
+export function isSafeKey(value, limit = MAX_SOUND_ID) {
   if (typeof value !== 'string') return false
-  if (value.length === 0 || value.length > MAX_SOUND_ID) return false
+  if (value.length === 0 || value.length > limit) return false
   // eslint-disable-next-line no-control-regex -- refusing control characters is the point
   if (/[\u0000-\u001f\u007f]/u.test(value)) return false
   if (value.includes('/') || value.includes('\\')) return false
   if (value.includes('..')) return false
   if (value.includes(':')) return false
   return true
+}
+
+/**
+ * Whether one value is shaped like a catalog id.
+ * @param value - the untrusted `id` query value.
+ * @returns true when it is a plausible catalog id.
+ */
+export function isSoundIdSafe(value) {
+  return isSafeKey(value, MAX_SOUND_ID)
 }
 
 /**
@@ -342,18 +382,359 @@ export function notifySoundsRequest(request, options = {}) {
   return jsonResponse({ ok: false, reason: 'unsupported-method', message }, 405, { allow: 'GET, HEAD' })
 }
 
+// ---------------------------------------------------------------------------
+// The last message: a bounded tail read, never a transcript
+// ---------------------------------------------------------------------------
+//
+// A notification wants one sentence: what did that background session just say?
+// The tempting answer — open the Session and read it — is the one thing this must
+// never do. A Session log is an append-only Zstandard artifact with one frame per
+// append, tens of megabytes for a long conversation, and `handle.read` is indexed
+// by *event*, so any transcript read decodes the whole log to reach the end.
+//
+// So this reads the *last* `LAST_WINDOW_BYTES` of the artifact, splits it into
+// frames structurally with the same `splitZstdFrames` the usage fold uses, decodes
+// the newest frames, and walks backwards to the newest assistant message that has
+// text. The window's first byte usually lands in the middle of a frame, so the
+// boundary is found the only honest way: propose each Zstandard-magic occurrence
+// as a candidate and let the structural parser accept or reject it.
+
 /**
- * Register both routes on the Host connection.
+ * Read the last `window` bytes of one file.
  *
- * Two effects, each with its own guard: one refused path must not cost the other
- * route, and neither may cost the rest of EDH. Every method is claimed so a wrong
- * one reaches these handlers (and their 405) instead of the gateway's 404.
+ * Bounded by construction: the buffer is the window, never the file. A file
+ * shorter than the window is read whole, which is correct and cheap because it
+ * *is* the whole file.
+ * @param path - the absolute artifact path, resolved by the caller.
+ * @param options - `window` and the fs seams, injectable for tests.
+ * @returns `{ ok, buffer, wholeFile, size }` or the reason it could not be read.
+ */
+export function readLastWindow(path, options = {}) {
+  const {
+    window = LAST_WINDOW_BYTES,
+    open = openSync,
+    fstat = fstatSync,
+    read = readSync,
+    close = closeSync,
+  } = options
+  const handle = open(path, 'r')
+  try {
+    const size = Number(fstat(handle)?.size)
+    if (!Number.isFinite(size) || size <= 0) return { ok: false, reason: 'empty' }
+    const start = Math.max(0, size - Math.max(1, window))
+    const length = size - start
+    const buffer = Buffer.alloc(length)
+    let filled = 0
+    while (filled < length) {
+      const got = read(handle, buffer, filled, length - filled, start + filled)
+      if (!Number.isFinite(got) || got <= 0) break
+      filled += got
+    }
+    return { ok: true, buffer: buffer.subarray(0, filled), wholeFile: start === 0, size }
+  } finally {
+    try {
+      close(handle)
+    } catch {
+      // A handle that is already closed is the outcome we wanted.
+    }
+  }
+}
+
+/**
+ * The first byte in `buffer` that a Zstandard parser accepts as a frame boundary.
+ *
+ * The frame magic alone is not evidence — it occurs inside compressed blocks too,
+ * and a false candidate can even satisfy the structural walk by accident — so every
+ * occurrence is only a *candidate* and three independent checks decide: the frames
+ * must parse, they must end exactly where the complete part of the buffer ends (or
+ * where a torn append begins), and the first frame must actually **decompress** to
+ * plaintext ending in a newline, which is what the writer always produces. A magic
+ * that merely looks like a boundary fails one of those and is skipped.
+ * @param buffer - the bytes read from the tail of the artifact.
+ * @param options - `scan`, `decompress` and `maxCandidates`, injectable for tests.
+ * @returns the offset, or `-1` when nothing in the buffer is a frame boundary.
+ */
+export function findFrameStart(buffer, options = {}) {
+  const { scan = splitZstdFrames, decompress = zstdDecompressSync, maxCandidates = LAST_FRAME_CANDIDATES } = options
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return -1
+  let from = 0
+  for (let attempt = 0; attempt < maxCandidates; attempt += 1) {
+    const at = buffer.indexOf(ZSTD_FRAME_MAGIC, from)
+    if (at === -1) return -1
+    from = at + 4
+    const view = buffer.subarray(at)
+    let parsed
+    try {
+      parsed = scan(view)
+    } catch {
+      continue
+    }
+    const frames = Array.isArray(parsed?.frames) ? parsed.frames : []
+    if (frames.length === 0) continue
+    const completeTo = parsed.tornStart === undefined ? view.length : parsed.tornStart
+    if (frames.at(-1).end !== completeTo) continue
+    let text
+    try {
+      text = decompress(view.subarray(frames[0].start, frames[0].end)).toString('utf8')
+    } catch {
+      continue
+    }
+    // Every frame's plaintext ends with a newline (the writer appends
+    // `lines.join('\n') + '\n'`), so a decoded prefix that does not is a magic
+    // found inside somebody else's compressed bytes.
+    if (text.endsWith('\n') !== true) continue
+    return at
+  }
+  return -1
+}
+
+/**
+ * Decode the records of one complete frame window.
+ *
+ * A line that does not parse is skipped rather than fatal: the newest frame may be
+ * an append that never finished, and one unreadable line must not cost the answer.
+ * @param buffer - the window bytes.
+ * @param start - the frame boundary {@link findFrameStart} found.
+ * @param options - `scan` and `decompress`, injectable for tests.
+ * @returns the records in log order, and whether a torn tail was seen.
+ */
+export function decodeWindow(buffer, start, options = {}) {
+  const { scan = splitZstdFrames, decompress = zstdDecompressSync } = options
+  const view = buffer.subarray(start)
+  const parsed = scan(view)
+  const records = []
+  for (const frame of Array.isArray(parsed?.frames) ? parsed.frames : []) {
+    let text
+    try {
+      text = decompress(view.subarray(frame.start, frame.end)).toString('utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        records.push(JSON.parse(line))
+      } catch {
+        // A half-written line is the tail of an interrupted append.
+      }
+    }
+  }
+  return { records, torn: parsed?.tornStart !== undefined }
+}
+
+/** One text block's text, or `undefined` when a block is not text. */
+function textOfBlock(block) {
+  if (typeof block === 'string') return block
+  if (typeof block !== 'object' || block === null) return undefined
+  if (block.type !== 'text') return undefined
+  return typeof block.text === 'string' ? block.text : undefined
+}
+
+/**
+ * The text of one `assistant/message` record, or `undefined` when it carries none.
+ *
+ * The message lives on `data.message` (only `user/message` keeps it on `data`), and
+ * its `content` is a block array: the text blocks are joined, and any block that is
+ * not text — a tool call, a reasoning block — is ignored. A message with no text at
+ * all (tool calls only) answers `undefined` so the caller keeps looking back.
+ * @param record - one decoded log record.
+ * @returns the joined text, or `undefined`.
+ */
+export function assistantTextOf(record) {
+  if (typeof record !== 'object' || record === null) return undefined
+  if (record.type !== 'assistant/message') return undefined
+  const message = record.data?.message
+  if (typeof message !== 'object' || message === null) return undefined
+  const content = message.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const parts = []
+  for (const block of content) {
+    const text = textOfBlock(block)
+    if (text !== undefined) parts.push(text)
+  }
+  return parts.length === 0 ? undefined : parts.join('\n')
+}
+
+/**
+ * Clip one message into a notification body.
+ *
+ * Whitespace is collapsed to single spaces, so a multi-paragraph reply becomes the
+ * one line a notification shows, and the result is capped at `limit`. `truncated`
+ * says whether the cap cut something, so a caller can add its own ellipsis rather
+ * than guess.
+ * @param text - the joined message text.
+ * @param limit - the longest body returned.
+ * @returns `{ text, truncated }`.
+ */
+export function clipBody(text, limit = LAST_TEXT_LIMIT) {
+  const flat = String(text ?? '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  if (flat.length <= limit) return { text: flat, truncated: false }
+  return { text: flat.slice(0, Math.max(0, limit)).trimEnd(), truncated: true }
+}
+
+/**
+ * The newest assistant text and the newest title in one decoded window.
+ *
+ * Both are found by walking the records **backwards**, because the newest frame is
+ * the interesting one: the first assistant message that has text wins (a message
+ * with only tool calls is skipped, so the body is never uselessly empty), and the
+ * first `session/title` wins for the title. The empty string is returned only when
+ * the whole window carries no assistant text at all.
+ * @param records - the decoded records, in log order.
+ * @param options - `limit`, the longest body.
+ * @returns `{ text, truncated, title }`.
+ */
+export function lastActivityOf(records, options = {}) {
+  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : LAST_TEXT_LIMIT
+  let title
+  let body
+  for (let index = (Array.isArray(records) ? records.length : 0) - 1; index >= 0; index -= 1) {
+    const record = records[index]
+    if (typeof record !== 'object' || record === null) continue
+    if (title === undefined && record.type === 'session/title') {
+      const candidate = record.data?.title
+      if (typeof candidate === 'string' && candidate.trim() !== '') title = candidate.trim().slice(0, 200)
+    }
+    if (body === undefined) {
+      const text = assistantTextOf(record)
+      if (text !== undefined) {
+        const clipped = clipBody(text, limit)
+        if (clipped.text !== '') body = clipped
+      }
+    }
+    if (title !== undefined && body !== undefined) break
+  }
+  const result = body ?? { text: '', truncated: false }
+  if (title !== undefined) result.title = title
+  return result
+}
+
+/**
+ * The artifact path of one Session, through the backend's own diagnostics hook.
+ *
+ * The session key is **never** joined onto a path: it is validated, looked up among
+ * the persistence headers (which carry the `cwd` the backend needs), and handed to
+ * `locate({ id, cwd })`, which the backend turns into its own path. An id this Host
+ * does not know is `not-found`; a deployment without the service is `unavailable`.
+ * @param persistence - `ctx.sessionPersistence`, or whatever stands in for it.
+ * @param sessionId - the validated request key.
+ * @returns `{ ok: true, path }` or the reason it cannot be resolved.
+ */
+export async function locateSessionPath(persistence, sessionId) {
+  if (persistence === undefined || persistence === null) return { ok: false, reason: 'unavailable' }
+  if (typeof persistence.locate !== 'function') return { ok: false, reason: 'unavailable' }
+  let meta = { id: sessionId }
+  if (typeof persistence.list === 'function') {
+    const headers = await persistence.list()
+    const header = Array.isArray(headers)
+      ? headers.find(entry => typeof entry === 'object' && entry !== null && entry.id === sessionId)
+      : undefined
+    if (header === undefined) return { ok: false, reason: 'not-found' }
+    meta = { id: sessionId, cwd: header.cwd }
+  }
+  const located = persistence.locate(meta)
+  const path = typeof located === 'object' && located !== null && typeof located.path === 'string' ? located.path : ''
+  if (path === '') return { ok: false, reason: 'not-found' }
+  return { ok: true, path }
+}
+
+/** The `sessionId` query value of one request, or `undefined` when it is absent, repeated or unparsable. */
+function sessionIdOf(request) {
+  let url
+  try {
+    url = new URL(request?.url ?? NOTIFY_LAST_PATH, 'http://edh.invalid')
+  } catch {
+    return undefined
+  }
+  const values = url.searchParams.getAll('sessionId')
+  if (values.length !== 1) return undefined
+  return values[0]
+}
+
+/**
+ * Answer `GET /api/edh.notify/last?sessionId=<id>`.
+ *
+ * Bounded end to end: a validated key, one persistence lookup, one 256 KB read, and
+ * a decode of the frames inside it — with an elapsed-time guard before the decode,
+ * so a slow Host answers `error` instead of making the caller wait. Every failure
+ * is a JSON report (`bad-input` 400, `not-found` 404, `error`/`unavailable` 200),
+ * never a 500.
+ * @param request - the incoming request.
+ * @param options - `persistence`, the fs seams, and `now`/`budgetMs` for the guard.
+ * @returns the JSON answer.
+ */
+export async function notifyLastResponse(request, options = {}) {
+  const method = methodOf(request)
+  if (method !== 'GET' && method !== 'HEAD') {
+    const message = `Unsupported method ${request?.method ?? 'without a method'}; the last message is a GET`
+    return jsonResponse({ ok: false, reason: 'unsupported-method', message }, 405, { allow: 'GET, HEAD' })
+  }
+  const now = typeof options.now === 'function' ? options.now : Date.now
+  const started = now()
+  const budgetMs = Number.isInteger(options.budgetMs) && options.budgetMs > 0 ? options.budgetMs : LAST_BUDGET_MS
+  const failure = (reason, message, status) => jsonResponse({ ok: false, reason, message }, status)
+
+  const sessionId = sessionIdOf(request)
+  if (sessionId === undefined || isSafeKey(sessionId, MAX_SESSION_ID) !== true) {
+    return failure('bad-input', 'A "sessionId" query value is required, once, and must look like a session id.', 400)
+  }
+  try {
+    const located = await locateSessionPath(options.persistence, sessionId)
+    if (located.ok !== true) {
+      if (located.reason === 'unavailable') {
+        return failure('unavailable', 'This Host cannot read Session logs, so there is no message to show.', 200)
+      }
+      return failure('not-found', 'No stored Session has that id.', 404)
+    }
+    if (now() - started > budgetMs) return failure('error', 'That Session took too long to find.', 200)
+    let read
+    try {
+      read = readLastWindow(located.path, options)
+    } catch (error) {
+      return failure('not-found', `That Session's log could not be opened: ${String(error?.message ?? error)}`, 404)
+    }
+    if (read.ok !== true) {
+      return read.reason === 'empty'
+        ? failure('error', 'That Session has no stored activity yet.', 200)
+        : failure('not-found', "That Session's log could not be read.", 404)
+    }
+    if (now() - started > budgetMs) return failure('error', 'That Session took too long to read.', 200)
+    let activity = { text: '', truncated: false }
+    if (read.wholeFile === true) {
+      // A log short enough to be the whole window is decoded from its first frame;
+      // there is no boundary to find.
+      if (read.buffer.length >= 4) activity = lastActivityOf(decodeWindow(read.buffer, 0, options).records, options)
+    } else {
+      const start = findFrameStart(read.buffer, options)
+      if (start !== -1) activity = lastActivityOf(decodeWindow(read.buffer, start, options).records, options)
+    }
+    const body = { ok: true, sessionId, text: activity.text, truncated: activity.truncated === true }
+    if (typeof activity.title === 'string' && activity.title !== '') body.title = activity.title
+    return jsonResponse(body)
+  } catch (error) {
+    return failure('error', `The last message could not be read: ${String(error?.message ?? error)}`, 200)
+  }
+}
+
+/**
+ * Register the routes on the Host connection.
+ *
+ * One effect per route, each with its own guard: one refused path must not cost the
+ * others, and none may cost the rest of EDH. Every method is claimed so a wrong one
+ * reaches these handlers (and their 405) instead of the gateway's 404.
  * @param ctx - the Host context.
  */
 export function apply(ctx) {
   const routes = [
     { path: NOTIFY_SOUNDS_PATH, fetch: request => notifySoundsRequest(request) },
     { path: NOTIFY_SOUND_PATH, fetch: request => notifySoundResponse(request) },
+    {
+      path: NOTIFY_LAST_PATH,
+      fetch: request => notifyLastResponse(request, { persistence: ctx.get?.('sessionPersistence') }),
+    },
   ]
   for (const route of routes) {
     ctx.effect(() => {

@@ -25,6 +25,8 @@ const sandbox = {
   URL,
   URLSearchParams,
   AbortController,
+  setTimeout,
+  clearTimeout,
 }
 vm.runInNewContext(source, sandbox, { filename: 'client.js' })
 
@@ -229,6 +231,16 @@ const {
   createNotifier,
   installNotifier,
   runNotifyTest,
+  notifyClampText,
+  notifyTitleText,
+  notifyBodyText,
+  runNotifyText,
+  notifySessionTitle,
+  notifyOpenSession,
+  readNotifyLast,
+  NOTIFY_LAST_ROUTE,
+  NOTIFY_TITLE_MAX,
+  NOTIFY_BODY_MAX,
   notifyPage,
   createNotifyPage,
   NOTIFY_TONES,
@@ -4487,16 +4499,24 @@ function fakeStore(initial = {}) {
     assert.deepEqual(notifyCatalog(empty), { available: false, windows: [], note: '' }, 'nothing is nothing')
   }
 
-  // Resolution: a tone is a tone, a listed id is a Host sound, a stale id falls back.
+  // Resolution: the stored id is the id that plays, and the catalogue is not a gate.
   const full = notifyCatalog(payload)
-  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'two-tone' }, full), { id: 'two-tone', kind: 'tone' })
-  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }, full), { id: 'Windows Ding', kind: 'system' })
+  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'two-tone' }), { id: 'two-tone', kind: 'tone' })
+  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }), { id: 'Windows Ding', kind: 'system' })
   assert.deepEqual(
-    notifySoundFor({ ...notifyDefaults(), sound: 'Windows Gone' }, full),
-    { id: 'chime', kind: 'tone' },
-    'a stale Windows id falls back to the default tone rather than silence',
+    notifySoundFor({ ...notifyDefaults(), sound: 'Windows Gone' }),
+    { id: 'Windows Gone', kind: 'system' },
+    'a stale id is attempted as stored, never rewritten into another sound',
   )
-  assert.deepEqual(notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }, undefined), { id: 'chime', kind: 'tone' })
+  assert.deepEqual(
+    notifySoundFor({ ...notifyDefaults(), sound: 'Windows Ding' }),
+    { id: 'Windows Ding', kind: 'system' },
+    'and a catalogue is not needed to know what to play',
+  )
+  // Junk settings still resolve to a playable id, from the defaults.
+  assert.deepEqual(notifySoundFor(undefined), { id: 'chime', kind: 'tone' })
+  assert.deepEqual(notifySoundFor({ sound: '   ' }), { id: 'chime', kind: 'tone' })
+  void full
 
   // The tones are ours, and they are the three the page offers, first.
   assert.deepEqual(NOTIFY_TONES.map(tone => tone.id), ['chime', 'two-tone', 'blip'])
@@ -4557,7 +4577,7 @@ function fakeStore(initial = {}) {
   assert.equal(none.available, false, 'this is the phone over plain http')
   assert.equal(none.permission(), '')
   assert.equal(await none.request(), '')
-  assert.equal(none.show('title', 'body'), false, 'no popup is claimed where there is no API')
+  assert.equal(none.show({ title: 'title', body: 'body' }), false, 'no popup is claimed where there is no API')
 
   const shown = []
   const granted = createNotifyPopup({
@@ -4570,7 +4590,7 @@ function fakeStore(initial = {}) {
   })
   assert.equal(granted.available, true)
   assert.equal(granted.permission(), 'granted')
-  assert.equal(granted.show('Turn finished', 'ready'), true)
+  assert.equal(granted.show({ title: 'Turn finished', body: 'ready' }), true)
   assert.deepEqual(shown, [{ title: 'Turn finished', options: { body: 'ready', silent: true } }], 'the popup is asked for silently')
   assert.equal(shown[0].options.silent, true, 'silent: true, so the OS adds no second sound')
 
@@ -4579,14 +4599,14 @@ function fakeStore(initial = {}) {
       throw new Error('should not be constructed')
     }, { permission: 'denied' }),
   })
-  assert.equal(denied.show('x', 'y'), false, 'a denied permission is not asked again and shows nothing')
+  assert.equal(denied.show({ title: 'x', body: 'y' }), false, 'a denied permission is not asked again and shows nothing')
 
   const thrown = createNotifyPopup({
     Notification: Object.assign(function FakeNotification() {
       throw new Error('blocked')
     }, { permission: 'granted' }),
   })
-  assert.equal(thrown.show('x', 'y'), false, 'a refusing constructor is caught')
+  assert.equal(thrown.show({ title: 'x', body: 'y' }), false, 'a refusing constructor is caught')
 
   const asks = createNotifyPopup({
     Notification: Object.assign(function FakeNotification() {}, {
@@ -4951,6 +4971,9 @@ function recordingNotification(permission, behaviour) {
   const api = function FakeNotification(title, options) {
     if (behaviour === 'throw') throw new Error('blocked by policy')
     shown.push({ title, options })
+    const instance = shown.at(-1)
+    instance.close = () => { instance.closed = (instance.closed ?? 0) + 1 }
+    return instance
   }
   api.permission = permission
   api.requestPermission = async () => permission
@@ -5109,6 +5132,573 @@ function recordingNotification(permission, behaviour) {
   }
 }
 
+// 57 — what the notification says, and what clicking it does.
+{
+  const t = dictionaryOf('en')
+
+  // --- the title: the session's own name, or one honest sentence ------------
+  assert.equal(notifyTitleText('', t), 'Session finished', 'no title is not an invented title')
+  assert.equal(notifyTitleText('   ', t), 'Session finished')
+  assert.equal(notifyTitleText(undefined, t), 'Session finished')
+  assert.equal(notifyTitleText('  Refactor the parser  ', t), 'Refactor the parser', 'trimmed')
+  assert.equal(notifyTitleText('Fix\r\nthe\tparser', t), 'Fix the parser', 'newlines and tabs collapse')
+  const longTitle = 'Refactor the streaming parser and its tests before the release'
+  const cutTitle = notifyTitleText(longTitle, t)
+  assert.ok(cutTitle.length <= NOTIFY_TITLE_MAX + 1, `a long title is cut with an ellipsis (${cutTitle.length})`)
+  assert.ok(cutTitle.endsWith('…'), 'with a real ellipsis')
+  assert.equal(longTitle.startsWith(cutTitle.slice(0, -1).trim()), true, 'and it is a prefix, not a paraphrase')
+  assert.equal(cutTitle.includes('  '), false, 'never a double space at the cut')
+
+  // --- the body: the turn's first line, or the plain sentence ---------------
+  assert.equal(notifyBodyText('', t), 'The turn finished. Open it to read the result.', 'no text, the honest sentence')
+  assert.equal(notifyBodyText(undefined, t), 'The turn finished. Open it to read the result.')
+  assert.equal(notifyBodyText('  ', t), 'The turn finished. Open it to read the result.')
+  assert.equal(
+    notifyBodyText('Done. I fixed the parser and\n\nleft the tests alone.', t),
+    'Done. I fixed the parser and left the tests alone.',
+    'the first line, collapsed: no newlines reach the popup',
+  )
+  const longBody = 'I rewrote the streaming parser so that a torn zstd frame is reported instead of guessed at, and added a matrix of shapes to the suite.'.repeat(2)
+  const cutBody = notifyBodyText(longBody, t)
+  assert.ok(cutBody.length <= NOTIFY_BODY_MAX + 1, `a long body is cut (${cutBody.length})`)
+  assert.ok(cutBody.endsWith('…'))
+  assert.equal(cutBody.includes('  '), false, 'and it is one clean line')
+
+  // Code points, not UTF-16 units: a surrogate pair is never split.
+  const emoji = notifyClampText('😀'.repeat(80), 10)
+  assert.equal([...emoji].length, 11, 'ten code points and the ellipsis')
+  assert.equal([...notifyClampText('字'.repeat(80), 6)].length, 7, 'and the same for CJK')
+  assert.equal(notifyClampText('', 20), '')
+  assert.equal(notifyClampText(undefined, 20), '')
+  assert.equal(notifyClampText('short', 20), 'short', 'nothing is cut when it fits')
+  assert.equal(notifyClampText('a b c d e f', 4), 'a b…', 'it cuts at the last space inside the limit')
+  assert.equal(notifyClampText('abcdefgh', 4), 'abcd…', 'and hard-cuts when there is no space to cut at')
+
+  // --- the title source: the list projection the sidebar shows ---------------
+  const rows = { list: { getSnapshot: () => ({ byId: { s1: { title: '  Refactor the parser ' }, s2: { title: '' } } }) } }
+  assert.equal(notifySessionTitle(rows, 's1'), 'Refactor the parser')
+  assert.equal(notifySessionTitle(rows, 's2'), '')
+  assert.equal(notifySessionTitle(rows, 'missing'), '')
+  assert.equal(notifySessionTitle(undefined, 's1'), '', 'no sessions service means no title')
+  assert.equal(
+    notifySessionTitle({ list: { getSnapshot() { throw new Error('refused') } } }, 's1'),
+    '',
+    'a refusing projection is not a crash',
+  )
+
+  // --- the body read: capped, never able to delay or suppress the sound -----
+  {
+    const sentence = 'The turn finished. Open it to read the result.'
+    assert.deepEqual(
+      await runNotifyText({ t }),
+      { body: sentence, title: '' },
+      'no reader, the sentence',
+    )
+    assert.deepEqual(await runNotifyText({ t, read: () => 'Fixed the parser.' }), { body: 'Fixed the parser.', title: '' })
+    assert.equal(
+      (await runNotifyText({ t, read: () => { throw new Error('read failed') } })).body,
+      sentence,
+      'a failed read is the sentence, not an error',
+    )
+    assert.equal(
+      (await runNotifyText({ t, read: () => 42 })).body,
+      sentence,
+      'a reader that answers a non-string is not content',
+    )
+    // A reader may answer the Host's shape, and its title comes back with it.
+    assert.deepEqual(
+      await runNotifyText({ t, read: () => ({ text: 'I fixed the parser.', title: '  Refactor the parser  ' }) }),
+      { body: 'I fixed the parser.', title: 'Refactor the parser' },
+      'the reader carries a title alongside the text',
+    )
+    assert.equal(
+      (await runNotifyText({ t, read: () => ({ text: '', title: 'Refactor' }) })).body,
+      sentence,
+      'a title without text is still no body',
+    )
+    const started = Date.now()
+    const slow = await runNotifyText({ t, timeoutMs: 5, read: () => new Promise(() => {}) })
+    assert.equal(slow.body, sentence, 'a hung read times out')
+    assert.equal(slow.title, '')
+    assert.ok(Date.now() - started < 1000, 'and the cap is the ceiling, not the read')
+  }
+
+  // --- the click: one open, one close, no throw -----------------------------
+  {
+    const writes = []
+    const opened = []
+    const log = payload => writes.push(payload)
+    const okay = notifyOpenSession({
+      sessionId: 's1',
+      open: id => opened.push(id),
+      focus: () => opened.push('focus'),
+      log,
+    })
+    assert.deepEqual(okay, { opened: true, sessionId: 's1', focused: true })
+    assert.deepEqual(opened, ['focus', 's1'], 'the window is focused, then the conversation opens')
+    assert.deepEqual(writes.at(-1), { phase: 'opened', turn: 's1' })
+
+    // A missing id navigates nowhere, and says so.
+    opened.length = 0
+    const absent = notifyOpenSession({ sessionId: '', open: id => opened.push(id), focus: () => opened.push('focus'), log })
+    assert.equal(absent.opened, false)
+    assert.equal(absent.reason, 'no-session')
+    assert.deepEqual(opened, [], 'no focus, no navigation')
+    assert.equal(writes.at(-1).phase, 'blocked')
+
+    // No workspace: a failure breadcrumb, no throw, no fallback navigation.
+    const nowhere = notifyOpenSession({ sessionId: 's2', focus: () => {}, log })
+    assert.equal(nowhere.opened, false)
+    assert.equal(nowhere.reason, 'no-workspace')
+    assert.equal(writes.at(-1).phase, 'failed')
+    assert.equal(writes.at(-1).reason, 'no-workspace')
+
+    // A throwing opener is caught.
+    const threw = notifyOpenSession({
+      sessionId: 's3',
+      open: () => {
+        throw new Error('no such session')
+      },
+      focus: () => {},
+      log,
+    })
+    assert.equal(threw.opened, false)
+    assert.equal(threw.reason, 'threw')
+    assert.equal(writes.at(-1).reason, 'no such session')
+
+    // A refusing promise is caught too, and never becomes an unhandled rejection.
+    const rejecting = notifyOpenSession({
+      sessionId: 's4',
+      open: () => Promise.reject(new Error('gone')),
+      focus: () => {},
+      log,
+    })
+    assert.equal(rejecting.opened, true, 'the call was made')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(writes.at(-1).reason, 'gone')
+
+    // A window that refuses to focus is not an error.
+    const deaf = notifyOpenSession({
+      sessionId: 's5',
+      open: () => {},
+      focus: () => {
+        throw new Error('denied')
+      },
+      log,
+    })
+    assert.equal(deaf.opened, true)
+    assert.equal(deaf.focused, false)
+  }
+
+  // --- the popup wires the click: once, and it closes itself ---------------
+  {
+    const instances = []
+    const api = function FakeNotification(title, options) {
+      instances.push({ title, options, closed: 0, onclick: null, onclose: null })
+      const instance = instances.at(-1)
+      instance.close = () => {
+        instance.closed++
+      }
+      return instance
+    }
+    api.permission = 'granted'
+    api.requestPermission = async () => 'granted'
+    const popup = createNotifyPopup({ Notification: api })
+    let clicks = 0
+    let closes = 0
+    assert.equal(popup.show({ title: 'Refactor', body: 'Fixed.', onClick: () => { clicks++ }, onClose: () => { closes++ } }), true)
+    assert.equal(instances.length, 1)
+    assert.equal(instances[0].options.silent, true, 'still silent')
+    instances[0].onclick()
+    instances[0].onclick()
+    assert.equal(clicks, 1, 'a double click opens once')
+    assert.equal(instances[0].closed, 1, 'and the popup closes itself')
+    instances[0].onclose()
+    assert.equal(closes, 1, 'the close handler ran')
+    assert.equal(instances[0].onclick, null, 'no listener is left behind')
+
+    // A second popup replaces the first rather than stacking.
+    popup.show({ title: 'Two', body: 'second' })
+    assert.equal(instances[0].closed, 1, 'the previous one was closed')
+    popup.show({ title: 'Three', body: 'third' })
+    assert.equal(instances.length, 3)
+    assert.equal(instances[1].closed, 1, 'and the one before that')
+  }
+
+  // --- and one finished turn is still one sound, text or no text ----------
+  {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    harness.notifier.setSettings(notifyDefaults())
+    // A reader that never answers must not change the play count or the body.
+    const slowRead = () => new Promise(() => {})
+    const notifier = createNotifier({
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({ Notification: api }),
+      settings: notifyDefaults(),
+      log: () => {},
+      t,
+      readText: slowRead,
+      textTimeoutMs: 5,
+      openSession: () => {},
+      focus: () => {},
+    })
+    const plays = harness.plays
+    await notifier.fire({ sessionId: 's9', title: 'Refactor the parser' })
+    assert.equal(plays(), 1, 'a slow read still plays exactly once')
+    assert.equal(api.shown.length, 1, 'and still shows the popup')
+    assert.equal(api.shown[0].options.body, 'The turn finished. Open it to read the result.', 'with the fallback sentence')
+    assert.equal(api.shown[0].title, 'Refactor the parser', 'and the session title')
+
+    // With a reader that answers, the line is the turn's own text.
+    const fast = createNotifier({
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({ Notification: api }),
+      settings: notifyDefaults(),
+      log: () => {},
+      t,
+      readText: () => 'I fixed the parser and left the tests alone.',
+      openSession: () => {},
+      focus: () => {},
+    })
+    await fast.fire({ sessionId: 's9', title: 'Refactor the parser' })
+    assert.equal(api.shown.at(-1).options.body, 'I fixed the parser and left the tests alone.')
+    assert.equal(plays(), 2, 'one play per fire, still')
+  }
+}
+
+// 58 — the Host reader: one bounded read, and every way it can fail.
+{
+  const t = dictionaryOf('en')
+  const sentence = 'The turn finished. Open it to read the result.'
+  const written = []
+  const log = payload => written.push(payload)
+
+  /** A fetch-shaped fake whose answer is scripted per case. */
+  const answerWith = (body, options = {}) => async (url, init) => {
+    written.push({ url, init })
+    if (options.reject === true) throw new Error('network down')
+    return {
+      ok: options.ok !== false,
+      status: options.status ?? 200,
+      json: options.jsonThrows === true
+        ? async () => {
+          throw new Error('not JSON')
+        }
+        : async () => body,
+    }
+  }
+
+  // The happy answer: text and title, from the route the Host serves.
+  {
+    const seen = []
+    const read = await readNotifyLast('s 1/2', {
+      fetch: async (url, init) => {
+        seen.push({ url, init })
+        return { ok: true, status: 200, json: async () => ({ ok: true, sessionId: 's 1/2', text: 'I fixed the parser and left the tests alone.', title: ' Refactor the parser ', truncated: true }) }
+      },
+      log,
+    })
+    assert.deepEqual(read, { text: 'I fixed the parser and left the tests alone.', title: 'Refactor the parser' })
+    assert.equal(seen[0].url, 'api/edh.notify/last?sessionId=s%201%2F2', 'the id is encoded into the route, document-relative')
+    assert.equal(seen[0].init.headers.accept, 'application/json')
+  }
+
+  // Every failure answers empty rather than throwing.
+  const failures = [
+    ['a refusal body', answerWith({ ok: false, reason: 'no-session', message: 'gone' }), 'no-session'],
+    ['an HTTP error', answerWith({}, { ok: false, status: 500 }), '500'],
+    ['a body that is not JSON', answerWith(undefined, { jsonThrows: true }), 'not JSON'],
+    ['a rejected fetch', answerWith(undefined, { reject: true }), 'network down'],
+    ['an answer that is not an object', answerWith('nope'), 'refused'],
+    ['no text in the answer', answerWith({ ok: true, text: '' }), undefined],
+  ]
+  for (const [label, request, reason] of failures) {
+    written.length = 0
+    const read = await readNotifyLast('s1', { fetch: request, log })
+    assert.deepEqual(read, { text: '', title: '' }, `${label} answers empty`)
+    if (reason !== undefined) {
+      assert.equal(written.at(-1).phase, 'failed', `${label} is recorded`)
+      assert.equal(written.at(-1).reason, reason, `${label} records the Host's own reason`)
+    }
+  }
+
+  // No id, or no fetch, is a quiet empty answer and no request at all.
+  {
+    let calls = 0
+    const counted = async () => {
+      calls++
+      return { ok: true, status: 200, json: async () => ({ ok: true, text: 'x' }) }
+    }
+    assert.deepEqual(await readNotifyLast('', { fetch: counted }), { text: '', title: '' })
+    assert.equal(calls, 0, 'no id, no request')
+    assert.deepEqual(await readNotifyLast('s1', { fetch: undefined }), { text: '', title: '' })
+    assert.deepEqual(await readNotifyLast(undefined, { fetch: counting2() }), { text: '', title: '' })
+    function counting2() {
+      return async () => {
+        calls++
+        return { ok: true, status: 200, json: async () => ({ ok: true, text: 'x' }) }
+      }
+    }
+    assert.equal(calls, 0)
+  }
+
+  // The sentence is the fallback for every shape, through the engine itself.
+  const readCases = [
+    ['the Host answer', answerWith({ ok: true, text: 'I fixed the parser.' }), 'I fixed the parser.'],
+    ['a refusal body', answerWith({ ok: false, reason: 'no-session' }), sentence],
+    ['an HTTP error', answerWith({}, { ok: false, status: 500 }), sentence],
+    ['a non-JSON body', answerWith(undefined, { jsonThrows: true }), sentence],
+    ['a rejected fetch', answerWith(undefined, { reject: true }), sentence],
+    ['an empty text', answerWith({ ok: true, text: '' }), sentence],
+    ['a hung fetch', () => new Promise(() => {}), sentence],
+  ]
+  for (const [label, request, expected] of readCases) {
+    const api = recordingNotification('granted')
+    const harness = countingNotifier({ popup: createNotifyPopup({ Notification: api }) })
+    const notifier = createNotifier({
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({ Notification: api }),
+      settings: notifyDefaults(),
+      log,
+      t,
+      readText: id => readNotifyLast(id, { fetch: request, timeoutMs: 20 }),
+      textTimeoutMs: 40,
+      openSession: () => {},
+      focus: () => {},
+    })
+    const started = Date.now()
+    await notifier.fire({ sessionId: 's1', title: 'Refactor the parser' })
+    assert.equal(harness.plays(), 1, `${label}: exactly one play`)
+    assert.equal(api.shown.length, 1, `${label}: one popup`)
+    assert.equal(api.shown.at(-1).options.body, expected, `${label}: the expected body`)
+    assert.equal(api.shown.at(-1).options.silent, true, `${label}: still silent`)
+    assert.ok(Date.now() - started < 2000, `${label}: bounded, never the read's own latency`)
+  }
+
+  // The Host's title is the second source, and the sentence the last resort.
+  {
+    const withHostTitle = recordingNotification('granted')
+    const harness = countingNotifier({
+      popup: createNotifyPopup({ Notification: withHostTitle }),
+      settings: notifyDefaults(),
+    })
+    const notifier = createNotifier({
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({ Notification: withHostTitle }),
+      settings: notifyDefaults(),
+      log,
+      t,
+      readText: async () => ({ text: 'I fixed the parser.', title: 'Host title' }),
+      openSession: () => {},
+      focus: () => {},
+    })
+    // No title from the list projection: the Host's one is used.
+    await notifier.fire({ sessionId: 's1', title: '' })
+    assert.equal(withHostTitle.shown.at(-1).title, 'Host title', 'the Host title fills the gap')
+    // A list title wins over the Host's.
+    await notifier.fire({ sessionId: 's1', title: 'From the sidebar' })
+    assert.equal(withHostTitle.shown.at(-1).title, 'From the sidebar', 'the sidebar title is preferred')
+    // Neither: the plain sentence, never an empty title.
+    const bare = createNotifier({
+      audio: harness.notifier.audio,
+      popup: createNotifyPopup({ Notification: withHostTitle }),
+      settings: notifyDefaults(),
+      log,
+      t,
+      readText: async () => ({ text: '', title: '' }),
+      openSession: () => {},
+      focus: () => {},
+    })
+    await bare.fire({ sessionId: 's1', title: '' })
+    assert.equal(withHostTitle.shown.at(-1).title, 'Session finished', 'and the honest fallback title')
+    assert.equal(withHostTitle.shown.at(-1).options.body, sentence, 'with the honest fallback body')
+  }
+}
+
+// 59 — the sound that fires is the sound that was stored, in every scenario.
+{
+  const t = dictionaryOf('en')
+  const WINDOWS = 'Windows Notify System Generic'
+
+  /** A counting audio stub that records every id it was asked to play. */
+  const audioFor = (options = {}) => {
+    const played = []
+    return {
+      played,
+      audio: {
+        playTone: (tone, volume) => {
+          played.push({ id: tone.id, kind: 'tone', volume })
+          return options.toneOk !== false
+        },
+        playSound: async id => {
+          played.push({ id, kind: 'system' })
+          return options.systemOk !== false
+        },
+        close() {},
+      },
+    }
+  }
+  const storeOf = settings => fakeStore({ [NOTIFY_SETTINGS_KEY]: JSON.stringify(settings) })
+  /** An engine over one store, exactly as the watcher builds it. */
+  const engineOver = (store, audio) => createNotifier({
+    audio,
+    popup: createNotifyPopup({}),
+    settings: readNotifySettings(store),
+    storage: store,
+    log: () => {},
+    t,
+    openSession: () => {},
+    focus: () => {},
+  })
+
+  // 1 & 2. The default at install, then a save, then a second save: each fire
+  //        plays what is stored at that moment, with no reload and no reopen.
+  {
+    const store = storeOf(notifyDefaults())
+    const { audio, played } = audioFor()
+    const engine = engineOver(store, audio)
+    await engine.fire({ sessionId: 's1', title: '' })
+    assert.deepEqual(played.at(-1), { id: 'chime', kind: 'tone', volume: 60 }, 'the default before any save')
+
+    store.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify({ ...notifyDefaults(), sound: 'two-tone', volume: 35 }))
+    await engine.fire({ sessionId: 's1', title: '' })
+    assert.deepEqual(played.at(-1), { id: 'two-tone', kind: 'tone', volume: 35 }, 'a sound saved after install is what fires')
+
+    store.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify({ ...notifyDefaults(), sound: 'blip', volume: 20 }))
+    await engine.fire({ sessionId: 's1', title: '' })
+    assert.deepEqual(played.at(-1), { id: 'blip', kind: 'tone', volume: 20 }, 'and a later change takes effect on the next fire')
+    assert.equal(played.filter(entry => entry.id === 'chime').length, 1, 'the default played exactly once, before the save')
+  }
+
+  // 3 & 4. A page that was never opened, and another tab's write: no catalogue,
+  //        no page state, and still the stored Windows sound — not a default tone.
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: WINDOWS, volume: 40 })
+    const { audio, played } = audioFor()
+    const engine = engineOver(store, audio)
+    assert.equal(engine.catalog().available, false, 'the engine never loaded a catalogue')
+    await engine.fire({ sessionId: 's2', title: '' })
+    assert.deepEqual(played.at(-1), { id: WINDOWS, kind: 'system' }, 'the stored Windows id plays, catalogue or not')
+
+    // "Another tab": the store changes underneath a watcher that holds no cache.
+    store.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify({ ...notifyDefaults(), sound: 'blip', volume: 15 }))
+    await engine.fire({ sessionId: 's2', title: '' })
+    assert.deepEqual(played.at(-1), { id: 'blip', kind: 'tone', volume: 15 }, 'a cross-tab write is honoured by the next fire')
+  }
+
+  // 5. A suspended context resumes, and the stored sound is what comes out.
+  {
+    const fake = fakeAudioContext()
+    const liveAudio = createNotifyAudio({ AudioContext: class { constructor() { Object.assign(this, fake.context) } } })
+    const store = storeOf({ ...notifyDefaults(), sound: 'blip', volume: 50 })
+    const engine = engineOver(store, liveAudio)
+    await engine.fire({ sessionId: 's3', title: '' })
+    assert.equal(fake.counters.resume, 1, 'the suspended context was resumed')
+    assert.equal(fake.counters.oscillator, 1, 'and the blip is what started')
+  }
+
+  // 6. A failed WAV fetch plays nothing at all — never a fallback tone.
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: WINDOWS })
+    const { audio, played } = audioFor({ systemOk: false })
+    const engine = engineOver(store, audio)
+    const outcome = await engine.fire({ sessionId: 's4', title: '' })
+    assert.deepEqual(played, [{ id: WINDOWS, kind: 'system' }], 'one attempt, on the stored id')
+    assert.equal(played.some(entry => entry.kind === 'tone'), false, 'no substituted tone')
+    assert.equal(outcome.played, false, 'and the failure is reported')
+  }
+
+  // 7. Test and a fire resolve the same id for the same stored settings.
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: 'two-tone', volume: 45 })
+    const { audio, played } = audioFor()
+    const engine = engineOver(store, audio)
+    const api = recordingNotification('granted')
+    await runNotifyTest({
+      notifier: engine,
+      settings: notifyDefaults(), // deliberately not what is stored
+      catalog: { available: false, windows: [], note: '' },
+      title: 'x',
+      body: 'y',
+      requestPermission: async () => api.requestPermission(),
+    })
+    const fromTest = played.at(-1)
+    await engine.fire({ sessionId: 's5', title: '' })
+    const fromFire = played.at(-1)
+    assert.deepEqual(fromTest, fromFire, 'Test and a fire play the identical sound')
+    assert.equal(fromTest.id, 'two-tone', 'the stored one, not the page-local default')
+  }
+
+  // 8. Idempotent: two fires in a row resolve the same values.
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: 'blip', volume: 25 })
+    const { audio, played } = audioFor()
+    const engine = engineOver(store, audio)
+    await engine.fire({ sessionId: 's6', title: '' })
+    await engine.fire({ sessionId: 's6', title: '' })
+    assert.deepEqual(played, [
+      { id: 'blip', kind: 'tone', volume: 25 },
+      { id: 'blip', kind: 'tone', volume: 25 },
+    ], 'the same resolved values twice')
+  }
+
+  // 9. An unknown stored id is attempted as stored — no rewriting, no tone.
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: 'Windows Long Gone' })
+    const { audio, played } = audioFor()
+    const engine = engineOver(store, audio)
+    await engine.fire({ sessionId: 's7', title: '' })
+    assert.deepEqual(played, [{ id: 'Windows Long Gone', kind: 'system' }], 'the stored id, as stored')
+  }
+
+  // 10. And through the watcher itself: a save between two finished turns is
+  //     heard by the next one, with no reload (the reported bug, end to end).
+  {
+    const store = storeOf({ ...notifyDefaults(), sound: 'chime' })
+    const { audio, played } = audioFor()
+    const handlers = new Map()
+    const ctx = {
+      effect: fn => {
+        fn()
+        return () => {}
+      },
+      remote: {
+        $on(event, handler) {
+          handlers.set(event, handler)
+          return () => handlers.delete(event)
+        },
+      },
+    }
+    const controller = {
+      getSnapshot: () => ({ status: 'ready', moduleStates: { [NOTIFY_MODULE]: true } }),
+      subscribe: () => () => {},
+    }
+    installNotifier(ctx, controller, {
+      audio,
+      popup: createNotifyPopup({}),
+      storage: store,
+      scope: {},
+      hidden: () => true,
+      t,
+      title: () => '',
+    })
+    const status = handlers.get('api-session/status')
+    status('turn-1', true)
+    status('turn-1', false)
+    assert.deepEqual(played.at(-1).id, 'chime', 'the stored default')
+
+    // The reader saves a new sound on the page, which writes storage.
+    store.setItem(NOTIFY_SETTINGS_KEY, JSON.stringify({ ...notifyDefaults(), sound: 'blip', volume: 30 }))
+    status('turn-2', true)
+    status('turn-2', false)
+    assert.deepEqual(played.at(-1), { id: 'blip', kind: 'tone', volume: 30 }, 'the very next fire uses the saved sound')
+  }
+}
+
+console.log('edh notify: stored-sound fidelity checks passed')
+console.log('edh notify: host-read fallback checks passed')
+console.log('edh notify: title, body, and click checks passed')
 console.log('edh notify: single-sound and popup-silence checks passed')
 console.log('edh notify: settings, watcher, and sound checks passed')
 console.log('edh mobile: layer, stylesheet, and QR checks passed')

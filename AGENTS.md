@@ -304,6 +304,18 @@ Audio, and the watcher that decides when to fire).
 - **WAVs are streamed, never buffered** (`createReadStream` → `Readable.toWeb`),
   ~200 KB each, `private, max-age=86400`. `audio/wav` is deliberately absent from
   the proxy's compressible list, so Remote passes the bytes through untouched.
+- **The notification body is a bounded tail read, never a transcript fetch.**
+  `GET /api/edh.notify/last?sessionId=…` reads the last 256 KB of the Session's
+  Zstandard artifact, splits it into frames with `usage.js`'s `splitZstdFrames`
+  (the window usually starts mid-frame, so the boundary is found by proposing each
+  frame magic to the structural parser and accepting only a candidate whose first
+  frame *decompresses* to newline-terminated plaintext), and walks the newest
+  frames backwards to the newest `assistant/message` that has text. `handle.read`
+  is indexed by event, so any transcript read decodes the whole log — measured on
+  this profile, the whole route answers in ~13 ms over a 16.6 MB log. The
+  `sessionId` is resolved through `ctx.sessionPersistence.locate({ id, cwd })`
+  (the `cwd` comes from `list()`'s header), never joined onto a path; a 404 for an
+  unknown id, `unavailable` without the service, `error` when it is slow.
 - **Browser popups need a secure context.** The Notification API refuses a plain
   `http://` origin, so the Remote page on a LAN address gets *sound* (through Web
   Audio, which has no such rule) but no system notifications. That is a browser

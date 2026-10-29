@@ -185,6 +185,8 @@ window.__ModuleLoader__.load({
       notifyToneTwoHint: 'Two notes, rising.',
       notifyToneBlip: 'Blip',
       notifyToneBlipHint: 'One short note.',
+      notifyTitleFallback: 'Session finished',
+      notifyBodyFallback: 'The turn finished. Open it to read the result.',
       notifyPopupTitle: 'Turn finished',
       notifyPopupBody: 'The conversation is ready.',
       remotePhoneHint: 'The phone must be on the same network as this computer.',
@@ -413,6 +415,8 @@ window.__ModuleLoader__.load({
       notifyToneTwoHint: '两个音，上行。',
       notifyToneBlip: '短哔',
       notifyToneBlipHint: '一个短促的音。',
+      notifyTitleFallback: '会话已结束',
+      notifyBodyFallback: '这一轮已结束，打开对话查看结果。',
       notifyPopupTitle: '对话已结束',
       notifyPopupBody: '这轮对话已就绪。',
       remotePhoneHint: '手机必须和这台电脑在同一个网络上。',
@@ -6112,6 +6116,206 @@ window.__ModuleLoader__.load({
       },
     ]
 
+    /** The longest notification title worth showing on a lock screen. */
+    const NOTIFY_TITLE_MAX = 48
+
+    /** The longest body line worth showing. */
+    const NOTIFY_BODY_MAX = 120
+
+    /** How long a text read may take before the popup goes ahead without it. */
+    const NOTIFY_TEXT_TIMEOUT_MS = 1200
+
+    /**
+     * One line: whitespace collapsed, then trimmed on a word boundary.
+     *
+     * Counted in code points, not UTF-16 units, so a title in Chinese or an emoji
+     * is trimmed where the reader sees characters rather than where JS splits a
+     * surrogate pair.
+     * @param text - anything that should become one line.
+     * @param limit - the longest line to keep.
+     */
+    function notifyClampText(text, limit) {
+      const collapsed = String(text ?? '').replace(/\s+/gu, ' ').trim()
+      const characters = [...collapsed]
+      if (characters.length === 0) return ''
+      if (characters.length <= limit) return collapsed
+      const head = characters.slice(0, limit)
+      const space = head.lastIndexOf(' ')
+      const cut = space > Math.floor(limit / 2) ? head.slice(0, space) : head
+      const trimmed = cut.join('').replace(/[\s,;:.!?…-]+$/u, '')
+      return `${trimmed === '' ? head.join('') : trimmed}…`
+    }
+
+    /**
+     * The popup's title: the session's own title, or one honest sentence.
+     * @param title - the session title from the list projection, may be empty.
+     * @param t - the dictionary's translate function.
+     */
+    function notifyTitleText(title, t) {
+      const trimmed = notifyClampText(title, NOTIFY_TITLE_MAX)
+      if (trimmed !== '') return trimmed
+      // A notifier built without a dictionary (the suite, or a headless use)
+      // still gets one plain sentence rather than a thrown error.
+      return typeof t === 'function' ? t('notifyTitleFallback') : 'Session finished'
+    }
+
+    /**
+     * The popup's body: the first line of the turn's last assistant message, or
+     * a plain sentence when the turn produced no text at all. Never empty, and
+     * never a tool name dressed up as content.
+     * @param text - the assistant text, may be empty.
+     * @param t - the dictionary's translate function.
+     */
+    function notifyBodyText(text, t) {
+      const trimmed = notifyClampText(text, NOTIFY_BODY_MAX)
+      if (trimmed !== '') return trimmed
+      return typeof t === 'function' ? t('notifyBodyFallback') : 'The turn finished. Open it to read the result.'
+    }
+
+    /** The Host route that reads the newest assistant line of one session. */
+    const NOTIFY_LAST_ROUTE = 'api/edh.notify/last'
+
+    /**
+     * Read the last assistant text for one finished session from the Host.
+     *
+     * This is the only round-trip in the notification path, so it is bounded on
+     * both sides: an abort signal at the same cap the caller races, and every
+     * failure — a refusal, a rejected fetch, a body that is not JSON — ends as an
+     * empty answer rather than an error. A generic body is better than a
+     * notification that never appears, and the sound has already played.
+     * @param sessionId - the session that just finished.
+     * @param options - fetch, the cap, and a log.
+     * @returns `{ text, title }`, both possibly empty.
+     */
+    async function readNotifyLast(sessionId, options = {}) {
+      const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+      if (id === '') return { text: '', title: '' }
+      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+      if (typeof request !== 'function') return { text: '', title: '' }
+      const cap = Number(options.timeoutMs)
+      const timeoutMs = Number.isFinite(cap) && cap > 0 ? cap : NOTIFY_TEXT_TIMEOUT_MS
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+      try {
+        const response = await request(`${NOTIFY_LAST_ROUTE}?sessionId=${encodeURIComponent(id)}`, {
+          headers: { accept: 'application/json' },
+          ...(signal === undefined ? {} : { signal }),
+        })
+        if (response === null || typeof response !== 'object' || response.ok !== true) {
+          options.log?.({ phase: 'failed', action: 'last', reason: String(response?.status ?? 'no-response') })
+          return { text: '', title: '' }
+        }
+        const answer = await response.json()
+        if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+          options.log?.({ phase: 'failed', action: 'last', reason: String(answer?.reason ?? 'refused') })
+          return { text: '', title: '' }
+        }
+        return {
+          text: typeof answer.text === 'string' ? answer.text : '',
+          title: typeof answer.title === 'string' ? answer.title.trim() : '',
+        }
+      } catch (error) {
+        options.log?.({ phase: 'failed', action: 'last', reason: messageOf(error) })
+        return { text: '', title: '' }
+      }
+    }
+
+    /**
+     * Resolve the body against a reader that may be slow or may fail.
+     *
+     * The read is capped: a notification that arrives late is worse than one that
+     * arrives promptly with a plain sentence, and the sound has already played by
+     * the time this runs. A rejected read, a hung read and an absent reader all
+     * end in the same honest sentence.
+     * @param options - the reader, the cap, and the dictionary.
+     */
+    async function runNotifyText(options = {}) {
+      const t = typeof options.t === 'function' ? options.t : key => key
+      const fallback = { body: notifyBodyText('', t), title: '' }
+      const read = options.read
+      if (typeof read !== 'function') return fallback
+      const cap = Number(options.timeoutMs)
+      const timeoutMs = Number.isFinite(cap) && cap > 0 ? cap : NOTIFY_TEXT_TIMEOUT_MS
+      let timer
+      try {
+        const answer = await Promise.race([
+          Promise.resolve().then(() => read()),
+          new Promise(resolve => {
+            timer = setTimeout(() => resolve(''), timeoutMs)
+          }),
+        ])
+        // A reader may answer a string, or `{ text, title }` from the Host route.
+        const text = typeof answer === 'string'
+          ? answer
+          : answer !== null && typeof answer === 'object' ? answer.text : ''
+        const title = answer !== null && typeof answer === 'object' && typeof answer.title === 'string'
+          ? answer.title.trim()
+          : ''
+        return { body: notifyBodyText(typeof text === 'string' ? text : '', t), title }
+      } catch (error) {
+        return fallback
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+
+    /** The Session's title from the list projection the sidebar itself shows. */
+    function notifySessionTitle(sessions, sessionId) {
+      const id = typeof sessionId === 'string' ? sessionId : ''
+      if (id === '') return ''
+      try {
+        const row = sessions?.list?.getSnapshot?.()?.byId?.[id]
+        if (row !== undefined && typeof row.title === 'string') return row.title.trim()
+      } catch (error) {
+        // The projection is diagnostic here; an unreadable list means no title.
+      }
+      return ''
+    }
+
+    /**
+     * What one click on the popup does: focus the window, open that conversation.
+     *
+     * Every step is guarded, because this runs from a click inside a native
+     * notification where a throw has nowhere to go. A missing id navigates
+     * nowhere and says why; an absent or refusing workspace records a failure and
+     * stays put — it never falls back to some other conversation.
+     * @param options - the session id, the opener, the focus attempt, and a log.
+     * @returns what happened.
+     */
+    function notifyOpenSession(options = {}) {
+      const log = typeof options.log === 'function' ? options.log : () => {}
+      const sessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : ''
+      if (sessionId === '') {
+        log({ phase: 'blocked', reason: 'no-session' })
+        return { opened: false, reason: 'no-session' }
+      }
+      let focused = false
+      try {
+        if (typeof options.focus === 'function') {
+          options.focus()
+          focused = true
+        }
+      } catch (error) {
+        // A browser that refuses to focus a window is not an error.
+      }
+      if (typeof options.open !== 'function') {
+        log({ phase: 'failed', action: 'open', reason: 'no-workspace', turn: sessionId })
+        return { opened: false, reason: 'no-workspace', focused }
+      }
+      try {
+        const answer = options.open(sessionId)
+        if (answer !== null && typeof answer === 'object' && typeof answer.catch === 'function') {
+          answer.catch(error => log({ phase: 'failed', action: 'open', reason: messageOf(error), turn: sessionId }))
+        }
+        log({ phase: 'opened', turn: sessionId })
+        return { opened: true, sessionId, focused }
+      } catch (error) {
+        log({ phase: 'failed', action: 'open', reason: messageOf(error), turn: sessionId })
+        return { opened: false, reason: 'threw', focused }
+      }
+    }
+
     /** The defaults, and the only values a junk store can fall back to. */
     function notifyDefaults() {
       return { enabled: true, backgroundOnly: true, sound: 'chime', volume: 60 }
@@ -6252,20 +6456,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The sound to play, resolved against what is actually available.
+     * The sound one settings object names.
      *
-     * A stored Windows id from a machine that no longer has that file is a stale
-     * setting, not a reason to be silent: it falls back to the default tone.
+     * **Never a substitution.** The id that plays is the id that was stored; the
+     * kind is derived from the id itself, not from the Host's catalogue. The
+     * catalogue says which rows to *offer*, and gating playback on it meant a
+     * page that had never been opened — and so never loaded the list — turned a
+     * chosen Windows sound into the default tone. An id the Host no longer has
+     * fails at the fetch and stays quiet; it is never rewritten into another
+     * sound.
+     * @param settings - the current settings.
      */
-    function notifySoundFor(settings, catalog) {
+    function notifySoundFor(settings) {
       const values = settings !== null && typeof settings === 'object' ? settings : notifyDefaults()
-      const chosen = typeof values.sound === 'string' ? values.sound : ''
-      if (notifyIsTone(chosen)) return { id: chosen, kind: 'tone' }
-      const available = catalog !== null && typeof catalog === 'object' && Array.isArray(catalog.windows)
-        ? catalog.windows
-        : []
-      if (available.some(entry => entry.id === chosen)) return { id: chosen, kind: 'system' }
-      return { id: notifyDefaults().sound, kind: 'tone' }
+      const chosen = typeof values.sound === 'string' && values.sound.trim() !== ''
+        ? values.sound.trim()
+        : notifyDefaults().sound
+      return { id: chosen, kind: notifyIsTone(chosen) ? 'tone' : 'system' }
     }
 
     /**
@@ -6397,6 +6604,8 @@ window.__ModuleLoader__.load({
       const api = scope !== undefined && scope !== null && typeof scope.Notification === 'function'
         ? scope.Notification
         : undefined
+      /** The one popup currently on screen, so a second replaces it. */
+      let current
       const popup = {
         /** Whether this build has the API at all. */
         available: api !== undefined,
@@ -6428,13 +6637,64 @@ window.__ModuleLoader__.load({
          * plays its own notification sound on top of the one this page already
          * played, so one finished turn was heard as two. The popup is a visual;
          * the sound is ours, because it is the one the reader chose.
+         *
+         * One popup is live at a time: a second replaces the first, and the first
+         * click detaches both handlers before it acts, so a double click cannot
+         * open two conversations and a closed popup leaves no listener behind.
+         * @param options - `{ title, body, onClick, onClose }`.
          * @returns whether one was shown.
          */
-        show(title, body) {
+        show(options = {}) {
           if (api === undefined || popup.permission() !== 'granted') return false
+          const answered = options !== null && typeof options === 'object' ? options : {}
           try {
-            // eslint-disable-next-line no-new
-            new api(String(title ?? ''), { body: String(body ?? ''), silent: true })
+            if (current !== undefined) {
+              try {
+                current.close()
+              } catch (error) {
+                // A popup that is already gone is not an error.
+              }
+              current = undefined
+            }
+            let notification
+            try {
+              // eslint-disable-next-line no-new
+              notification = new api(String(answered.title ?? ''), {
+                body: String(answered.body ?? ''),
+                silent: true,
+              })
+            } catch (error) {
+              return false
+            }
+            let fired = false
+            const close = () => {
+              try {
+                notification.close()
+              } catch (error) {
+                // Dismissing an already-dismissed popup is not an error.
+              }
+            }
+            notification.onclick = () => {
+              if (fired) return
+              fired = true
+              try {
+                if (typeof answered.onClick === 'function') answered.onClick()
+              } catch (error) {
+                // A click handler never throws back into the browser event.
+              }
+              close()
+            }
+            notification.onclose = () => {
+              if (current === notification) current = undefined
+              notification.onclick = null
+              notification.onclose = null
+              try {
+                if (typeof answered.onClose === 'function') answered.onClose()
+              } catch (error) {
+                // Cleanup is best effort.
+              }
+            }
+            current = notification
             return true
           } catch (error) {
             return false
@@ -6444,38 +6704,66 @@ window.__ModuleLoader__.load({
       return popup
     }
 
+
     /**
      * The notifier: settings, one sound, one optional popup.
      *
      * It owns no DOM and no React: the page asks it to preview, and the watcher
      * asks it to fire. Everything it touches is injected, so the suite drives it
      * with fakes and the browser gets the real AudioContext.
-     * @param options - audio, popup, settings, log.
+     *
+     * **Storage is the source of truth for what plays.** Every resolve re-reads it
+     * and validates it, so a sound saved on the page (or in another tab) is the
+     * sound the very next fire plays — there is no snapshot taken at install time
+     * for a value that can change afterwards.
+     * @param options - audio, popup, settings, store, log.
      */
     function createNotifier(options = {}) {
       const audio = options.audio ?? createNotifyAudio({ AudioContext: options.AudioContext, log: options.log })
       const popup = options.popup ?? createNotifyPopup(options.scope)
       const log = typeof options.log === 'function' ? options.log : () => {}
+      const store = options.storage
       let settings = options.settings ?? notifyDefaults()
       let catalog = { available: false, windows: [], note: '' }
 
       const toneFor = id => NOTIFY_TONES.find(tone => tone.id === id)
 
+      /** The settings right now: storage if there is one, else what was injected. */
+      const currentSettings = () => {
+        if (store !== undefined && store !== null) settings = readNotifySettings(store)
+        return settings
+      }
+
+      /**
+       * What one fire (or one Test) plays: the stored id, its kind, its volume.
+       *
+       * Read fresh every time so the page, another tab and the watcher can never
+       * disagree, and resolved by the one function `notifySoundFor` — no caller
+       * has its own idea of which sound is "the" sound.
+       */
+      const resolveSound = () => {
+        const current = currentSettings()
+        const wanted = notifySoundFor(current)
+        return { id: wanted.id, kind: wanted.kind, volume: notifyClampVolume(current.volume) }
+      }
+
       const play = async wanted => {
-        if (wanted.kind === 'tone') return audio.playTone(toneFor(wanted.id), settings.volume)
+        if (wanted.kind === 'tone') return audio.playTone(toneFor(wanted.id), wanted.volume)
         return audio.playSound(wanted.id)
       }
 
       return {
-        settings: () => ({ ...settings }),
+        settings: () => ({ ...currentSettings() }),
         setSettings(next) {
           settings = next !== null && typeof next === 'object' ? next : notifyDefaults()
         },
-        /** Learn the Host's sound list, so a stored Windows id can resolve. */
+        /** Learn the Host's sound list, so the page can offer its rows. */
         setCatalog(next) {
           catalog = next !== null && typeof next === 'object' ? next : { available: false, windows: [], note: '' }
         },
         catalog: () => catalog,
+        /** The sound the next fire would play, resolved the way the engine does. */
+        resolveSound,
         popup,
         audio,
         /**
@@ -6483,28 +6771,60 @@ window.__ModuleLoader__.load({
          * @param id - a tone id or a Host sound id.
          */
         async preview(id) {
-          const wanted = notifySoundFor({ ...settings, sound: id }, catalog)
-          const played = (await play(wanted)) === true
+          const resolved = resolveSound()
+          const chosen = typeof id === 'string' && id.trim() !== '' ? id.trim() : resolved.id
+          const wanted = notifySoundFor({ sound: chosen })
+          const played = (await play({ ...wanted, volume: resolved.volume })) === true
           log({ phase: 'played', sound: wanted.id, kind: wanted.kind, ok: played })
           return played
         },
+
         /**
          * Fire the notification for one finished turn.
          *
-         * The caller has already decided the switches allow it; this only makes
-         * the sound and, when the browser already permitted it, one popup. A popup
-         * that cannot be shown is not a failure — it is the normal case on a phone
-         * over plain HTTP.
+         * The order is fixed and load-bearing: the sound plays first, then the
+         * text is resolved with a cap (a slow read must not delay anything that
+         * matters), then one silent popup is shown — and that popup knows which
+         * conversation it belongs to, so a click can open it. The caller has
+         * already decided the switches allow a notification; a popup that cannot
+         * be shown is normal on a phone over plain HTTP, not a failure.
+         * @param options - the session id and its title.
          * @returns what actually happened.
          */
-        async fire({ sessionId, title, body }) {
-          const wanted = notifySoundFor(settings, catalog)
+        async fire({ sessionId, title }) {
+          // 1. The sound, immediately: the stored sound, resolved fresh.
+          const wanted = resolveSound()
           const played = (await play(wanted)) === true
-          const popped = popup.show(title ?? '', body ?? '')
+          // 2. The text, capped: a late notification is worse than a plain one.
+          const read = await runNotifyText({
+            read: typeof options.readText === 'function' ? () => options.readText(sessionId) : undefined,
+            timeoutMs: options.textTimeoutMs,
+            t: options.t,
+          })
+          // The session list is the first source for the title; the Host's answer
+          // is the second, and the plain sentence is only for when both are absent.
+          const shownTitle = notifyClampText(title, NOTIFY_TITLE_MAX) !== ''
+            ? notifyClampText(title, NOTIFY_TITLE_MAX)
+            : notifyTitleText(read.title, options.t)
+          // 3. One silent popup that knows where it came from.
+          const popped = popup.show({
+            title: shownTitle,
+            body: read.body,
+            onClick: () => {
+              notifyOpenSession({
+                sessionId,
+                open: options.openSession,
+                focus: options.focus,
+                log,
+              })
+            },
+          })
           log({
             phase: 'fired',
             turn: String(sessionId ?? ''),
             sound: wanted.id,
+            kind: wanted.kind,
+            volume: wanted.volume,
             played,
             popup: popped,
           })
@@ -6538,9 +6858,13 @@ window.__ModuleLoader__.load({
       ) {
         await options.requestPermission()
       }
-      const wanted = notifySoundFor(settings, options.catalog)
+      // The same resolver the engine fires with: one source of truth for Test,
+      // a save and a fire.
+      const wanted = typeof notifier.resolveSound === 'function'
+        ? notifier.resolveSound()
+        : notifySoundFor(settings)
       const played = await notifier.preview(wanted.id)
-      const popped = notifier.popup.show(options.title ?? '', options.body ?? '')
+      const popped = notifier.popup.show({ title: options.title ?? '', body: options.body ?? '' })
       return { played: played === true, popup: popped === true, permission: notifier.popup.permission() }
     }
 
@@ -6563,7 +6887,16 @@ window.__ModuleLoader__.load({
         audio: options.audio,
         popup: options.popup ?? createNotifyPopup(scope),
         settings: readNotifySettings(store),
+        // Storage, not the snapshot above: the engine re-reads it on every play,
+        // so a sound saved on the page or in another tab is used immediately.
+        storage: store,
         log: notifyWrite,
+        // The title, the body reader and the click target all come from the
+        // caller, so the engine stays pure and the page supplies the session text.
+        t: options.t,
+        readText: options.readText,
+        openSession: options.openSession,
+        focus: options.focus,
       })
       const state = { running: {}, fired: {} }
       let unsubscribe
@@ -6593,8 +6926,14 @@ window.__ModuleLoader__.load({
               })
               return
             }
+            let title = ''
+            try {
+              title = typeof options.title === 'function' ? String(options.title(sessionId) ?? '') : ''
+            } catch (error) {
+              // A title is nice to have; the sound is not.
+            }
             void notifier
-              .fire({ sessionId, title: options.title?.() ?? '', body: options.body?.() ?? '' })
+              .fire({ sessionId, title })
               .catch(error => notifyWrite({ phase: 'failed', action: 'fire', reason: messageOf(error) }))
           })
           notifyWrite({ phase: 'loaded', sound: notifier.settings().sound, enabled: notifier.settings().enabled })
@@ -7856,7 +8195,37 @@ window.__ModuleLoader__.load({
       // fires the sound. The page is gated on the row like its neighbours; the
       // watcher subscribes to the harness's own status feed and lets it go when
       // the row is off.
-      const notifyChannel = installNotifier(ctx, controller)
+      // The two optional faces the notification needs: the Session list for the
+      // title, and the workspace for the click. Both live on their own optional
+      // contract, so a build without them still gets the sound — a title-less,
+      // unclickable notification rather than no notification at all.
+      const notifyFaces = { sessions: undefined, uiWorkspace: undefined }
+      ctx.inject(['sessions', 'uiWorkspace'], scope => {
+        scope.effect(() => {
+          notifyFaces.sessions = scope.sessions
+          notifyFaces.uiWorkspace = scope.uiWorkspace
+          return () => {
+            notifyFaces.sessions = undefined
+            notifyFaces.uiWorkspace = undefined
+          }
+        }, 'edh: notify faces')
+      })
+      const notifyChannel = installNotifier(ctx, controller, {
+        t,
+        title: sessionId => notifyTitleText(notifySessionTitle(notifyFaces.sessions, sessionId), t),
+        openSession: sessionId => {
+          const workspace = notifyFaces.uiWorkspace
+          if (workspace === undefined || typeof workspace.openSession !== 'function') return undefined
+          return workspace.openSession(sessionId)
+        },
+        focus: () => {
+          if (typeof window !== 'undefined' && typeof window.focus === 'function') window.focus()
+        },
+        // The body: one bounded Host read at fire time, with its own abort at the
+        // same cap the engine races. It never throws; an empty answer becomes the
+        // plain sentence.
+        readText: sessionId => readNotifyLast(sessionId, { timeoutMs: NOTIFY_TEXT_TIMEOUT_MS }),
+      })
       const NotifyPage = createNotifyPage(t, controller, notifyChannel)
       ctx.effect(() => installNotifyStyles(), 'edh: notify styles')
       ctx.slots.inject(NOTIFY_SECTION_SLOT, () => {
@@ -8175,6 +8544,17 @@ window.__ModuleLoader__.load({
       createNotifier,
       installNotifier,
       runNotifyTest,
+      notifyClampText,
+      notifyTitleText,
+      notifyBodyText,
+      runNotifyText,
+      notifySessionTitle,
+      notifyOpenSession,
+      readNotifyLast,
+      NOTIFY_LAST_ROUTE,
+      NOTIFY_TITLE_MAX,
+      NOTIFY_BODY_MAX,
+      NOTIFY_TEXT_TIMEOUT_MS,
       notifyPage,
       createNotifyPage,
       installNotifyStyles,

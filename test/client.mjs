@@ -74,6 +74,14 @@ const {
   mcpReloadDisabled,
   adoptMcpReload,
   runMcpReload,
+  postRefresh,
+  reloadSummaryOf,
+  reloadSentence,
+  runModelReload,
+  reloadContribution,
+  RELOAD_COMMAND_NAME,
+  RELOAD_TAKEN_NAMES,
+  RELOAD_TIMEOUT_MS,
   hostStaleness,
   reloadOutcome,
   reloadText,
@@ -7012,5 +7020,196 @@ console.log('edh mcp: settings section checks passed')
 console.log('edh update: control and reload checks passed')
 console.log('edh remote: page, account, and address checks passed')
 console.log('edh usage: page, chart, and formatter checks passed')
+// 68 — /reload: two guarded POSTs, partial success said out loud.
+{
+  const t = dictionaryOf('en')
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+  const write = []
+
+  /** A fetch that answers each route from a script, in call order. */
+  const scripted = routes => {
+    const calls = []
+    const fetch = async (url, init) => {
+      calls.push({ url, method: init.method, body: JSON.parse(init.body) })
+      const answer = routes(url)
+      if (answer === 'throw') throw new Error('network down')
+      return answer
+    }
+    return { fetch, calls }
+  }
+  const mcpView = (refreshed, failed) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ok: true,
+      servers: [{ id: 'alpha', status: 'connected', toolCount: 3 }],
+      report: { ok: true, action: 'refresh', refreshed, failed },
+    }),
+  })
+  const skillsView = (global, workspace) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: true, global: new Array(global).fill({ name: 's', source: 'user-agents' }), workspace: new Array(workspace).fill({ name: 'w', source: 'project-agents' }), counts: { global, workspace } }),
+  })
+  const refused = status => ({ ok: false, status, json: async () => ({}) })
+
+  // --- the contribution's shape and gate --------------------------------
+  {
+    let rows = { '@moreweb/edh/mcp': false, '@moreweb/edh/skills': false }
+    const controller = { getSnapshot: () => ({ status: 'ready', moduleStates: rows }), subscribe: () => () => {} }
+    const contribution = reloadContribution(t, controller, () => undefined)
+    assert.equal(contribution.name, 'reload')
+    assert.equal(contribution.label(), 'Reload')
+    assert.equal(contribution.description(), 'Refresh the MCP servers and skills the model can see. It takes no arguments.')
+    assert.ok(/takes no arguments/iu.test(contribution.description()), 'the description states the limit')
+    assert.equal(contribution.ui.kind, 'action', 'a bare action, like /btw')
+    assert.equal(typeof contribution.ui.run, 'function')
+
+    assert.equal(contribution.available(), false, 'neither row on: not offered')
+    rows = { '@moreweb/edh/mcp': true, '@moreweb/edh/skills': false }
+    assert.equal(contribution.available(), true, 'MCP alone is enough')
+    rows = { '@moreweb/edh/mcp': false, '@moreweb/edh/skills': true }
+    assert.equal(contribution.available(), true, 'skills alone is enough')
+    rows = { '@moreweb/edh/mcp': true, '@moreweb/edh/skills': true }
+    assert.equal(contribution.available(), true)
+
+    // The name must not collide with a Host command.
+    for (const taken of ['compact', 'goal', 'feedback', 'permission', 'plan', 'export']) {
+      assert.equal(RELOAD_COMMAND_NAME === taken, false, `${taken} is taken, /reload is not`)
+      assert.ok(RELOAD_TAKEN_NAMES.includes(taken), 'the reserved list is asserted, so a future collision fails here')
+    }
+    assert.equal(RELOAD_TAKEN_NAMES.includes(RELOAD_COMMAND_NAME), false)
+  }
+
+  // --- the two POSTs, in order, with exact bodies ----------------------
+  {
+    const { fetch, calls } = scripted(url => (url === 'api/edh.mcp' ? mcpView(['alpha', 'beta'], []) : skillsView(44, 1)))
+    write.length = 0
+    const summary = await runModelReload({ fetch, write: payload => write.push(payload), now: (() => { let n = 0; return () => n += 5 })() })
+    assert.deepEqual(calls.map(call => call.url), ['api/edh.mcp', 'api/edh.skills'], 'MCP first, then skills')
+    assert.deepEqual(calls.map(call => call.method), ['POST', 'POST'])
+    assert.deepEqual(calls.map(call => call.body), [{ action: 'refresh' }, { action: 'refresh' }], 'the exact bodies')
+    assert.equal(summary.mcpOk, true)
+    assert.equal(summary.servers, 2)
+    assert.equal(summary.failed, 0)
+    assert.equal(summary.skillsOk, true)
+    assert.equal(summary.skills, 45, 'the skill count is global plus workspace')
+    assert.deepEqual(write[0], { phase: 'ran', servers: 2, failed: 0, skills: 45, elapsedMs: summary.elapsedMs }, 'one ran breadcrumb with all four counts')
+    assert.equal(write.some(payload => payload.phase === 'failed'), false, 'nothing failed')
+  }
+
+  // --- partial success --------------------------------------------------
+  {
+    const { fetch } = scripted(url => (url === 'api/edh.mcp' ? mcpView(['alpha'], ['beta']) : skillsView(10, 0)))
+    write.length = 0
+    const summary = await runModelReload({ fetch, write: payload => write.push(payload) })
+    assert.equal(summary.failed, 1)
+    assert.equal(
+      reloadSentence(summary, t),
+      'Refreshed 1 servers. Refreshed 10 skills. 1 did not reconnect.',
+      'a partial refresh says exactly what it got and what it lost',
+    )
+    assert.deepEqual(write[0].servers, 1)
+    assert.deepEqual(write[0].failed, 1)
+  }
+
+  // --- a failed MCP refresh still attempts skills ----------------------
+  {
+    const { fetch, calls } = scripted(url => (url === 'api/edh.mcp' ? refused(500) : skillsView(7, 0)))
+    write.length = 0
+    const summary = await runModelReload({ fetch, write: payload => write.push(payload) })
+    assert.deepEqual(calls.map(call => call.url), ['api/edh.mcp', 'api/edh.skills'], 'skills were still attempted')
+    assert.equal(summary.mcpOk, false)
+    assert.equal(summary.skillsOk, true)
+    assert.equal(
+      reloadSentence(summary, t),
+      'The MCP servers could not be refreshed. Refreshed 7 skills.',
+      'the good half is reported',
+    )
+    assert.deepEqual(write.find(payload => payload.phase === 'failed'), { phase: 'failed', step: 'mcp', reason: 'http-500' })
+  }
+
+  // --- a failed skills refresh after a good MCP one ---------------------
+  {
+    const { fetch } = scripted(url => (url === 'api/edh.mcp' ? mcpView(['alpha', 'beta', 'gamma'], []) : { ok: true, status: 200, json: async () => ({ ok: false, reason: 'unavailable' }) }))
+    write.length = 0
+    const summary = await runModelReload({ fetch, write: payload => write.push(payload) })
+    assert.equal(summary.mcpOk, true)
+    assert.equal(summary.skillsOk, false)
+    assert.equal(reloadSentence(summary, t), 'Refreshed 3 servers. The skill list could not be refreshed.')
+    assert.deepEqual(write.find(payload => payload.phase === 'failed'), { phase: 'failed', step: 'skills', reason: 'unavailable' })
+  }
+
+  // --- both routes missing: honest, and no throw -----------------------
+  {
+    const { fetch } = scripted(() => refused(404))
+    write.length = 0
+    const summary = await runModelReload({ fetch, write: payload => write.push(payload) })
+    assert.equal(summary.mcpMissing, true)
+    assert.equal(summary.skillsMissing, true)
+    assert.equal(
+      reloadSentence(summary, t),
+      'This build has no refresh service yet. Restart the app to pick it up.',
+      'an older build is named as such',
+    )
+    assert.deepEqual(write.filter(payload => payload.phase === 'failed').map(payload => payload.step), ['mcp', 'skills'])
+    // A rejected request and no fetch at all are equally survivable.
+    const thrown = await runModelReload({ fetch: async () => { throw new Error('network down') }, write: payload => write.push(payload) })
+    assert.equal(thrown.mcpOk, false)
+    assert.equal(reloadSentence(thrown, t).includes('could not be refreshed'), true)
+    const bare = await runModelReload({ write: payload => write.push(payload) })
+    assert.equal(bare.mcpOk, false, 'no fetch at all does not throw')
+    assert.equal(bare.mcpMissing, true)
+  }
+
+  // --- the timeout path -------------------------------------------------
+  {
+    const hung = await postRefresh({ route: 'api/edh.mcp', timeoutMs: 10, fetch: () => new Promise(() => {}) })
+    assert.equal(hung.ok, false)
+    assert.equal(hung.reason, 'timeout', 'a hanging request ends on the cap')
+    const whole = await runModelReload({ timeoutMs: 10, fetch: () => new Promise(() => {}), write: payload => write.push(payload) })
+    assert.equal(whole.mcpOk, false)
+    assert.equal(whole.skillsOk, false)
+    assert.equal(whole.reason, 'timeout')
+  }
+
+  // --- the second-invocation rule --------------------------------------
+  {
+    // Refused, not joined: the guard is a plain in-flight flag around the body.
+    let running = false
+    let sent = 0
+    const invoke = async () => {
+      if (running) return 'refused'
+      running = true
+      try {
+        sent++
+        await sleep(5)
+        return 'ran'
+      } finally {
+        running = false
+      }
+    }
+    const first = invoke()
+    const second = await invoke()
+    assert.equal(second, 'refused', 'a second /reload while one runs is refused')
+    assert.equal(await first, 'ran')
+    assert.equal(sent, 1, 'and it sends nothing')
+    assert.equal(await invoke(), 'ran', 'and the next one after it settles runs normally')
+  }
+
+  // --- and this path touches nothing else ------------------------------
+  {
+    const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+    const from = source.indexOf('function postRefresh')
+    const to = source.indexOf('function reloadContribution')
+    const body = source.slice(from, to)
+    assert.equal(body.includes('modules.entries.reload'), false, 'it never reloads EDH\'s browser half')
+    assert.equal(body.includes('startSession'), false, 'it never creates a Session')
+    assert.equal(body.includes('openSession'), false, 'and never opens one')
+    assert.ok(body.includes("action: 'refresh'"), 'it only asks the Host to refresh')
+  }
+}
+
+console.log('edh reload: command, refresh, and partial-success checks passed')
 console.log('edh btw: side chat command checks passed')
 console.log('edh switch: all checks passed')

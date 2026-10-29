@@ -1280,6 +1280,9 @@ const FAKE_RECORD = {
     add: async () => {
       throw new Error('the store is on fire')
     },
+    refresh: async () => {
+      throw new Error('the reconnect blew up')
+    },
   }
   const response = await mcpResponse(post({ action: 'add', server: { label: 'x', transport: 'stdio', command: 'c' } }), { manager })
   assert.equal(response.status, 200)
@@ -1287,6 +1290,14 @@ const FAKE_RECORD = {
   assert.equal(body.ok, false)
   assert.match(body.message, /the store is on fire/u)
   assert.deepEqual(body.servers, [])
+
+  // A refresh that throws is the same report, never a 500.
+  const refreshed = await mcpResponse(post({ action: 'refresh' }), { manager })
+  assert.equal(refreshed.status, 200)
+  const refreshBody = await refreshed.json()
+  assert.equal(refreshBody.ok, false)
+  assert.match(refreshBody.message, /the reconnect blew up/u)
+  assert.deepEqual(refreshBody.servers, [])
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +1425,278 @@ await withTempProfile(async () => {
   assert.deepEqual([...secondRegistry.definitions.keys()].sort(), ['mcp__fake-tools__echo', 'mcp__fake-tools__fail'])
   await second.dispose()
   rmSync(directory, { recursive: true, force: true })
+}
+
+// ---------------------------------------------------------------------------
+// 39 — refresh: the tool registry is rebuilt from a fresh tools/list
+// ---------------------------------------------------------------------------
+{
+  // The fake server's advertised list is an array the test mutates, so a refresh
+  // is only correct if it asks the server again rather than trusting what it holds.
+  const tools = [{ name: 'echo', description: 'Echo', inputSchema: { type: 'object' } }]
+  const server = createStdioServer(fakeServerHandler({ tools }))
+  const log = []
+  const definitions = new Map()
+  const registry = {
+    definitions,
+    register(definition) {
+      // A duplicate would throw here, so "registered once" is enforced, not asserted.
+      if (definitions.has(definition.name)) throw new Error(`duplicate tool ${definition.name}`)
+      definitions.set(definition.name, definition)
+      log.push(`register:${definition.name}`)
+      return () => {
+        definitions.delete(definition.name)
+        log.push(`dispose:${definition.name}`)
+      }
+    },
+  }
+  const { spawn, spawned } = createSpawnTable({ 'fake-mcp': server.child })
+  const manager = createManager({ store: createMemoryStore([FAKE_RECORD]), spawn, getTools: () => registry, connectTimeoutMs: 2000 })
+  await manager.startEnabled()
+  assert.deepEqual([...definitions.keys()], ['mcp__fake-tools__echo'])
+
+  // The server now publishes one more tool and loses the old one.
+  tools.length = 0
+  tools.push(
+    { name: 'search', description: 'Search', inputSchema: { type: 'object' } },
+    { name: 'fetch', description: 'Fetch', inputSchema: { type: 'object' } },
+  )
+  const report = await manager.refresh({ id: 'fake-tools' })
+  assert.equal(report.ok, true)
+  assert.equal(report.action, 'refresh')
+  assert.deepEqual(report.refreshed, [
+    { id: 'fake-tools', ok: true, tools: ['mcp__fake-tools__search', 'mcp__fake-tools__fetch'] },
+  ])
+  assert.deepEqual(report.failed, [])
+  assert.equal(report.toolCount, 2)
+  assert.deepEqual([...definitions.keys()].sort(), ['mcp__fake-tools__fetch', 'mcp__fake-tools__search'], 'the registry follows the new list')
+  assert.equal(definitions.has('mcp__fake-tools__echo'), false, 'the tool the server dropped is gone')
+
+  // **The order that matters**: every disposer of the old generation ran before
+  // any registration of the new one. Anything else means duplicates or dead names.
+  const firstRegister = log.indexOf('register:mcp__fake-tools__search')
+  const lastDispose = log.lastIndexOf('dispose:mcp__fake-tools__echo')
+  assert.equal(lastDispose < firstRegister, true, `old disposers run first: ${log.join(' → ')}`)
+  assert.equal(
+    log.filter(line => line === 'register:mcp__fake-tools__echo').length,
+    1,
+    'the old tool was never registered a second time',
+  )
+  assert.equal(
+    log.filter(line => line.startsWith('register:')).length,
+    [...new Set(log.filter(line => line.startsWith('register:')))].length,
+    'no name is registered twice',
+  )
+  assert.equal(spawned.length, 2, 'a refresh reconnects: start, then one reconnect')
+
+  // A second refresh with nothing changed is still one reconnect and one generation.
+  await manager.refresh({})
+  assert.equal(spawned.length, 3)
+  assert.equal(definitions.size, 2)
+  await manager.dispose()
+  assert.equal(definitions.size, 0, 'disposal unregisters')
+}
+
+// ---------------------------------------------------------------------------
+// 40 — refresh: a server that does not come back keeps no stale tools
+// ---------------------------------------------------------------------------
+{
+  const server = createStdioServer(fakeServerHandler())
+  const registry = createRegistry()
+  let spawns = 0
+  const spawn = command => {
+    spawns += 1
+    // The first start works; the reconnect refuses to spawn at all.
+    if (spawns === 1) return server.child
+    const error = new Error(`spawn ${command} ENOENT`)
+    error.code = 'ENOENT'
+    throw error
+  }
+  const manager = createManager({ store: createMemoryStore([FAKE_RECORD]), spawn, getTools: () => registry, connectTimeoutMs: 2000 })
+  await manager.startEnabled()
+  assert.equal(registry.definitions.size, 2)
+
+  const report = await manager.refresh({ id: 'fake-tools' })
+  assert.equal(report.ok, false, 'a refresh that failed is not a success')
+  assert.deepEqual(report.refreshed, [])
+  assert.equal(report.failed.length, 1)
+  assert.equal(report.failed[0].id, 'fake-tools')
+  assert.equal(typeof report.failed[0].reason, 'string')
+  assert.equal(registry.definitions.size, 0, 'the old tools are gone, not restored')
+  const row = manager.view().servers[0]
+  assert.equal(row.status, 'error', 'the row says the server is not connected')
+  assert.equal(typeof row.lastError, 'string')
+  assert.equal(row.lastError.length > 0, true, 'with the Host\u2019s own sentence')
+  assert.equal(row.toolCount, 0)
+  await manager.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 41 — refresh never starts what the user turned off, and honours the enabled flag
+// ---------------------------------------------------------------------------
+{
+  const manager = createManager({
+    store: createMemoryStore([
+      FAKE_RECORD,
+      { ...FAKE_RECORD, id: 'off', label: 'Off', enabled: false },
+      { ...FAKE_RECORD, id: 'idle', label: 'Idle', enabled: true },
+    ]),
+    spawn: createSpawnTable({ 'fake-mcp': createStdioServer(fakeServerHandler()).child }).spawn,
+    getTools: () => createRegistry(),
+    connectTimeoutMs: 2000,
+  })
+  // Start only the first: `idle` is enabled but stopped, `off` is disabled.
+  await manager.start('fake-tools')
+  const spawnedBefore = manager.view().servers.map(row => row.status)
+
+  const report = await manager.refresh({})
+  assert.equal(report.action, 'refresh')
+  assert.deepEqual(report.refreshed.map(entry => entry.id), ['fake-tools'], 'only the enabled, running server was refreshed')
+  assert.deepEqual(report.failed, [], 'a server that was never meant to run is not a failure')
+
+  const after = manager.view().servers
+  assert.equal(after.find(row => row.id === 'off').status, 'stopped', 'a disabled server is left alone')
+  assert.equal(after.find(row => row.id === 'idle').status, 'stopped', 'and so is an enabled one that is not running')
+  assert.deepEqual(spawnedBefore, ['ready', 'stopped', 'stopped'])
+
+  // Naming a stopped server explicitly is a report, not a silent start.
+  const named = await manager.refresh({ id: 'off' })
+  assert.equal(named.ok, false)
+  assert.deepEqual(named.refreshed, [])
+  assert.deepEqual(named.failed, [{ id: 'off', reason: 'not-running' }])
+  assert.equal(manager.view().servers.find(row => row.id === 'off').status, 'stopped')
+  await manager.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 42 — refresh: single-flight per server, unknown ids, and the route's shape
+// ---------------------------------------------------------------------------
+{
+  const server = createStdioServer(fakeServerHandler())
+  const registry = createRegistry()
+  const { spawn, spawned } = createSpawnTable({ 'fake-mcp': server.child })
+  const manager = createManager({ store: createMemoryStore([FAKE_RECORD]), spawn, getTools: () => registry, connectTimeoutMs: 2000 })
+  await manager.startEnabled()
+  assert.equal(spawned.length, 1)
+
+  // Two reloads of the same server at once: the second joins the first.
+  const [first, second] = await Promise.all([manager.refresh({ id: 'fake-tools' }), manager.refresh({ id: 'fake-tools' })])
+  assert.equal(first.ok, true)
+  assert.equal(second.ok, true)
+  assert.equal(spawned.length, 2, 'one reconnect for two concurrent refreshes')
+  assert.equal(registry.definitions.size, 2, 'and one generation of tools')
+
+  // An unknown id is the route's existing 400.
+  const unknown = await manager.refresh({ id: 'ghost' })
+  assert.equal(unknown.ok, false)
+  assert.equal(unknown.reason, 'unknown-server')
+  const unknownResponse = await mcpResponse(post({ action: 'refresh', id: 'ghost' }), { manager })
+  assert.equal(unknownResponse.status, 400)
+  assert.equal((await unknownResponse.json()).report.reason, 'unknown-server')
+
+  // The route answers the view plus the report, with real counts.
+  const response = await mcpResponse(post({ action: 'refresh' }), { manager })
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.report.action, 'refresh')
+  assert.equal(body.report.ok, true)
+  assert.deepEqual(Object.keys(body.report).sort(), ['action', 'failed', 'ok', 'refreshed', 'toolCount'])
+  assert.deepEqual(body.report.refreshed, [{ id: 'fake-tools', ok: true, tools: ['mcp__fake-tools__echo', 'mcp__fake-tools__fail'] }])
+  assert.deepEqual(body.report.failed, [])
+  assert.equal(body.servers[0].status, 'ready', 'the answer is the same view the page renders')
+  assert.equal(body.servers[0].toolCount, 2)
+  await manager.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 43 — a refresh cut short by disposal leaves no registered tool behind
+// ---------------------------------------------------------------------------
+{
+  /**
+   * A server whose handshake (`gate: 'connect'`) or discovery (`gate: 'discover'`)
+   * hangs until the test lets it go, so disposal can land underneath the refresh.
+   */
+  const gatedManager = async gate => {
+    const tools = [{ name: 'echo', description: 'Echo', inputSchema: { type: 'object' } }]
+    const state = { release: undefined, listCalls: 0 }
+    const server = createStdioServer((message, child) => {
+      const answer = () =>
+        child.stdout.emit(
+          'data',
+          encodeStdioFrame(
+            message.method === 'initialize'
+              ? reply(message.id, {
+                  protocolVersion: DEFAULT_PROTOCOL_VERSION,
+                  serverInfo: { name: 'gated', version: '1' },
+                  capabilities: { tools: {} },
+                })
+              : reply(message.id, { tools: tools.map(tool => ({ ...tool })) }),
+            'newline',
+          ),
+        )
+      if (message.method === 'initialize') {
+        // The first handshake is the start; the refresh's reconnect is held.
+        if (gate === 'connect') {
+          state.release = answer
+          return undefined
+        }
+        return answerMessage(answer)
+      }
+      if (message.method === 'tools/list') {
+        state.listCalls += 1
+        if (gate === 'discover' && state.listCalls > 1) {
+          state.release = answer
+          return undefined
+        }
+        return answerMessage(answer)
+      }
+      return undefined
+    })
+    // `createStdioServer` encodes whatever the handler returns; an immediate answer
+    // is built here so the gated path can emit its own frame later.
+    function answerMessage(emit) {
+      emit()
+      return undefined
+    }
+    const registry = createRegistry()
+    const manager = createManager({
+      store: createMemoryStore([FAKE_RECORD]),
+      spawn: createSpawnTable({ 'fake-mcp': server.child }).spawn,
+      getTools: () => registry,
+      connectTimeoutMs: 2000,
+    })
+    return { manager, registry, state }
+  }
+
+  for (const gate of ['connect', 'discover']) {
+    const { manager, registry, state } = await gatedManager(gate)
+    // The start itself must get through its gate before the refresh is attempted.
+    if (gate === 'connect') {
+      const starting = manager.startEnabled()
+      for (let turn = 0; turn < 200 && state.release === undefined; turn += 1) await Promise.resolve()
+      const firstRelease = state.release
+      state.release = undefined
+      firstRelease()
+      await starting
+    } else {
+      await manager.startEnabled()
+    }
+    assert.equal(registry.definitions.size, 1, `${gate}: the server started`)
+
+    const refreshing = manager.refresh({ id: 'fake-tools' })
+    for (let turn = 0; turn < 200 && state.release === undefined; turn += 1) await Promise.resolve()
+    assert.equal(typeof state.release, 'function', `${gate}: the refresh reached its ${gate}`)
+    const release = state.release
+    // Dispose underneath the in-flight refresh, *then* let it finish: the reply
+    // arrives into a shutdown and must not become a registered tool.
+    await manager.dispose()
+    release()
+    const report = await refreshing
+    assert.equal(report.ok, false, `${gate}: a refresh during shutdown reports rather than registers`)
+    assert.equal(registry.definitions.size, 0, `${gate}: no tool survives the disposal`)
+    assert.equal((await mcpResponse(post({ action: 'refresh' }), { manager })).status, 200)
+  }
 }
 
 console.log('edh mcp: all checks passed')

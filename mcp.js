@@ -1338,6 +1338,8 @@ export function createManager(options = {}) {
   } = options
   const io = store ?? createFileStore(storePath)
   const states = new Map()
+  /** `${id}` -> the refresh already running for that server (single-flight). */
+  const refreshing = new Map()
   let servers
   let storeError = ''
   let disposed = false
@@ -1427,6 +1429,13 @@ export function createManager(options = {}) {
     } catch (error) {
       return mcpFailure(reasonOf(error), `Tool discovery failed: ${messageOf(error)}`)
     }
+    // Discovery is awaited, so the row can be disposed while it runs. Registering
+    // after that would leave a tool nobody owns — the exact leak a refresh has to
+    // avoid — so the generation is abandoned instead.
+    if (disposed) {
+      disposeTools(entry)
+      return mcpFailure('disposed', 'The MCP client is shutting down')
+    }
     const service = getTools()
     if (service === undefined || typeof service.register !== 'function') {
       disposeTools(entry)
@@ -1482,6 +1491,16 @@ export function createManager(options = {}) {
     try {
       transport = transportFor(record)
       const connection = await openConnection({ transport, clientInfo, timeoutMs: connectTimeoutMs })
+      // The connect is awaited and the row may have been disposed meanwhile; a
+      // manager that is shutting down must not come back up holding a transport.
+      if (disposed) {
+        try {
+          transport.close()
+        } catch {
+          /* already gone */
+        }
+        return mcpFailure('disposed', 'The MCP client is shutting down', { action: 'start', id })
+      }
       entry.transport = transport
       entry.connection = connection
       entry.protocolVersion = connection.protocolVersion
@@ -1506,8 +1525,7 @@ export function createManager(options = {}) {
   }
 
   /** Stop one server: unregister its tools, close its transport. */
-  async function stop(id) {
-    const entry = states.get(id)
+  async function stop(id) {    const entry = states.get(id)
     if (entry === undefined) return { ok: true, action: 'stop', id, status: 'stopped' }
     disposeTools(entry)
     try {
@@ -1522,6 +1540,92 @@ export function createManager(options = {}) {
     entry.protocolVersion = undefined
     entry.serverInfo = undefined
     return { ok: true, action: 'stop', id, status: entry.status }
+  }
+
+  /**
+   * Refresh one running server: dispose its tools, reconnect, rediscover, re-register.
+   *
+   * That is `start()`, which is the point — `start` calls `stop` (whose
+   * `disposeTools` unregisters the whole previous generation) *before* it connects,
+   * and `syncTools` fetches the new list before swapping, so **the old disposers
+   * always run before any new registration**. There is no second refresh
+   * implementation to drift from the start path.
+   *
+   * One server at a time: a second reload of the same id joins the in-flight one
+   * instead of stacking a second reconnect on top of it.
+   * @param id - the stored server id.
+   * @returns `{ id, ok, tools?, reason?, message? }`.
+   */
+  function refreshOne(id) {
+    const inflight = refreshing.get(id)
+    if (inflight !== undefined) return inflight
+    const run = (async () => {
+      ensureLoaded()
+      const record = find(id)
+      if (record === undefined) return { id, ok: false, reason: 'unknown-server' }
+      const entry = states.get(id)
+      // Only a connected server is refreshed. A reload must never start something
+      // the user turned off, or a server that is stopped because it failed.
+      if (entry?.status !== 'ready' || entry.connection === undefined) return { id, ok: false, reason: 'not-running' }
+      const restarted = await start(id)
+      if (restarted.ok !== true) {
+        // It did not come back: its tools are already gone (the stop half of the
+        // restart unregistered them) and stale tools must not be resurrected.
+        const after = states.get(id)
+        const sentence = typeof restarted.message === 'string' && restarted.message !== '' ? restarted.message : 'The server did not come back'
+        if (after !== undefined) {
+          after.status = 'error'
+          after.lastError = sentence
+        }
+        return { id, ok: false, reason: typeof restarted.reason === 'string' ? restarted.reason : 'error', message: sentence }
+      }
+      return { id, ok: true, tools: Array.isArray(restarted.tools) ? [...restarted.tools] : [] }
+    })()
+    const settled = run.finally(() => refreshing.delete(id))
+    refreshing.set(id, settled)
+    return settled
+  }
+
+  /**
+   * Re-sync the served servers, so the tool registry is rebuilt from a fresh
+   * `tools/list` — what `/reload` needs behind it, rather than a re-read of state.
+   *
+   * With an `id`, that one server (if it is running); without one, every enabled
+   * server that is currently connected. Disabled and stopped servers are untouched.
+   * @param input - `{ id? }` from the request body.
+   * @returns `{ ok, action: 'refresh', refreshed: [{ id, ok, tools }], failed: [{ id, reason }] }`.
+   */
+  async function refresh(input) {
+    ensureLoaded()
+    if (disposed) return mcpFailure('disposed', 'The MCP client is shutting down', { action: 'refresh' })
+    const id = typeof input?.id === 'string' && input.id.trim() !== '' ? input.id.trim() : undefined
+    if (id !== undefined && find(id) === undefined) {
+      return mcpFailure('unknown-server', `No MCP server is stored under "${id}"`, { action: 'refresh', id })
+    }
+    // Without an id the scope is "every enabled server that is actually running": a
+    // server the user stopped is left alone, and is neither refreshed nor reported as
+    // a failure — it was never in scope. Naming one explicitly is a request that could
+    // not be honoured, so that one *is* reported (`not-running`).
+    const targets =
+      id !== undefined
+        ? [id]
+        : servers
+            .filter(server => server.enabled === true && states.get(server.id)?.status === 'ready')
+            .map(server => server.id)
+    const settled = await Promise.all(targets.map(target => refreshOne(target)))
+    const refreshed = []
+    const failed = []
+    for (const entry of settled) {
+      if (entry.ok === true) refreshed.push({ id: entry.id, ok: true, tools: entry.tools ?? [] })
+      else failed.push({ id: entry.id, reason: typeof entry.reason === 'string' ? entry.reason : 'error' })
+    }
+    return {
+      ok: failed.length === 0,
+      action: 'refresh',
+      refreshed,
+      failed,
+      toolCount: refreshed.reduce((total, entry) => total + entry.tools.length, 0),
+    }
   }
 
   /** Add or replace one server, then start it when it is enabled. */
@@ -1702,7 +1806,7 @@ export function createManager(options = {}) {
     states.clear()
   }
 
-  return { view, add, remove, test, start, stop, call, syncAll, startEnabled, dispose, storePath: io?.path ?? storePath }
+  return { view, add, remove, test, start, stop, call, refresh, syncAll, startEnabled, dispose, storePath: io?.path ?? storePath }
 }
 
 // ---------------------------------------------------------------------------
@@ -1785,12 +1889,15 @@ export async function mcpResponse(request, options = {}) {
       case 'call':
         report = await manager.call(body.id, body.tool, body.arguments)
         break
+      case 'refresh':
+        report = await manager.refresh(body)
+        break
       default: {
         const reason = action === '' ? 'bad-input' : 'unknown-action'
         const message =
           action === ''
-            ? 'A POST needs an "action": add, remove, test, start, stop or call'
-            : `Unknown action ${JSON.stringify(action)}; expected add, remove, test, start, stop or call`
+            ? 'A POST needs an "action": add, remove, test, start, stop, call or refresh'
+            : `Unknown action ${JSON.stringify(action)}; expected add, remove, test, start, stop, call or refresh`
         // The page shows the report's own sentence, so both carry the same one.
         return jsonResponse({ ...manager.view(), ok: false, reason, message, report: mcpFailure(reason, message) }, 400)
       }

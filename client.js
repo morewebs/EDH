@@ -69,7 +69,15 @@ window.__ModuleLoader__.load({
       mcpIntro: 'Connect a server once and every session can use its tools.',
       mcpLoading: 'Reading servers…',
       mcpLoadFailed: 'The server list could not be read.',
-      mcpReload: 'Reload',
+      reloadLabel: 'Reload',
+      reloadDescription: 'Refresh the MCP servers and skills the model can see. It takes no arguments.',
+      reloadMcpOk: 'Refreshed {servers} servers.',
+      reloadMcpFailed: 'The MCP servers could not be refreshed.',
+      reloadSkillsOk: 'Refreshed {skills} skills.',
+      reloadSkillsFailed: 'The skill list could not be refreshed.',
+      reloadSomeFailed: '{failed} did not reconnect.',
+      reloadNoService: 'This build has no refresh service yet. Restart the app to pick it up.',
+      reloadSkipped: 'A reload is already running.',      mcpReload: 'Reload',
       mcpReloading: 'Reloading…',
       mcpRetry: 'Retry',
       mcpOff: 'MCP is off. Turn it on with the EDH switch.',
@@ -359,7 +367,15 @@ window.__ModuleLoader__.load({
       mcpIntro: '连接一次服务器，之后每个会话都能使用它的工具。',
       mcpLoading: '正在读取服务器…',
       mcpLoadFailed: '无法读取服务器列表。',
-      mcpReload: '重新载入',
+      reloadLabel: '重新载入',
+      reloadDescription: '刷新模型能看到的 MCP 服务器与技能。此命令不接受参数。',
+      reloadMcpOk: '已刷新 {servers} 个服务器。',
+      reloadMcpFailed: 'MCP 服务器未能刷新。',
+      reloadSkillsOk: '已刷新 {skills} 个技能。',
+      reloadSkillsFailed: '技能列表未能刷新。',
+      reloadSomeFailed: '其中 {failed} 个没有重新连接。',
+      reloadNoService: '这个构建还没有刷新服务。请重启应用以启用。',
+      reloadSkipped: '已经有一个重新载入在运行。',      mcpReload: '重新载入',
       mcpReloading: '正在重新载入…',
       mcpRetry: '重试',
       mcpOff: 'MCP 已关闭，请用 EDH 开关打开。',
@@ -9457,6 +9473,176 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // -------------------------------------------------------- /reload command
+    /**
+     * Refresh what the model can see, from the composer.
+     *
+     * Two guarded POSTs and nothing else: the MCP servers reconnect so their tools
+     * are re-listed, the skill registry cache is dropped so the catalog digest
+     * changes. It never restarts the plugin, never reloads EDH's browser half
+     * (that is the Plugin Manager control), and never creates or resumes a
+     * Session — a bare `action` contribution has no Session to move.
+     */
+    const RELOAD_COMMAND_NAME = 'reload'
+    const RELOAD_DEBUG_KEY = 'edh:reload'
+    /** Per request. The two together stay inside the ~10 s the command is worth. */
+    const RELOAD_TIMEOUT_MS = 5_000
+    /** Host commands that already own these tokens; `/reload` must stay absent. */
+    const RELOAD_TAKEN_NAMES = ['compact', 'goal', 'feedback', 'permission', 'plan', 'export']
+
+    /** Separate breadcrumb for the command. */
+    function reloadWrite(payload) {
+      writeBreadcrumb(RELOAD_DEBUG_KEY, payload)
+    }
+
+    /**
+     * One `{ action: 'refresh' }` POST, capped and never throwing.
+     *
+     * Two independent bounds: the abort signal where the platform has one, and a
+     * race timer here, so a request that ignores its signal still ends. A 404 is
+     * reported as `missing` — an older build that has no refresh action at all.
+     * @param options - the route, the fetch, and the cap.
+     * @returns `{ ok, status, answer }` or `{ ok:false, reason, missing }`.
+     */
+    async function postRefresh(options = {}) {
+      const route = String(options.route ?? '')
+      const request = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined)
+      if (route === '') return { ok: false, reason: 'no-route', missing: true }
+      if (typeof request !== 'function') return { ok: false, reason: 'no-fetch', missing: true }
+      const cap = Number(options.timeoutMs)
+      const timeoutMs = Number.isFinite(cap) && cap > 0 ? cap : RELOAD_TIMEOUT_MS
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+      let timer
+      try {
+        const attempt = (async () => {
+          const response = await request(route, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ action: 'refresh' }),
+            ...(signal === undefined ? {} : { signal }),
+          })
+          if (response === null || typeof response !== 'object') return { ok: false, reason: 'no-response' }
+          const status = Number(response.status) || 0
+          if (response.ok !== true) {
+            return { ok: false, status, reason: `http-${status}`, missing: status === 404 }
+          }
+          let answer
+          try {
+            answer = await response.json()
+          } catch (error) {
+            return { ok: false, status, reason: 'unparsable' }
+          }
+          if (answer === null || typeof answer !== 'object' || answer.ok !== true) {
+            return {
+              ok: false,
+              status,
+              reason: String(answer?.reason ?? 'refused'),
+              answer,
+            }
+          }
+          return { ok: true, status, answer }
+        })()
+        return await Promise.race([
+          attempt,
+          new Promise(resolve => {
+            timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs)
+          }),
+        ])
+      } catch (error) {
+        return { ok: false, reason: messageOf(error) }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+
+    /** What one refresh actually achieved, from the two answers. */
+    function reloadSummaryOf(mcp, skills) {
+      const refreshed = Array.isArray(mcp?.answer?.report?.refreshed) ? mcp.answer.report.refreshed.length : 0
+      const servers = refreshed > 0
+        ? refreshed
+        : Array.isArray(mcp?.answer?.servers) ? mcp.answer.servers.length : 0
+      const failed = Array.isArray(mcp?.answer?.report?.failed) ? mcp.answer.report.failed.length : 0
+      const counts = skills?.ok === true ? skillsCounts(skills.answer) : { global: 0, workspace: 0 }
+      return {
+        mcpOk: mcp?.ok === true,
+        skillsOk: skills?.ok === true,
+        servers,
+        failed,
+        skills: counts.global + counts.workspace,
+        mcpMissing: mcp?.missing === true,
+        skillsMissing: skills?.missing === true,
+        reason: String(mcp?.reason ?? skills?.reason ?? ''),
+      }
+    }
+
+    /**
+     * The one sentence a bare action can leave behind.
+     *
+     * Composed from clauses rather than a sentence per combination, so partial
+     * success reads as partial success: two servers back and one still refused is
+     * said out loud instead of "done".
+     */
+    function reloadSentence(summary, t) {
+      if (summary.mcpMissing === true && summary.skillsMissing === true) return t('reloadNoService')
+      const parts = [
+        summary.mcpOk === true ? t('reloadMcpOk', { servers: summary.servers }) : t('reloadMcpFailed'),
+        summary.skillsOk === true ? t('reloadSkillsOk', { skills: summary.skills }) : t('reloadSkillsFailed'),
+      ]
+      if (summary.failed > 0) parts.push(t('reloadSomeFailed', { failed: summary.failed }))
+      return parts.join(' ')
+    }
+
+    /**
+     * Run both refreshes in order, each guarded.
+     *
+     * A refusal on one route never prevents the other: a failed MCP refresh still
+     * attempts skills, and a failed skills refresh still reports what MCP managed.
+     * A second `/reload` while one runs is **refused** rather than joined — the
+     * second caller gets a `skipped` breadcrumb and no request is sent.
+     * @param options - the fetch, the cap, the clock, and the breadcrumb writer.
+     */
+    async function runModelReload(options = {}) {
+      const write = typeof options.write === 'function' ? options.write : reloadWrite
+      const clock = typeof options.now === 'function' ? options.now : Date.now
+      const started = clock()
+      const mcp = await postRefresh({ route: MCP_ROUTE, fetch: options.fetch, timeoutMs: options.timeoutMs })
+      const skills = await postRefresh({ route: SKILLS_ROUTE, fetch: options.fetch, timeoutMs: options.timeoutMs })
+      const summary = reloadSummaryOf(mcp, skills)
+      const elapsedMs = Math.max(0, clock() - started)
+      write({
+        phase: 'ran',
+        servers: summary.servers,
+        failed: summary.failed,
+        skills: summary.skills,
+        elapsedMs,
+      })
+      if (summary.mcpOk !== true) write({ phase: 'failed', step: 'mcp', reason: String(mcp?.reason ?? 'failed') })
+      if (summary.skillsOk !== true) write({ phase: 'failed', step: 'skills', reason: String(skills?.reason ?? 'failed') })
+      return { ...summary, elapsedMs }
+    }
+
+    /**
+     * The command contribution, gated on the rows it refreshes.
+     *
+     * Either row is enough: refreshing whichever exists beats refusing both. With
+     * neither on, nothing is registered at all.
+     * @param t - the dictionary.
+     * @param controller - the switch snapshot.
+     * @param run - the action body.
+     */
+    function reloadContribution(t, controller, run) {
+      return {
+        name: RELOAD_COMMAND_NAME,
+        label: () => t('reloadLabel'),
+        description: () => t('reloadDescription'),
+        available: () => rowEnabled(controller.getSnapshot(), MCP_MODULE)
+          || rowEnabled(controller.getSnapshot(), SKILLS_MODULE),
+        ui: { kind: 'action', run },
+      }
+    }
+
     /**
      * Shadowing priority for a keyed slot entry.
      *
@@ -10636,6 +10822,59 @@ window.__ModuleLoader__.load({
       const sidePane = { current: undefined }
       /** Filled here: the single flow both commands and the launcher card run. */
       const sideChat = { run: undefined }
+      // /reload — refresh the MCP servers and the skill catalog the model sees.
+      // It registers only while at least one of those rows is on: refreshing
+      // whichever exists beats refusing both, and with neither on there is
+      // nothing to refresh.
+      ctx.inject(['commandUi'], scope => {
+        let dispose
+        let installed = false
+        let running = false
+        const runCommand = async () => {
+          if (running) {
+            // Refused rather than joined: a second invocation is told so, and
+            // sends nothing.
+            reloadWrite({ phase: 'skipped', reason: 'running' })
+            return
+          }
+          running = true
+          try {
+            const summary = await runModelReload({})
+            reloadWrite({ phase: 'said', text: reloadSentence(summary, t) })
+          } catch (error) {
+            // ui.run is un-awaited and uncatchable: this path catches itself.
+            reloadWrite({ phase: 'failed', step: 'command', reason: messageOf(error) })
+          } finally {
+            running = false
+          }
+        }
+        const sync = () => {
+          const wanted = rowEnabled(controller.getSnapshot(), MCP_MODULE)
+            || rowEnabled(controller.getSnapshot(), SKILLS_MODULE)
+          if (wanted === installed) return
+          if (!wanted) {
+            installed = false
+            dispose?.()
+            dispose = undefined
+            return
+          }
+          try {
+            dispose = scope.commandUi.register(reloadContribution(t, controller, runCommand))
+            installed = true
+          } catch (error) {
+            installed = false
+            reloadWrite({ phase: 'register-failed', part: 'command', message: messageOf(error) })
+          }
+        }
+        const stop = controller.subscribe(sync)
+        sync()
+        return () => {
+          stop()
+          dispose?.()
+          dispose = undefined
+        }
+      })
+
       ctx.inject(['commandUi', 'sessions', 'uiWorkspace'], scope => {
         scope.effect(() => {
           sideChat.run = createSideChatRunner(t, {
@@ -10765,6 +11004,15 @@ window.__ModuleLoader__.load({
       mcpReloadDisabled,
       adoptMcpReload,
       runMcpReload,
+      postRefresh,
+      reloadSummaryOf,
+      reloadSentence,
+      runModelReload,
+      reloadContribution,
+      RELOAD_COMMAND_NAME,
+      RELOAD_DEBUG_KEY,
+      RELOAD_TIMEOUT_MS,
+      RELOAD_TAKEN_NAMES,
       hostStaleness,
       reloadOutcome,
       reloadText,

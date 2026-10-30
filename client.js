@@ -5632,7 +5632,34 @@ window.__ModuleLoader__.load({
       '::-webkit-scrollbar{width:6px;height:6px}',
       '::-webkit-scrollbar-thumb{border-radius:999px}',
       'textarea{line-height:1.5}',
+      // --- dialogs ----------------------------------------------------------
+      // For real modals: settings, shortcuts, workspace dialogs. `max-height` and
+      // never `height`, so a short dialog keeps its natural size and never grows
+      // a scrollbar; `dvh` accounts for a collapsing toolbar; the `dialog`
+      // selector covers a native `showModal` dialog too.
+      //
+      // These rules do NOT cover the ask card: it carries no `role="dialog"` and
+      // no `aria-modal` — it is a chain takeover of the composer. That one is
+      // fixed at the end of this sheet, outside the query.
+      '[role=dialog],[aria-modal=true],dialog{max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}',
+      // A flex child will not shrink below its content unless it is allowed to,
+      // and then the inner column is taller than the box meant to scroll it.
+      '[role=dialog] *,[aria-modal=true] *,dialog *{min-height:0}',
+      // The action row must stay inside the dialog: no child may push it out.
+      '[role=dialog] > *,[aria-modal=true] > *,dialog > *{flex:0 1 auto}',
       '}',
+      // --- the ask card ------------------------------------------------------
+      // Not mobile-specific: the card is a chain takeover of the composer, so
+      // these rules sit at top level, outside the media query. It clips because
+      // the card is the only overflow surface and it is `hidden`: a long question
+      // fills a non-shrinking header, the real scroller is squeezed to zero, and
+      // the action row is pushed outside the card. So the card becomes the
+      // scroller instead. Every selector is an attribute or element literal from
+      // the shipped JSX, and (0,1,1) / (0,1,2) already outrank the hashed module
+      // classes, so this sheet needs no !important anywhere.
+      '[data-question-key] > section:has(> footer){max-height:min(60vh,520px);max-height:min(60svh,520px);overflow-y:auto;overflow-x:hidden;scroll-padding-bottom:64px}',
+      '[data-question-key] [data-question-scroll]{flex:0 0 auto;min-height:0;overflow:visible}',
+      '[data-question-key] > section > footer{position:sticky;bottom:0;z-index:1;margin-top:0;padding-top:12px;background:var(--dsw-specific-input-major,var(--dsw-alias-bg-base))}',
     ].join('')
 
     /**

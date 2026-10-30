@@ -4212,7 +4212,88 @@ function qrTestDecode(model) {
   assert.equal(/\.[A-Za-z]/u.test(MOBILE_CSS), false, 'no class selector at all')
   assert.ok(MOBILE_CSS.includes('[role=button]'), 'roles are the stable hook')
   assert.ok(MOBILE_CSS.includes('#root'), 'and the one id the shell guarantees')
-  assert.ok(MOBILE_CSS.length <= 1200, 'small enough to review in one screen (' + MOBILE_CSS.length + ' chars)')
+  // --- dialogs: a long question scrolls, a short one is untouched ----------
+  const dialogRule = /\[role=dialog\],\[aria-modal=true\],dialog\{[^}]*\}/u.exec(MOBILE_CSS)
+  assert.ok(dialogRule !== null, 'one rule covers the role dialog, an aria-modal overlay and a native dialog')
+  assert.equal(dialogRule[0].includes('max-height:calc(100dvh - 32px)'), true, 'bounded by the phone viewport, with a margin')
+  assert.equal(dialogRule[0].includes('overflow-y:auto'), true, 'and it scrolls when the content is taller')
+  assert.equal(dialogRule[0].includes('overscroll-behavior:contain'), true, 'scroll chaining stops at the dialog')
+  assert.equal(dialogRule[0].includes('-webkit-overflow-scrolling:touch'), true, 'momentum scrolling inside it')
+  // The short-dialog guarantee: max-height, never height. Without a height there
+  // is nothing for a short dialog to fill, so it keeps its natural size and
+  // overflow-y has nothing to scroll.
+  assert.equal(/(?:^|\{|;)height:/u.test(dialogRule[0]), false, 'no fixed height on a dialog')
+  assert.equal(dialogRule[0].includes('height:'), true, 'the only height is the max-height bound')
+  assert.equal(MOBILE_CSS.includes('[role=dialog] *,[aria-modal=true] *,dialog *{min-height:0}'), true, 'a dialog inner column may shrink, so it can scroll')
+  assert.equal(MOBILE_CSS.includes('[role=dialog] > *,[aria-modal=true] > *,dialog > *{flex:0 1 auto}'), true, 'no child may push the action row out')
+  // The page's own scrollers stay exactly as they were.
+  assert.equal(/body\{[^}]*overflow-y/u.test(MOBILE_CSS), false, 'body is not turned into a scroller')
+  assert.equal(/#root\{[^}]*overflow-y/u.test(MOBILE_CSS), false, '#root keeps its own height and scrolling')
+  assert.equal((MOBILE_CSS.match(/@media/gu) ?? []).length, 1, 'the dialog rules did not open a second query')
+  const mediaAt = MOBILE_CSS.indexOf('@media')
+  assert.ok(MOBILE_CSS.indexOf('role=dialog') > mediaAt, 'the dialog rules are inside the one media query')
+  assert.ok(MOBILE_CSS.indexOf('role=dialog') < MOBILE_CSS.lastIndexOf('}'), 'and before the closing brace')
+  assert.ok(MOBILE_CSS.length <= 2600, 'still small enough to review in one screen (' + MOBILE_CSS.length + ' chars)')
+
+  // --- the ask card: not a modal, and not inside the media query ------------
+  // The card has no role and no aria-modal, so the [role=dialog] block above
+  // never sees it, and the defect is not mobile-only: it shows more on a narrow
+  // card. So the fix is at top level, after the media block closes.
+  const mediaClose = (() => {
+    let depth = 0
+    for (let index = MOBILE_CSS.indexOf('@media'); index < MOBILE_CSS.length; index++) {
+      if (MOBILE_CSS[index] === '{') depth++
+      if (MOBILE_CSS[index] === '}') {
+        depth--
+        if (depth === 0) return index
+      }
+    }
+    return -1
+  })()
+  assert.ok(mediaClose > 0, 'the media block closes exactly once')
+  assert.ok(MOBILE_CSS.indexOf('[data-question-key]') > mediaClose, 'the ask-card rules are OUTSIDE the media query')
+  assert.ok(MOBILE_CSS.indexOf('[role=dialog],[aria-modal=true],dialog{') < mediaClose, 'the real-modal block stays INSIDE it')
+  // The comment lives in the source array, not in the joined sheet.
+  const sourceText = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+  assert.equal(sourceText.includes('These rules do NOT cover the ask card'), true, 'the real-modal block says so, because the card carries no role')
+
+  /** The declarations of one selector, as the sheet writes it. */
+  const ruleOf = selector => {
+    const at = MOBILE_CSS.indexOf(selector + '{')
+    if (at < 0) return undefined
+    const from = at + selector.length + 1
+    const to = MOBILE_CSS.indexOf('}', from)
+    return MOBILE_CSS.slice(from, to)
+  }
+  const card = ruleOf('[data-question-key] > section:has(> footer)')
+  assert.ok(card !== undefined, 'the expanded card is selected by :has(> footer), so a minimised card is untouched')
+  assert.equal(card.includes('overflow-y:auto'), true, 'the card is the scroller now')
+  assert.equal(card.includes('overflow-x:hidden'), true)
+  assert.equal(card.includes('scroll-padding-bottom:64px'), true, 'a focused field clears the sticky footer')
+  const maxHeights = card.split('max-height:').slice(1).map(part => part.slice(0, part.indexOf(';')))
+  assert.deepEqual(maxHeights, ['min(60vh,520px)', 'min(60svh,520px)'], 'two declarations, vh first so an older browser falls back to it')
+  assert.equal(card.includes('!important'), false, 'specificity is enough, no !important')
+  assert.equal(card.split(';').some(part => part.trim().startsWith('height:')), false, 'no bare height: the card is not forced to a size')
+
+  const scroll = ruleOf('[data-question-key] [data-question-scroll]')
+  assert.ok(scroll !== undefined, 'the inner scroller is reset')
+  assert.equal(scroll.includes('overflow:visible'), true, 'it no longer clips: the card scrolls')
+  assert.equal(scroll.includes('flex:0 0 auto'), true, 'and it is not squeezed to zero height')
+  assert.equal(scroll.includes('min-height:0'), true)
+
+  const footer = ruleOf('[data-question-key] > section > footer')
+  assert.ok(footer !== undefined, 'the action row is pinned inside the card')
+  for (const declaration of ['position:sticky', 'bottom:0', 'margin-top:0', 'padding-top:12px', 'background:', 'z-index:1']) {
+    assert.equal(footer.includes(declaration), true, 'the footer carries ' + declaration)
+  }
+
+  // The whole sheet: no !important, no hashed class, no attribute matched by value.
+  assert.equal(MOBILE_CSS.includes('!important'), false, 'no !important anywhere in the sheet')
+  assert.equal(MOBILE_CSS.includes('wnLwla'), false, 'no shipped module class is load-bearing')
+  assert.equal(MOBILE_CSS.includes('[data-question-key]='), false, 'the question key is matched by presence only, never by value')
+  assert.equal(MOBILE_CSS.includes('[data-question-key] > section:has'), true, 'the presence selector is what is used')
+  assert.equal((MOBILE_CSS.match(/@media/gu) ?? []).length, 1, 'still one media query')
+  assert.equal(MOBILE_CSS.endsWith('}'), true, 'the sheet still closes')
 }
 
 // 47 — the QR: geometry, format information, and a full decode back to the text.

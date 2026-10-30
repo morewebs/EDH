@@ -5589,6 +5589,9 @@ window.__ModuleLoader__.load({
     /** The Host's manifest, document-relative so it follows whatever origin serves the page. */
     const MOBILE_MANIFEST = 'api/edh.mobile/manifest'
 
+    /** The Host's opaque 180x180 touch icon: iOS ignores SVG, so this one is rendered. */
+    const MOBILE_TOUCH_ICON = 'api/edh.mobile/icon?size=180'
+
     /** Every phone rule runs under this query: a desktop window never sees them. */
     const MOBILE_QUERY = '(max-width: 860px)'
 
@@ -5604,6 +5607,9 @@ window.__ModuleLoader__.load({
       ['mobile-web-app-capable', 'yes'],
       ['apple-mobile-web-app-capable', 'yes'],
       ['apple-mobile-web-app-status-bar-style', 'black-translucent'],
+      // iOS uses this as the home-screen label; without it the label is derived
+      // from the document title, which is long enough to be cut.
+      ['apple-mobile-web-app-title', 'EDH'],
     ]
 
     /**
@@ -5663,44 +5669,6 @@ window.__ModuleLoader__.load({
     ].join('')
 
     /**
-     * The same-origin raster icon to hand iOS, when the page really has one.
-     *
-     * iOS ignores an SVG `apple-touch-icon`, so pointing the tag at one would be
-     * a promise the platform silently drops. Only a raster icon of the same
-     * origin is reused; otherwise the link is not added at all, and the phone
-     * falls back to a screenshot of the page.
-     * @param doc - the document to read.
-     * @returns the absolute href, or nothing.
-     */
-    function mobileIconHref(doc) {
-      if (doc === undefined || typeof doc.querySelectorAll !== 'function') return undefined
-      const base = (() => {
-        try {
-          return new URL(String(doc.baseURI ?? 'http://127.0.0.1/'))
-        } catch (error) {
-          return undefined
-        }
-      })()
-      for (const link of [...doc.querySelectorAll('link[rel~="icon"]')]) {
-        const href = String(link.getAttribute('href') ?? '').trim()
-        if (href === '') continue
-        const type = String(link.getAttribute('type') ?? '').toLowerCase()
-        const raster = /^image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon)/u.test(type)
-          || /\.(?:png|jpe?g|webp|ico)(?:[?#]|$)/iu.test(href)
-        if (!raster) continue
-        let resolved
-        try {
-          resolved = new URL(href, base ?? 'http://127.0.0.1/')
-        } catch (error) {
-          continue
-        }
-        if (base !== undefined && resolved.origin !== base.origin) continue
-        return resolved.href
-      }
-      return undefined
-    }
-
-    /**
      * The mobile layer, as a small reversible change set.
      *
      * `apply` is idempotent: a second call while applied changes nothing, so a
@@ -5756,8 +5724,15 @@ window.__ModuleLoader__.load({
         const manifest = find('link[rel="manifest"]')
         if (manifest !== null) upgrade(manifest, 'href', MOBILE_MANIFEST)
         else add(make('link', { rel: 'manifest', href: MOBILE_MANIFEST, id: 'edh-mobile-manifest' }))
-        const icon = mobileIconHref(doc)
-        if (icon !== undefined) add(make('link', { rel: 'apple-touch-icon', href: icon, id: 'edh-mobile-icon' }))
+        // iOS needs a raster touch icon and the Host renders one: it ignores SVG,
+        // and with no touch icon at all it screenshots the page for the home
+        // screen. This is an addition, so withdrawal removes it.
+        add(make('link', {
+          rel: 'apple-touch-icon',
+          sizes: '180x180',
+          href: MOBILE_TOUCH_ICON,
+          id: 'edh-mobile-icon',
+        }))
         const style = make('style', { id: 'edh-mobile' })
         style.textContent = MOBILE_CSS
         add(style)
@@ -11206,13 +11181,13 @@ window.__ModuleLoader__.load({
       NOTIFY_DEBUG_KEY,
       NOTIFY_SOUNDS_ROUTE,
       NOTIFY_SOUND_ROUTE,
-      mobileIconHref,
       createMobileLayer,
       installMobileLayer,
       MOBILE_MODULE,
       MOBILE_CSS,
       MOBILE_VIEWPORT,
       MOBILE_MANIFEST,
+      MOBILE_TOUCH_ICON,
       MOBILE_QUERY,
       MOBILE_THEME,
       MOBILE_META,

@@ -271,12 +271,36 @@ fact: **the listener is ours, and the harness only ever sees loopback.**
   `/api/edh.mobile/manifest` would start the installed app inside
   `/api/edh.mobile/` and put the document outside its own scope, which makes the
   app non-installable.
-- **The icon is verified, or it is omitted.** A manifest that promises a 404
-  icon fails the whole install prompt. `/favicon.svg` is shipped at the origin
-  root by `@deepseek-ai/dsh-web-frontend` (`dist/favicon.svg`, linked from its
-  `index.html`) and answers `200 image/svg+xml`, so it is named — root-relative,
-  because an icon URL resolves against the manifest URL too. If that file ever
-  moves, drop the `icons` array rather than guess.
+- **Plain http on the LAN means no service worker and no Android install prompt.**
+  A service worker needs a secure context, and Remote is served over `http://` on a
+  LAN address, so Chromium never registers one — and without one Chrome does not
+  offer to install, however good the manifest is. That is a platform rule, not a gap
+  to work around: **no service worker is shipped**, because dead code that cannot run
+  is worse than none. iOS Safari's *Add to Home Screen* needs no prompt and no
+  worker, and is the installation path this feature actually serves.
+- **iOS ignores SVG icons entirely, so the icons are rendered here.** Safari takes a
+  home-screen icon from `<link rel="apple-touch-icon">` (180 px, written by the
+  browser half) and never looks at the manifest; Chrome's install criteria want
+  **PNG at 192 and 512 with at least one `maskable`**. One SVG satisfied neither, so
+  `mobile.js` rasterises four PNGs in-process — a hand-rolled encoder
+  (IHDR/IDAT/IEND, `zlib.deflateSync`, the PNG CRC-32) drawing flat rectangles and
+  rounded corners, cached in memory and **byte-identical for a given size**, which
+  is what makes `cache-control: public, max-age=604800, immutable` honest. A 512 px
+  icon is ~3 KB. The mark is the repo's own `icon.svg` idea: a `#0b1220` plate
+  carrying three bars and a rounded-rectangle ring in `#34d399` (the SVG's arcs are
+  not drawable with rectangles, so the ring stands in for them).
+- **The `apple-touch-icon` must be opaque edge to edge** — iOS composites any
+  transparency onto black before masking it, so a transparent corner becomes a black
+  notch. The 180 icon is therefore a full-bleed square, as is the maskable 512, whose
+  mark is also shrunk so a launcher's circular crop cannot clip it. The plain icons
+  keep transparent rounded corners.
+- **`id: "/"` pins the install identity.** Without it the identity is derived from
+  `start_url`, so a future rename would leave *two* home-screen apps instead of
+  updating the one that is there. `test/mobile.mjs` asserts the field, and
+  `id`/`start_url`/`scope` plus every icon URL are root-relative for the reason above.
+- **An icon route must not refuse a cache-buster.** Unknown query parameters are
+  ignored on purpose (`?v=2` is a legitimate thing for a page to append); only an
+  unusable `size` is a 400, and that sentence names the three sizes that work.
 
 ## Notifications
 

@@ -208,7 +208,7 @@ const {
 const {
   createMobileLayer,
   installMobileLayer,
-  mobileIconHref,
+  MOBILE_TOUCH_ICON,
   MOBILE_MODULE,
   MOBILE_CSS,
   MOBILE_VIEWPORT,
@@ -4066,8 +4066,23 @@ function qrTestDecode(model) {
   assert.equal(MOBILE_MANIFEST, 'api/edh.mobile/manifest', 'document-relative, so it follows the origin')
   assert.equal(doc.style().getAttribute('id'), 'edh-mobile', 'the stylesheet is named as promised')
   assert.equal(doc.style().textContent, MOBILE_CSS)
-  // The page ships SVG icons only, and iOS ignores an SVG apple-touch-icon.
-  assert.equal(doc.querySelector('link[rel="apple-touch-icon"]'), null, 'no icon promise the platform drops')
+  // iOS ignores SVG, so the touch icon is the Host's own opaque 180px PNG.
+  const touch = doc.querySelector('link[rel="apple-touch-icon"]')
+  assert.ok(touch !== null, 'the apple-touch-icon is added')
+  assert.equal(touch.getAttribute('href'), 'api/edh.mobile/icon?size=180', 'rendered by the Host, document-relative')
+  assert.equal(touch.getAttribute('sizes'), '180x180', 'the size iOS asks for')
+  assert.equal(touch.getAttribute('id'), 'edh-mobile-icon')
+  assert.equal(MOBILE_TOUCH_ICON, 'api/edh.mobile/icon?size=180')
+  // The home-screen label, which iOS otherwise truncates from the document title.
+  assert.equal(
+    doc.querySelector('meta[name="apple-mobile-web-app-title"]').getAttribute('content'),
+    'EDH',
+    'the short label iOS shows under the icon',
+  )
+  // The two scheme-qualified theme colours agree with the manifest's dark surface.
+  const themeColours = doc.querySelectorAll('meta[name="theme-color"]').map(meta => meta.getAttribute('content'))
+  assert.deepEqual(themeColours, ['#ffffff', '#0b0c0e'], 'the pair, light then dark')
+  assert.equal(themeColours[1], '#0b0c0e', "the dark value is the manifest's own theme_color")
 
   // Idempotent: a re-sync that fires twice changes nothing.
   const settled = doc.head.children.length
@@ -4090,12 +4105,47 @@ function qrTestDecode(model) {
     'the shell manifest is back',
   )
   assert.equal(doc.style(), null)
+  assert.equal(doc.querySelector('link[rel="apple-touch-icon"]'), null, 'the touch icon was an addition, so it is gone')
+  assert.equal(
+    doc.querySelector('meta[name="apple-mobile-web-app-title"]'),
+    null,
+    'and so is the home-screen label',
+  )
 
   // A second cycle leaves nothing behind: creation is per instance, not global.
   assert.equal(layer.apply(), true)
   assert.equal(layer.withdraw(), true)
   assert.equal(doc.head.children.length, 4)
   assert.deepEqual(doc.metaNames(), ['viewport'], 'no meta survived either cycle')
+  assert.equal(doc.querySelector('link[rel="apple-touch-icon"]'), null, 'and the touch icon did not survive either')
+  assert.equal(
+    doc.querySelector('link[rel="manifest"]').getAttribute('href'),
+    './manifest.webmanifest',
+    'the manifest upgrade is undone, not left behind',
+  )
+  assert.equal(doc.querySelectorAll('link[rel="manifest"]').length, 1, 'and never duplicated by a cycle')
+  // The head after a full cycle is exactly the head before it.
+  const before = fakeDocument({
+    icons: [
+      { type: 'image/svg+xml', href: './favicon.svg' },
+      { type: 'image/svg+xml', href: './favicon.svg' },
+    ],
+  })
+  const signature = document => document.head.children
+    .map(node => node.tagName + ':' + [...node.attributes.keys()].sort().map(name => name + '=' + node.getAttribute(name)).join('&'))
+    .join('|')
+  const pristine = signature(before)
+  const cycled = createMobileLayer(before)
+  cycled.apply()
+  assert.notEqual(signature(before), pristine, 'the install changed the head')
+  cycled.withdraw()
+  assert.equal(signature(before), pristine, 'and disposal restored it tag for tag, attributes included')
+
+  // No service worker: plain http on the LAN cannot register one, and a
+  // registration that always fails is noise. Asserted at the source level so a
+  // future edit has to argue with this test rather than sneak one in.
+  const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+  assert.equal(source.includes('serviceWorker'), false, 'the layer registers no service worker')
 
   // A page with no viewport at all gets one, and gives it back on disposal.
   const bare = fakeDocument({ viewport: false, manifest: false })
@@ -4105,18 +4155,6 @@ function qrTestDecode(model) {
   assert.equal(bare.querySelector('link[rel="manifest"]').getAttribute('id'), 'edh-mobile-manifest')
   bareLayer.withdraw()
   assert.equal(bare.head.children.length, 0, 'and removed again')
-
-  // A real raster icon is reused, absolute and same-origin; a cross-origin one is not.
-  const raster = fakeDocument({ icons: [{ type: 'image/png', href: '/apple.png' }] })
-  createMobileLayer(raster).apply()
-  assert.equal(
-    raster.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'),
-    'http://127.0.0.1:49944/apple.png',
-    'the page\'s own icon, resolved against its origin',
-  )
-  const foreign = fakeDocument({ icons: [{ type: 'image/png', href: 'https://cdn.example.com/apple.png' }] })
-  createMobileLayer(foreign).apply()
-  assert.equal(foreign.querySelector('link[rel="apple-touch-icon"]'), null, 'a cross-origin icon is not offered')
 
   // No document, no layer: the install is a no-op rather than a crash.
   assert.equal(createMobileLayer(undefined), undefined)

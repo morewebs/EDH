@@ -26,12 +26,18 @@
  * ## Why the icons are generated here, in-process
  *
  * Remote is served over **plain HTTP on the LAN**, which is not a secure context,
- * so there is **no service worker** and **Android Chrome will not offer an install
- * prompt** however good the manifest is. (iOS Safari's *Add to Home Screen* needs
- * no prompt — but it reads `apple-touch-icon` from the document and **ignores SVG
- * icons entirely**.) A manifest naming one SVG therefore installed with a blank
- * icon on iOS and failed Chrome's install criteria (PNG 192 and 512, at least one
- * `maskable`).
+ * so a service worker cannot register there and **Android Chrome will not offer an
+ * install prompt** on that address however good the manifest is. The deployment
+ * this feature actually serves is the user's own: they terminate TLS in front of
+ * Remote, and on that origin the context *is* secure — which is why a worker is
+ * shipped at all ({@link MOBILE_SW_BODY}, a pass-through that intercepts nothing
+ * but satisfies Chrome's install criterion). On the bare LAN address it simply
+ * never registers; nothing else changes.
+ *
+ * iOS Safari's *Add to Home Screen* needs no prompt and no worker — but it reads
+ * `apple-touch-icon` from the document and **ignores SVG icons entirely**. A
+ * manifest naming one SVG therefore installed with a blank icon on iOS and failed
+ * Chrome's install criteria (PNG 192 and 512, at least one `maskable`).
  *
  * There is no image library in this bundle and EDH ships dependency-free, so the
  * PNGs are rasterised here: flat rectangles and rounded corners into an RGBA
@@ -96,6 +102,66 @@ export const MOBILE_APPLE_ICON_PATH = `${MOBILE_ICON_ROUTE}?size=180`
  * the route ignores unknown query parameters instead of refusing them.
  */
 export const MOBILE_ICON_CACHE = 'public, max-age=604800, immutable'
+
+// ---------------------------------------------------------------------------
+// The service worker: the install criterion, and nothing else
+// ---------------------------------------------------------------------------
+
+/** The worker the app registers. Root-relative, like every other URL here. */
+export const MOBILE_SW_PATH = '/api/edh.mobile/sw.js'
+
+/** What a worker must be served as, so a browser will accept it as JavaScript. */
+export const MOBILE_SW_TYPE = 'text/javascript; charset=utf-8'
+
+/**
+ * The `Service-Worker-Allowed` scope header.
+ *
+ * Load-bearing: a worker may only control paths under its *own* URL's directory
+ * unless the response widens the scope, so a worker served from
+ * `/api/edh.mobile/sw.js` could control `/api/edh.mobile/` and nothing else — and
+ * a controller that does not cover the document's scope is exactly what Chrome
+ * checks before it offers an install. `"/"` gives it the whole origin.
+ */
+export const MOBILE_SW_SCOPE = '/'
+
+/** Bump to ship a new worker; it is the only part of the body that ever changes. */
+export const EDH_SW_VERSION = '1'
+
+/**
+ * The service worker body: a pass-through that intercepts nothing.
+ *
+ * Chrome offers to install an app only when a service worker with a **`fetch`
+ * listener** is registered, so one is registered here — and the listener does
+ * nothing at all. Because it never answers a request itself, every request (the
+ * document, the assets, the RPC POSTs, the SSE stream, the WebSocket upgrade)
+ * proceeds exactly as it would with no worker: it cannot serve a stale asset and
+ * cannot break the app.
+ *
+ * Nothing else belongs in this file, and the words that would change that are
+ * kept out of it on purpose — see `test/mobile.mjs`, which asserts that the shipped
+ * bytes contain no request-answering, no cache API and no waiting-phase skip. A
+ * future change that needs any of them must also explain, in this comment, how it
+ * avoids serving stale bytes.
+ */
+export const MOBILE_SW_BODY = `/*!
+ * EDH Remote service worker — v${EDH_SW_VERSION} (pass-through).
+ *
+ * This worker intercepts nothing. It exists because a browser offers to install an
+ * app only when a service worker with a \`fetch\` listener is registered, and this
+ * listener never answers a request itself: the document, the assets, the RPC POSTs,
+ * the SSE stream and the WebSocket upgrade all proceed exactly as they would with
+ * no worker at all.
+ *
+ * Nothing else belongs here. There is nothing to precache, so there is no install
+ * step; there is no cache, so there is no activate cleanup and no use of the cache
+ * API; and there is no self-activation, because skipping the waiting phase would
+ * only make a stale worker arrive sooner.
+ */
+self.addEventListener('fetch', () => {})
+`
+
+/** What a worker must be served with: no cache, ever, or a stale one pins itself. */
+export const MOBILE_SW_CACHE = 'no-store'
 
 /** The dark surface the GUI opens on; a manifest cannot read the app's tokens. */
 export const MOBILE_BACKGROUND = '#0b0c0e'
@@ -463,7 +529,34 @@ export function mobileIconResponse(request) {
 }
 
 /**
- * Register both routes on the Host connection.
+ * Answer one request on the service worker route.
+ *
+ * `GET`/`HEAD` answer the worker with the one header that decides whether it can
+ * control anything at all (`service-worker-allowed: /`) and the one that keeps it
+ * from pinning itself in a cache (`no-store`). Everything else is a `405` with an
+ * `allow` listing both, never a `500`: the body is a constant.
+ * @param request - the incoming request.
+ * @returns the response.
+ */
+export function mobileWorkerResponse(request) {
+  const method = typeof request?.method === 'string' ? request.method.toUpperCase() : ''
+  if (method !== 'GET' && method !== 'HEAD') {
+    const message = `Unsupported method ${request?.method ?? 'without a method'}; the service worker is a GET`
+    return jsonResponse({ ok: false, reason: 'unsupported-method', message }, 405, { allow: 'GET, HEAD' })
+  }
+  return new Response(MOBILE_SW_BODY, {
+    status: 200,
+    headers: {
+      'content-type': MOBILE_SW_TYPE,
+      'content-length': String(Buffer.byteLength(MOBILE_SW_BODY, 'utf8')),
+      'cache-control': MOBILE_SW_CACHE,
+      'service-worker-allowed': MOBILE_SW_SCOPE,
+    },
+  })
+}
+
+/**
+ * Register all three routes on the Host connection.
  *
  * Every method is claimed so these routes — not the gateway's 404 — answer a wrong
  * one with the 405 above. The registrations live inside `ctx.effect`, so turning
@@ -475,6 +568,7 @@ export function apply(ctx) {
   const routes = [
     { label: 'manifest', path: MOBILE_MANIFEST_PATH, fetch: request => mobileResponse(request) },
     { label: 'icon', path: MOBILE_ICON_ROUTE, fetch: request => mobileIconResponse(request) },
+    { label: 'service worker', path: MOBILE_SW_PATH, fetch: request => mobileWorkerResponse(request) },
   ]
   for (const route of routes) {
     ctx.effect(() => {

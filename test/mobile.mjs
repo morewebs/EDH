@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { inflateSync } from 'node:zlib'
 import {
   apply,
   clearIconCache,
   crc32,
+  EDH_SW_VERSION,
   encodePng,
   iconPng,
   inject,
@@ -22,10 +24,16 @@ import {
   MOBILE_MANIFEST_TYPE,
   MOBILE_NAME,
   MOBILE_SHORT_NAME,
+  MOBILE_SW_BODY,
+  MOBILE_SW_CACHE,
+  MOBILE_SW_PATH,
+  MOBILE_SW_SCOPE,
+  MOBILE_SW_TYPE,
   MOBILE_THEME,
   mobileIconResponse,
   mobileManifest,
   mobileResponse,
+  mobileWorkerResponse,
   name,
   parseIconQuery,
   PNG_SIGNATURE,
@@ -435,30 +443,113 @@ function decodePng(png) {
 }
 
 // ---------------------------------------------------------------------------
-// 6 — the row: two registrations inside effects, and disposal unregisters both
+// 6 — the service worker: the install criterion, and a pass-through that
+//     intercepts nothing
+// ---------------------------------------------------------------------------
+{
+  assert.equal(MOBILE_SW_PATH, '/api/edh.mobile/sw.js')
+  assert.equal(MOBILE_SW_PATH.startsWith('/api/'), true, 'the /api bridge must be able to claim it')
+  assert.equal(MOBILE_SW_PATH.endsWith('.js'), true, 'a worker URL a browser will parse as JavaScript')
+  assert.equal(MOBILE_SW_SCOPE, '/')
+  assert.equal(MOBILE_SW_TYPE, 'text/javascript; charset=utf-8')
+  assert.equal(MOBILE_SW_CACHE, 'no-store')
+  assert.equal(EDH_SW_VERSION, '1')
+
+  // The body: a `fetch` listener (Chrome's install criterion) and nothing else.
+  assert.equal(MOBILE_SW_BODY.includes("self.addEventListener('fetch'"), true, 'the fetch listener is what makes the app installable')
+  assert.equal(/self\.addEventListener\(\s*'fetch'\s*,\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/u.test(MOBILE_SW_BODY), true, 'and the listener body is empty')
+  assert.equal(MOBILE_SW_BODY.trim().endsWith('self.addEventListener(\'fetch\', () => {})'), true, 'the listener is the last thing in the file, so nothing follows it')
+
+  // **The three lines that would turn a pass-through into something that can break
+  // the app.** No request answering, no cache API, no waiting-phase skip — the
+  // bytes a browser parses must contain none of them, so the check is on the body
+  // itself rather than on a stripped copy.
+  for (const forbidden of ['respondWith', 'caches.', 'skipWaiting']) {
+    assert.equal(MOBILE_SW_BODY.includes(forbidden), false, `the worker body must never contain ${forbidden}`)
+  }
+  for (const forbidden of ['caches', 'CacheStorage', 'importScripts']) {
+    assert.equal(MOBILE_SW_BODY.includes(forbidden), false, `and no ${forbidden} either`)
+  }
+  assert.equal(/self\.addEventListener\(\s*'(install|activate)'/u.test(MOBILE_SW_BODY), false, 'no install and no activate: there is no cache to seed or clean')
+  assert.equal(MOBILE_SW_BODY.includes(EDH_SW_VERSION), true, 'the version is in the body, so a bump ships new bytes')
+
+  // The same guard at the file level, so a *second* worker body added later cannot
+  // slip past: the module that serves `/sw.js` contains none of those tokens at all.
+  {
+    const source = readFileSync(new URL('../mobile.js', import.meta.url), 'utf8')
+    for (const forbidden of ['respondWith', 'caches.', 'skipWaiting', 'CacheStorage', 'importScripts']) {
+      assert.equal(source.includes(forbidden), false, `mobile.js must never contain ${forbidden}`)
+    }
+    assert.match(source, /self\.addEventListener\('fetch', \(\) => \{\}\)/u, 'and the one listener it ships is the empty fetch one')
+  }
+
+  const worker = await mobileWorkerResponse(new Request(`http://127.0.0.1${MOBILE_SW_PATH}`))
+  assert.equal(worker.status, 200)
+  assert.equal(worker.headers.get('content-type'), MOBILE_SW_TYPE, 'a browser refuses a worker it cannot parse as JavaScript')
+  // Without this the worker could only control /api/edh.mobile/, and a controller
+  // that does not cover the document's scope is what Chrome checks before installing.
+  assert.equal(worker.headers.get('service-worker-allowed'), '/', 'the scope header is what makes the whole origin installable')
+  assert.equal(worker.headers.get('cache-control'), 'no-store', 'a cached worker can pin itself for good')
+  const body = await worker.text()
+  assert.equal(body, MOBILE_SW_BODY, 'the route serves the constant, shared with the client and the tests')
+  assert.equal(worker.headers.get('content-length'), String(Buffer.byteLength(body, 'utf8')), 'the length matches the body')
+
+  // HEAD is answered like a GET; the server drops the body.
+  const head = await mobileWorkerResponse(new Request(`http://127.0.0.1${MOBILE_SW_PATH}`, { method: 'HEAD' }))
+  assert.equal(head.status, 200)
+  assert.equal(head.headers.get('service-worker-allowed'), '/')
+
+  // Everything else is a 405 that lists the methods that work, never a 500.
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    const rejected = await mobileWorkerResponse(new Request(`http://127.0.0.1${MOBILE_SW_PATH}`, { method }))
+    assert.equal(rejected.status, 405, `${method} is a 405, never a 500`)
+    assert.equal(rejected.headers.get('allow'), 'GET, HEAD')
+    const refused = await rejected.json()
+    assert.equal(refused.ok, false)
+    assert.equal(refused.reason, 'unsupported-method')
+    assert.match(refused.message, new RegExp(method, 'u'))
+  }
+  const methodless = await mobileWorkerResponse({})
+  assert.equal(methodless.status, 405)
+  assert.match((await methodless.json()).message, /without a method/u)
+  assert.equal((await mobileWorkerResponse({ method: 'get' })).status, 200, 'the method is compared case-insensitively')
+
+  // The version is a plain number, so the comment cannot smuggle anything into the
+  // body that a browser would execute.
+  assert.match(EDH_SW_VERSION, /^\d+$/u)
+}
+
+// ---------------------------------------------------------------------------
+// 7 — the row: three registrations inside effects, and disposal unregisters all
 // ---------------------------------------------------------------------------
 {
   const { ctx, routes, disposers, warnings } = createContext()
   apply(ctx)
 
-  assert.equal(routes.length, 2, 'the manifest and the icon routes are registered')
-  assert.deepEqual(routes.map(route => route.path).sort(), [MOBILE_ICON_ROUTE, MOBILE_MANIFEST_PATH].sort())
+  assert.equal(routes.length, 3, 'the manifest, the icon and the service worker routes are registered')
+  assert.deepEqual(
+    routes.map(route => route.path).sort(),
+    [MOBILE_ICON_ROUTE, MOBILE_MANIFEST_PATH, MOBILE_SW_PATH].sort(),
+  )
   for (const route of routes) {
     assert.deepEqual([...route.methods], ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], 'every method is claimed so a wrong one gets the 405')
     assert.equal(route.requestBody, 'buffered')
     assert.equal(typeof route.fetch, 'function')
   }
 
-  const iconRoute = routes.find(route => route.path === MOBILE_ICON_ROUTE)
-  const answered = await iconRoute.fetch(new Request(`http://127.0.0.1${MOBILE_ICON_ROUTE}?size=192`))
+  const workerRoute = routes.find(route => route.path === MOBILE_SW_PATH)
+  const answered = await workerRoute.fetch(new Request(`http://127.0.0.1${MOBILE_SW_PATH}`))
   assert.equal(answered.status, 200)
-  assert.equal(answered.headers.get('content-type'), 'image/png')
+  assert.equal(answered.headers.get('service-worker-allowed'), '/')
+  assert.equal((await answered.text()).includes("addEventListener('fetch'"), true)
+  const iconRoute = routes.find(route => route.path === MOBILE_ICON_ROUTE)
+  assert.equal((await iconRoute.fetch(new Request(`http://127.0.0.1${MOBILE_ICON_ROUTE}?size=192`))).status, 200)
   const manifestRoute = routes.find(route => route.path === MOBILE_MANIFEST_PATH)
   assert.equal((await manifestRoute.fetch(new Request(`http://127.0.0.1${MOBILE_MANIFEST_PATH}`))).status, 200)
   assert.equal((await iconRoute.fetch(new Request(`http://127.0.0.1${MOBILE_ICON_ROUTE}?size=9`))).status, 400)
 
   for (const dispose of [...disposers].reverse()) dispose()
-  assert.equal(routes.length, 0, 'disposal unregisters both routes')
+  assert.equal(routes.length, 0, 'disposal unregisters all three routes')
   assert.equal(warnings.length, 0, `nothing warned: ${warnings.join(' | ')}`)
 
   // A composition that refuses the path logs and keeps everything else running.
@@ -468,7 +559,7 @@ function decodePng(png) {
     },
   })
   assert.doesNotThrow(() => apply(refused.ctx))
-  assert.equal(refused.warnings.length, 2, 'one warning per refused route')
+  assert.equal(refused.warnings.length, 3, 'one warning per refused route')
   for (const warning of refused.warnings) assert.match(warning, /registration failed/u)
   for (const dispose of [...refused.disposers].reverse()) dispose()
 
@@ -486,7 +577,7 @@ function decodePng(png) {
 }
 
 // ---------------------------------------------------------------------------
-// 7 — no services, no throw: the module must load on any Host
+// 8 — no services, no throw: the module must load on any Host
 // ---------------------------------------------------------------------------
 {
   const bare = {
@@ -510,13 +601,14 @@ function decodePng(png) {
     connection: {},
   }
   assert.doesNotThrow(() => apply(withoutFetch))
-  assert.equal(logged.length, 2)
+  assert.equal(logged.length, 3)
   for (const line of logged) assert.match(line, /registration failed/u)
 
   // And with no context hooks at all the pure builders still answer, so the routes
   // can be unit-tested without a Host.
   assert.equal((await mobileResponse({ method: 'GET' })).status, 200)
   assert.equal((await mobileIconResponse({ method: 'GET' })).status, 200)
+  assert.equal((await mobileWorkerResponse({ method: 'GET' })).status, 200)
 }
 
 console.log('edh mobile: all checks passed')

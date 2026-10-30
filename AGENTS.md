@@ -271,13 +271,29 @@ fact: **the listener is ours, and the harness only ever sees loopback.**
   `/api/edh.mobile/manifest` would start the installed app inside
   `/api/edh.mobile/` and put the document outside its own scope, which makes the
   app non-installable.
-- **Plain http on the LAN means no service worker and no Android install prompt.**
-  A service worker needs a secure context, and Remote is served over `http://` on a
-  LAN address, so Chromium never registers one — and without one Chrome does not
-  offer to install, however good the manifest is. That is a platform rule, not a gap
-  to work around: **no service worker is shipped**, because dead code that cannot run
-  is worse than none. iOS Safari's *Add to Home Screen* needs no prompt and no
-  worker, and is the installation path this feature actually serves.
+- **Installability needs a service worker, and the LAN address cannot register one.**
+  A worker requires a secure context; Remote on `http://<lan-ip>:<port>` is not one, so
+  nothing registers there and Android Chrome will not offer to install *on that
+  address*. The deployment this feature serves is the user's own: they terminate TLS
+  in front of Remote, and on that origin the context is secure — which is why
+  `GET /api/edh.mobile/sw.js` exists. iOS Safari's *Add to Home Screen* needs no
+  prompt and no worker, and works on the bare LAN address.
+- **The worker is a pass-through, and three tokens must never appear in it.**
+  Chrome's criterion is a registered `fetch` listener, so the body is one empty
+  listener and nothing else: `self.addEventListener('fetch', () => {})`. It never
+  answers a request, so the document, the assets, the RPC POSTs, the SSE stream and
+  the WebSocket upgrade behave exactly as with no worker. `test/mobile.mjs` asserts
+  the shipped bytes contain no `respondWith`, no `caches.`/cache API and no
+  `skipWaiting` — **both in the exported body and anywhere in `mobile.js`** — plus no
+  `install`/`activate` listener: there is nothing to precache and no cache to clean,
+  so neither belongs. Bump `EDH_SW_VERSION` to ship new worker bytes.
+- **A worker response has two headers that decide whether it works at all.**
+  `service-worker-allowed: /` — without it a worker served from `/api/edh.mobile/`
+  could only control that path, and a controller that does not cover the document is
+  exactly what Chrome checks before installing. And `cache-control: no-store` — a
+  worker served from cache can pin a stale copy of itself for good. Content type is
+  `text/javascript; charset=utf-8`; a browser refuses a worker it will not parse as
+  JavaScript.
 - **iOS ignores SVG icons entirely, so the icons are rendered here.** Safari takes a
   home-screen icon from `<link rel="apple-touch-icon">` (180 px, written by the
   browser half) and never looks at the manifest; Chrome's install criteria want

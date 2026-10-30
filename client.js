@@ -5592,6 +5592,18 @@ window.__ModuleLoader__.load({
     /** The Host's opaque 180x180 touch icon: iOS ignores SVG, so this one is rendered. */
     const MOBILE_TOUCH_ICON = 'api/edh.mobile/icon?size=180'
 
+    /**
+     * The Host's pass-through worker. It intercepts nothing; it exists only
+     * because Chrome will not offer to install a page without a worker that has a
+     * `fetch` handler, and the user fronts Remote with their own HTTPS proxy, so
+     * the origin is already a secure context.
+     */
+    const MOBILE_WORKER = 'api/edh.mobile/sw.js'
+    /** Root scope on purpose: at `/api/edh.mobile/` the page is outside it. */
+    const MOBILE_WORKER_SCOPE = '/'
+    /** One registration per page load, shared by every layer instance. */
+    const MOBILE_WORKER_STATE = { asked: false }
+
     /** Every phone rule runs under this query: a desktop window never sees them. */
     const MOBILE_QUERY = '(max-width: 860px)'
 
@@ -5669,6 +5681,52 @@ window.__ModuleLoader__.load({
     ].join('')
 
     /**
+     * Register the pass-through worker, once per page load, or say why not.
+     *
+     * Three gates, in order: no `navigator.serviceWorker` (a browser that has none),
+     * not a secure context (the plain-http LAN case — the silent skip that matters),
+     * and already asked (a dispose/reinstall cycle). Registration is fire-and-forget
+     * and every outcome is a breadcrumb: a rejection must never reach the page, and
+     * nothing here ever unregisters — the worker is an origin-level resource, not
+     * ours to tear down because a feature row was toggled.
+     * @param options - the injectable environment, for the suite.
+     * @returns whether a registration was attempted.
+     */
+    function registerMobileWorker(options = {}) {
+      const write = typeof options.write === 'function' ? options.write : mobileWrite
+      const nav = options.navigator ?? (typeof navigator === 'undefined' ? undefined : navigator)
+      const secure = options.secureContext ?? (typeof window === 'undefined' ? undefined : window.isSecureContext)
+      const state = options.state ?? MOBILE_WORKER_STATE
+      // One ask per page load, whatever it answers: a skip is reported once too,
+      // so a dispose/reinstall cycle cannot repeat the breadcrumb.
+      if (state.asked === true) return false
+      state.asked = true
+      if (nav === undefined || nav === null || nav.serviceWorker === undefined || nav.serviceWorker === null) {
+        write({ phase: 'sw-skipped', reason: 'unsupported' })
+        return false
+      }
+      if (secure !== true) {
+        write({ phase: 'sw-skipped', reason: 'insecure' })
+        return false
+      }
+      try {
+        void nav.serviceWorker
+          .register(MOBILE_WORKER, { scope: MOBILE_WORKER_SCOPE })
+          .then(registration => {
+            const scope = registration !== null && typeof registration === 'object' && typeof registration.scope === 'string'
+              ? registration.scope
+              : MOBILE_WORKER_SCOPE
+            write({ phase: 'sw-registered', scope })
+          })
+          .catch(error => write({ phase: 'sw-failed', reason: messageOf(error) }))
+      } catch (error) {
+        // A synchronous refusal (a policy, a malformed URL) is the same outcome.
+        write({ phase: 'sw-failed', reason: messageOf(error) })
+      }
+      return true
+    }
+
+    /**
      * The mobile layer, as a small reversible change set.
      *
      * `apply` is idempotent: a second call while applied changes nothing, so a
@@ -5678,7 +5736,7 @@ window.__ModuleLoader__.load({
      * @param doc - the document to change; injected so the suite can drive it.
      * @returns `{ apply, withdraw, applied }`, or `undefined` without a document.
      */
-    function createMobileLayer(doc) {
+    function createMobileLayer(doc, env = {}) {
       if (doc === undefined || doc === null || typeof doc.createElement !== 'function') return undefined
       if (doc.head === undefined || doc.head === null) return undefined
       /** Nodes this layer created, in creation order. */
@@ -5736,6 +5794,14 @@ window.__ModuleLoader__.load({
         const style = make('style', { id: 'edh-mobile' })
         style.textContent = MOBILE_CSS
         add(style)
+        // Last, and outside any render path: the worker is an origin-level
+        // resource, so it is registered once per page load and never withdrawn.
+        registerMobileWorker({
+          write: env.write,
+          navigator: env.navigator,
+          secureContext: env.secureContext,
+          state: env.workerState,
+        })
         return true
       }
 
@@ -5769,8 +5835,8 @@ window.__ModuleLoader__.load({
      * @param controller - the switch controller holding the row states.
      * @param doc - the document; defaults to the real one.
      */
-    function installMobileLayer(ctx, controller, doc = (typeof document === 'undefined' ? undefined : document)) {
-      const layer = createMobileLayer(doc)
+    function installMobileLayer(ctx, controller, doc = (typeof document === 'undefined' ? undefined : document), env = {}) {
+      const layer = createMobileLayer(doc, env)
       if (layer === undefined) return () => {}
       ctx.effect(() => {
         let active = false
@@ -11188,6 +11254,10 @@ window.__ModuleLoader__.load({
       MOBILE_VIEWPORT,
       MOBILE_MANIFEST,
       MOBILE_TOUCH_ICON,
+      MOBILE_WORKER,
+      MOBILE_WORKER_SCOPE,
+      MOBILE_WORKER_STATE,
+      registerMobileWorker,
       MOBILE_QUERY,
       MOBILE_THEME,
       MOBILE_META,

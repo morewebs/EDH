@@ -209,6 +209,9 @@ const {
   createMobileLayer,
   installMobileLayer,
   MOBILE_TOUCH_ICON,
+  MOBILE_WORKER,
+  MOBILE_WORKER_SCOPE,
+  registerMobileWorker,
   MOBILE_MODULE,
   MOBILE_CSS,
   MOBILE_VIEWPORT,
@@ -4141,11 +4144,12 @@ function qrTestDecode(model) {
   cycled.withdraw()
   assert.equal(signature(before), pristine, 'and disposal restored it tag for tag, attributes included')
 
-  // No service worker: plain http on the LAN cannot register one, and a
-  // registration that always fails is noise. Asserted at the source level so a
-  // future edit has to argue with this test rather than sneak one in.
+  // The layer DOES register a pass-through worker now, but only behind both
+  // gates; the unconditional version is what this assertion used to forbid. See
+  // the worker block for the gate itself.
   const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
-  assert.equal(source.includes('serviceWorker'), false, 'the layer registers no service worker')
+  assert.equal(source.includes('navigator.serviceWorker'), true, 'the worker reference is gated, never unconditional')
+  assert.equal(source.includes('.register(MOBILE_WORKER'), true, 'and it registers only our own route, from the constant')
 
   // A page with no viewport at all gets one, and gives it back on disposal.
   const bare = fakeDocument({ viewport: false, manifest: false })
@@ -4222,7 +4226,15 @@ function qrTestDecode(model) {
   const phases = storage
     .filter(([key]) => key === MOBILE_DEBUG_KEY)
     .map(([, value]) => JSON.parse(value).phase)
-  assert.deepEqual(phases, ['installed', 'withdrawn', 'installed', 'withdrawn'], 'each change is recorded')
+  assert.deepEqual(
+    phases.filter(phase => phase !== 'sw-skipped'),
+    ['installed', 'withdrawn', 'installed', 'withdrawn'],
+    'each lifecycle change is recorded',
+  )
+  // The worker's own breadcrumb is shared per page load (one ask, whatever it
+  // answers), so this block asserts the lifecycle only; the worker's skip-once
+  // rule is asserted where a fresh state is injected.
+  assert.equal(phases.every(phase => phase === 'installed' || phase === 'withdrawn' || phase === 'sw-skipped'), true, 'no other phase appears')
   void dispose
 }
 
@@ -7020,6 +7032,131 @@ console.log('edh notify: host-read fallback checks passed')
 console.log('edh notify: title, body, and click checks passed')
 console.log('edh notify: single-sound and popup-silence checks passed')
 console.log('edh notify: settings, watcher, and sound checks passed')
+// 69 — the pass-through worker: registered once, on a secure context, never torn down.
+{
+  const writes = []
+  const write = payload => writes.push(payload)
+
+  // --- the gates --------------------------------------------------------
+  {
+    // No serviceWorker at all: a browser that cannot, and never a throw.
+    const state = { asked: false }
+    writes.length = 0
+    assert.equal(registerMobileWorker({ navigator: {}, secureContext: true, state, write }), false)
+    assert.deepEqual(writes, [{ phase: 'sw-skipped', reason: 'unsupported' }])
+    assert.equal(state.asked, true, 'a skip still consumes the one ask per page load')
+    assert.equal(registerMobileWorker({ navigator: {}, secureContext: true, state, write }), false)
+    assert.equal(writes.length, 1, 'so it is reported once, not once per sync')
+
+    // Plain http on the LAN: the silent skip that matters.
+    writes.length = 0
+    const insecure = { asked: false }
+    const nav = { serviceWorker: { register: () => { throw new Error('must not be called') } } }
+    assert.equal(registerMobileWorker({ navigator: nav, secureContext: false, state: insecure, write }), false)
+    assert.deepEqual(writes, [{ phase: 'sw-skipped', reason: 'insecure' }])
+    assert.equal(insecure.asked, true, 'and the insecure skip is one breadcrumb too')
+  }
+
+  // --- the registration -------------------------------------------------
+  {
+    const state = { asked: false }
+    const calls = []
+    const nav = {
+      serviceWorker: {
+        register: async (url, options) => {
+          calls.push({ url, options })
+          return { scope: 'http://127.0.0.1:49944/' }
+        },
+      },
+    }
+    writes.length = 0
+    assert.equal(registerMobileWorker({ navigator: nav, secureContext: true, state, write }), true)
+    assert.equal(MOBILE_WORKER, 'api/edh.mobile/sw.js', 'document-relative, like every other route in this layer')
+    assert.equal(MOBILE_WORKER_SCOPE, '/', 'root scope, or the page is outside the worker and Chrome will not install')
+    assert.deepEqual(calls, [{ url: MOBILE_WORKER, options: { scope: '/' } }], 'one call, the exact URL and scope')
+    await new Promise(resolve => setTimeout(resolve, 5))
+    assert.deepEqual(writes, [{ phase: 'sw-registered', scope: 'http://127.0.0.1:49944/' }], 'and the resolved scope is recorded')
+
+    // Once per page load: the module-level flag is what a second layer sees.
+    writes.length = 0
+    assert.equal(registerMobileWorker({ navigator: nav, secureContext: true, state, write }), false)
+    assert.equal(calls.length, 1, 'a second ask registers nothing')
+    assert.deepEqual(writes, [], 'and says nothing: there is nothing to report')
+  }
+
+  // --- a rejection is a breadcrumb, not damage --------------------------
+  {
+    const state = { asked: false }
+    const nav = { serviceWorker: { register: async () => { throw new Error('SecurityError: denied') } } }
+    writes.length = 0
+    assert.equal(registerMobileWorker({ navigator: nav, secureContext: true, state, write }), true)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    assert.deepEqual(writes, [{ phase: 'sw-failed', reason: 'SecurityError: denied' }], 'the failure is recorded')
+
+    // A synchronous throw is the same outcome.
+    const sync = { asked: false }
+    writes.length = 0
+    registerMobileWorker({
+      navigator: { serviceWorker: { register: () => { throw new Error('blocked') } } },
+      secureContext: true,
+      state: sync,
+      write,
+    })
+    assert.deepEqual(writes, [{ phase: 'sw-failed', reason: 'blocked' }])
+
+    // And the layer is still installed, head intact.
+    const doc = fakeDocument({ icons: [{ type: 'image/svg+xml', href: './favicon.svg' }] })
+    const failing = createMobileLayer(doc, {
+      navigator: { serviceWorker: { register: async () => { throw new Error('nope') } } },
+      secureContext: true,
+      workerState: { asked: false },
+      write,
+    })
+    assert.equal(failing.apply(), true, 'the layer installs regardless')
+    assert.equal(failing.applied(), true)
+    assert.equal(doc.querySelector('link[rel="apple-touch-icon"]').getAttribute('sizes'), '180x180', 'the head is intact')
+    assert.equal(doc.querySelector('meta[name="apple-mobile-web-app-title"]').getAttribute('content'), 'EDH')
+    assert.equal(doc.style().getAttribute('id'), 'edh-mobile')
+  }
+
+  // --- a dispose/reinstall cycle registers once, and never unregisters --
+  {
+    const state = { asked: false }
+    const calls = []
+    const doc = fakeDocument({})
+    const layer = createMobileLayer(doc, {
+      navigator: {
+        serviceWorker: {
+          register: async (url, options) => {
+            calls.push({ url, options })
+            return { scope: '/' }
+          },
+        },
+      },
+      secureContext: true,
+      workerState: state,
+      write,
+    })
+    layer.apply()
+    assert.equal(calls.length, 1, 'one registration on install')
+    layer.withdraw()
+    layer.apply()
+    assert.equal(calls.length, 1, 'a reinstall after dispose does not register again')
+    assert.equal(doc.querySelector('link[rel="apple-touch-icon"]') === null, false, 'the second install put the head back')
+    layer.withdraw()
+
+    // The layer never unregisters: that is not a thing a feature row owns.
+    const source = readFileSync(new URL('./../client.js', import.meta.url), 'utf8')
+    assert.equal(source.includes('unregister('), false, 'no unregister anywhere in the client')
+    assert.equal(source.includes('beforeinstallprompt'), false, 'Chrome shows its own prompt; we do not listen for it')
+    assert.equal(source.includes('respondWith'), false, 'the worker intercepts nothing, and neither do we')
+    // The gate reads exactly the two platform facts the brief names.
+    assert.ok(source.includes('navigator.serviceWorker'), 'the worker support gate')
+    assert.ok(source.includes('isSecureContext'), 'and the secure-context gate')
+  }
+}
+
+console.log('edh mobile: pass-through worker checks passed')
 console.log('edh mobile: layer, stylesheet, and QR checks passed')
 // 67 — the MCP page's Reload: one GET, adopt the view, keep the list on failure.
 {
